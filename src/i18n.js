@@ -47,7 +47,17 @@ export const paymentTypeLabel = (type) => {
 
 export const reportFilterLabel = (filter) => orderFilterLabel(filter);
 
-export const expenseFilterLabel = (filter) => orderFilterLabel(filter);
+export const expenseFilterLabel = (filter) => {
+  const map = {
+    all: 'الكل',
+    today: 'اليوم',
+    yesterday: 'أمس',
+    lastWeek: 'آخر 7 أيام',
+    lastMonth: 'آخر 30 يوم',
+    custom: 'مخصص',
+  };
+  return map[filter] || orderFilterLabel(filter);
+};
 
 export const categoryLabel = (cat) => (cat === 'all' ? 'الكل' : cat);
 
@@ -74,10 +84,14 @@ export const paymentMethodLabel = (method) => {
 
 export const expenseCategoryLabel = (cat) => {
   const map = {
-    Inventory: 'مخزون',
-    Utilities: 'مرافق',
-    Rent: 'إيجار',
     Salaries: 'رواتب',
+    Rent: 'إيجار',
+    Food: 'أكل',
+    Advance: 'سلف',
+    Purchase: 'مشتريات',
+    Inventory: 'مشتريات',
+    Utilities: 'مرافق',
+    Maintenance: 'صيانة',
     Marketing: 'تسويق',
     Other: 'أخرى',
   };

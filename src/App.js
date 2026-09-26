@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { APP_NAME, APP_TAGLINE, APP_LOGO, FONT_UI, FONT_HEADING, theme } from './branding';
-import { fmtMoney, fmtMoneyPlain, orderFilterLabel, orderStatusLabel, categoryLabel, paymentMethodLabel, paymentTypeLabel } from './i18n';
+import { fmtMoney, fmtMoneyPlain, orderFilterLabel, orderStatusLabel, categoryLabel, paymentMethodLabel, paymentTypeLabel, expenseCategoryLabel, expenseFilterLabel } from './i18n';
+import {
+  FINANCE_TABS,
+  OPERATING_EXPENSE_CATEGORIES,
+  PURCHASE_CATEGORY,
+  resolveExpenseSection,
+  defaultExpenseForm,
+} from './expenseConfig';
 import PosProductCard from './components/PosProductCard';
 import CustomersView from './components/CustomersView';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs } from './productAssets';
@@ -94,7 +101,8 @@ const AppCore = () => {
   const [showIngredientModal, setShowIngredientModal] = useState(false);
   const [expenses, setExpenses] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
-  const [expenseForm, setExpenseForm] = useState({ amount: '', date: new Date().toISOString().split('T')[0], category: 'Other', description: '', supplierId: '', linkedIngredientId: '', quantityBought: 0 });
+  const [expenseForm, setExpenseForm] = useState(() => defaultExpenseForm('operating'));
+  const [financeTab, setFinanceTab] = useState('operating');
   const [expenseReceiptFile, setExpenseReceiptFile] = useState(null);
   const [supplierForm, setSupplierForm] = useState({ name: '', contactPerson: '', phone: '', email: '', address: '' });
   const [showExpenseModal, setShowExpenseModal] = useState(false);
@@ -408,8 +416,20 @@ const AppCore = () => {
   };
 
   // Expense and Supplier Handlers
+  const openExpenseModalForSection = (section) => {
+    setExpenseForm(defaultExpenseForm(section));
+    setEditingExpenseId(null);
+    setExpenseReceiptFile(null);
+    setShowExpenseModal(true);
+  };
+
   const handleAddExpense = async (e) => {
     e.preventDefault();
+    const section = expenseForm.section || resolveExpenseSection(expenseForm);
+    if (section === 'purchase' && !expenseForm.supplierId) {
+      alert('يرجى اختيار التاجر للمشتريات');
+      return;
+    }
     setUploadProgress(true);
     try {
       let receiptUrl = expenseForm.receiptUrl || '';
@@ -419,12 +439,16 @@ const AppCore = () => {
         receiptUrl = await getDownloadURL(storageRef);
       }
 
+      const category =
+        section === 'purchase' ? PURCHASE_CATEGORY : expenseForm.category;
+
       const expenseData = {
         amount: parseFloat(expenseForm.amount),
         date: new Date(expenseForm.date),
-        category: expenseForm.category,
+        section,
+        category,
         description: expenseForm.description,
-        supplierId: expenseForm.supplierId,
+        supplierId: section === 'purchase' ? expenseForm.supplierId : expenseForm.supplierId || '',
         linkedIngredientId: expenseForm.linkedIngredientId || null,
         quantityBought: parseFloat(expenseForm.quantityBought) || 0,
         receiptUrl,
@@ -459,7 +483,7 @@ const AppCore = () => {
       }
 
       setShowExpenseModal(false);
-      setExpenseForm({ amount: '', date: new Date().toISOString().split('T')[0], category: 'Other', description: '', supplierId: '', linkedIngredientId: '', quantityBought: 0 });
+      setExpenseForm(defaultExpenseForm(financeTab === 'purchases' ? 'purchase' : 'operating'));
       setExpenseReceiptFile(null);
       setEditingExpenseId(null);
     } catch (error) {
@@ -474,22 +498,25 @@ const AppCore = () => {
       ? expense.date.toDate().toISOString().split('T')[0] 
       : new Date(expense.date).toISOString().split('T')[0];
 
+    const section = resolveExpenseSection(expense);
     setExpenseForm({
       amount: expense.amount,
       date: dateStr,
-      category: expense.category,
+      section,
+      category: section === 'purchase' ? PURCHASE_CATEGORY : expense.category,
       description: expense.description,
       supplierId: expense.supplierId || '',
       receiptUrl: expense.receiptUrl,
       linkedIngredientId: expense.linkedIngredientId || '',
       quantityBought: expense.quantityBought || 0
     });
+    setFinanceTab(section === 'purchase' ? 'purchases' : 'operating');
     setEditingExpenseId(expense.id);
     setShowExpenseModal(true);
   };
 
   const handleDeleteExpense = async (expenseId) => {
-    if (window.confirm('Are you sure you want to delete this expense?')) {
+    if (window.confirm('هل تريد حذف هذه العملية؟')) {
       try {
         await deleteDoc(doc(db, 'users', user.uid, 'expenses', expenseId));
       } catch (error) {
@@ -1876,6 +1903,10 @@ const AppCore = () => {
         default: // 'all'
           return true;
       }
+    }).filter((expense) => {
+      if (financeTab === 'operating') return resolveExpenseSection(expense) === 'operating';
+      if (financeTab === 'purchases') return resolveExpenseSection(expense) === 'purchase';
+      return true;
     });
   };
 
@@ -2781,177 +2812,284 @@ const AppCore = () => {
           </div>
         )}
 
-        {currentView === 'expenses' && (
-          <div className="max-w-7xl mx-auto">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-3xl font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>Expenses</h2>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setShowSupplierModal(true)}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white text-primary text-sm font-medium border border-gray-300 hover:bg-gray-50 shadow-sm transition-all"
-                  style={{ fontFamily: FONT_UI }}
-                >
-                  <Users size={16} />
-                  Suppliers
-                </button>
-                <button
-                  onClick={() => setShowExpenseModal(true)}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-white text-sm font-medium hover:opacity-90 shadow-sm transition-all"
-                  style={{ backgroundColor: theme.accent, fontFamily: FONT_UI }}
-                >
-                  <Plus size={16} />
-                  Add Expense
-                </button>
+        {currentView === 'expenses' && (() => {
+          const summarySection = financeTab === 'purchases' ? 'purchase' : 'operating';
+          const summaryExpenses = financeTab === 'traders'
+            ? []
+            : expenses.filter((e) => resolveExpenseSection(e) === summarySection);
+          const monthTotal = summaryExpenses.filter((e) => {
+            if (!e.date) return false;
+            const d = e.date.toDate ? e.date.toDate() : new Date(e.date);
+            const now = new Date();
+            return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+          }).reduce((sum, exp) => sum + (parseFloat(exp.amount) || 0), 0);
+          const allTotal = summaryExpenses.reduce((sum, exp) => sum + (parseFloat(exp.amount) || 0), 0);
+          const isPurchaseView = financeTab === 'purchases';
+          const isOperatingView = financeTab === 'operating';
+
+          return (
+          <div className="max-w-7xl mx-auto" dir="rtl">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+              <h2 className="text-3xl font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>المالية</h2>
+              <div className="flex gap-2 flex-wrap">
+                {financeTab === 'traders' && (
+                  <button
+                    type="button"
+                    onClick={() => setShowSupplierModal(true)}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-white text-sm font-medium hover:opacity-90 shadow-sm transition-all"
+                    style={{ backgroundColor: theme.accent, fontFamily: FONT_UI }}
+                  >
+                    <Plus size={16} />
+                    إضافة تاجر
+                  </button>
+                )}
+                {isOperatingView && (
+                  <button
+                    type="button"
+                    onClick={() => openExpenseModalForSection('operating')}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-white text-sm font-medium hover:opacity-90 shadow-sm transition-all"
+                    style={{ backgroundColor: theme.accent, fontFamily: FONT_UI }}
+                  >
+                    <Plus size={16} />
+                    إضافة مصروف
+                  </button>
+                )}
+                {isPurchaseView && (
+                  <button
+                    type="button"
+                    onClick={() => openExpenseModalForSection('purchase')}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-white text-sm font-medium hover:opacity-90 shadow-sm transition-all"
+                    style={{ backgroundColor: theme.accent, fontFamily: FONT_UI }}
+                  >
+                    <Plus size={16} />
+                    إضافة مشتريات
+                  </button>
+                )}
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
-               <div className="bg-white rounded-2xl p-6 shadow-md border border-gray-100">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="p-2 bg-red-50 rounded-xl text-red-500"><TrendingDown size={20} /></div>
-                    <p className="text-sm text-gray-500 font-medium">Total Expenses</p>
-                  </div>
-                  <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>
-                    {fmtMoney(expenses.reduce((sum, exp) => sum + (parseFloat(exp.amount) || 0), 0))}
-                  </p>
-               </div>
-               <div className="bg-white rounded-2xl p-6 shadow-md border border-gray-100">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="p-2 bg-orange-50 rounded-xl text-orange-500"><Calendar size={20} /></div>
-                    <p className="text-sm text-gray-500 font-medium">This Month</p>
-                  </div>
-                  <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>
-                    {fmtMoney(expenses.filter(e => {
-                        if (!e.date) return false;
-                        const d = e.date.toDate ? e.date.toDate() : new Date(e.date);
-                        const now = new Date();
-                        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-                    }).reduce((sum, exp) => sum + (parseFloat(exp.amount) || 0), 0))}
-                  </p>
-               </div>
-               <div className="bg-white rounded-2xl p-6 shadow-md border border-gray-100">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="p-2 bg-blue-50 rounded-xl text-blue-500"><FileText size={20} /></div>
-                    <p className="text-sm text-gray-500 font-medium">عدد العمليات</p>
-                  </div>
-                  <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>
-                    {expenses.length}
-                  </p>
-               </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2 mb-4">
-              {['all', 'today', 'yesterday', 'lastWeek', 'lastMonth', 'custom'].map(filter => (
+            <div className="flex flex-wrap gap-2 mb-6 p-1.5 bg-gray-100 rounded-2xl w-fit max-w-full">
+              {FINANCE_TABS.map((tab) => (
                 <button
-                  key={filter}
-                  onClick={() => setExpenseFilter(filter)}
-                  className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-                    expenseFilter === filter 
-                      ? 'text-white' 
-                      : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setFinanceTab(tab.id)}
+                  className={`px-5 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                    financeTab === tab.id ? 'text-white shadow-sm' : 'text-gray-600 hover:bg-white/80'
                   }`}
-                  style={expenseFilter === filter ? { backgroundColor: theme.primary, fontFamily: FONT_UI } : { fontFamily: FONT_UI }}
+                  style={financeTab === tab.id ? { backgroundColor: theme.primary, fontFamily: FONT_UI } : { fontFamily: FONT_UI }}
                 >
-                  {filter === 'lastWeek' ? 'Last 7 Days' : filter === 'lastMonth' ? 'Last 30 Days' : filter.charAt(0).toUpperCase() + filter.slice(1)}
+                  {tab.label}
                 </button>
               ))}
             </div>
 
-            {expenseFilter === 'custom' && (
-              <div className="bg-white p-4 rounded-xl border border-gray-200 mb-5 flex flex-wrap gap-4 items-end">
-                <div>
-                  <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>من تاريخ</label>
-                  <input
-                    type="date"
-                    value={expenseCustomDateRange.start}
-                    onChange={(e) => setExpenseCustomDateRange(prev => ({ ...prev, start: e.target.value }))}
-                    className="px-3 py-2 rounded-xl border border-gray-200 outline-none text-sm"
-                    style={{ fontFamily: FONT_UI }}
-                  />
+            {financeTab === 'traders' ? (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-8">
+                  <div className="bg-white rounded-2xl p-6 shadow-md border border-gray-100">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="p-2 bg-blue-50 rounded-xl text-blue-500"><Users size={20} /></div>
+                      <p className="text-sm text-gray-500 font-medium">عدد التجار</p>
+                    </div>
+                    <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>{suppliers.length}</p>
+                  </div>
+                  <div className="bg-white rounded-2xl p-6 shadow-md border border-gray-100">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="p-2 bg-orange-50 rounded-xl text-orange-500"><ShoppingBag size={20} /></div>
+                      <p className="text-sm text-gray-500 font-medium">إجمالي المشتريات</p>
+                    </div>
+                    <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>
+                      {fmtMoney(expenses.filter((e) => resolveExpenseSection(e) === 'purchase').reduce((s, e) => s + (parseFloat(e.amount) || 0), 0))}
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>إلى تاريخ</label>
-                  <input
-                    type="date"
-                    value={expenseCustomDateRange.end}
-                    onChange={(e) => setExpenseCustomDateRange(prev => ({ ...prev, end: e.target.value }))}
-                    className="px-3 py-2 rounded-xl border border-gray-200 outline-none text-sm"
-                    style={{ fontFamily: FONT_UI }}
-                  />
+                <div className="bg-white shadow-md rounded-xl overflow-hidden border border-gray-200">
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse">
+                      <thead>
+                        <tr className="bg-gray-100 border-b border-gray-300">
+                          <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">اسم التاجر</th>
+                          <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">جهة الاتصال</th>
+                          <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">الجوال</th>
+                          <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">البريد</th>
+                          <th className="p-3 text-xs font-bold text-gray-700 text-right">العنوان</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {suppliers.map((s) => (
+                          <tr key={s.id} className="hover:bg-blue-50 transition-colors">
+                            <td className="p-3 text-sm font-medium text-gray-900 border-r border-gray-200">{s.name}</td>
+                            <td className="p-3 text-sm text-gray-600 border-r border-gray-200">{s.contactPerson || '—'}</td>
+                            <td className="p-3 text-sm text-gray-600 border-r border-gray-200">{s.phone || '—'}</td>
+                            <td className="p-3 text-sm text-gray-600 border-r border-gray-200">{s.email || '—'}</td>
+                            <td className="p-3 text-sm text-gray-600">{s.address || '—'}</td>
+                          </tr>
+                        ))}
+                        {suppliers.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="p-8 text-center text-gray-500 text-sm bg-gray-50">لا يوجد تجار — أضف تاجراً لتسجيل المشتريات</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              </div>
-            )}
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
+                  <div className="bg-white rounded-2xl p-6 shadow-md border border-gray-100">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="p-2 bg-red-50 rounded-xl text-red-500"><TrendingDown size={20} /></div>
+                      <p className="text-sm text-gray-500 font-medium">{isPurchaseView ? 'إجمالي المشتريات' : 'إجمالي المصروفات'}</p>
+                    </div>
+                    <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>{fmtMoney(allTotal)}</p>
+                  </div>
+                  <div className="bg-white rounded-2xl p-6 shadow-md border border-gray-100">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="p-2 bg-orange-50 rounded-xl text-orange-500"><Calendar size={20} /></div>
+                      <p className="text-sm text-gray-500 font-medium">هذا الشهر</p>
+                    </div>
+                    <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>{fmtMoney(monthTotal)}</p>
+                  </div>
+                  <div className="bg-white rounded-2xl p-6 shadow-md border border-gray-100">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="p-2 bg-blue-50 rounded-xl text-blue-500"><FileText size={20} /></div>
+                      <p className="text-sm text-gray-500 font-medium">عدد العمليات</p>
+                    </div>
+                    <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>{summaryExpenses.length}</p>
+                  </div>
+                </div>
 
-            <div className="bg-white shadow-md rounded-xl overflow-hidden border border-gray-200">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-gray-100 border-b border-gray-300">
-                      <th className="p-3 text-xs font-bold text-gray-700 uppercase tracking-wider border-r border-gray-300">Date</th>
-                      <th className="p-3 text-xs font-bold text-gray-700 uppercase tracking-wider border-r border-gray-300">Category</th>
-                      <th className="p-3 text-xs font-bold text-gray-700 uppercase tracking-wider border-r border-gray-300">Description</th>
-                      <th className="p-3 text-xs font-bold text-gray-700 uppercase tracking-wider border-r border-gray-300">Supplier</th>
-                      <th className="p-3 text-xs font-bold text-gray-700 uppercase tracking-wider text-right border-r border-gray-300">Amount</th>
-                      <th className="p-3 text-xs font-bold text-gray-700 uppercase tracking-wider text-center border-r border-gray-300">Receipt</th>
-                      <th className="p-3 text-xs font-bold text-gray-700 uppercase tracking-wider text-center">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {getFilteredExpenses().map((expense) => (
-                      <tr key={expense.id} className="hover:bg-blue-50 transition-colors">
-                        <td className="p-3 text-sm text-gray-900 border-r border-gray-200 font-medium">
-                          {expense.date && (expense.date.toDate ? expense.date.toDate().toLocaleDateString() : new Date(expense.date).toLocaleDateString())}
-                        </td>
-                        <td className="p-3 text-sm text-gray-900 border-r border-gray-200">
-                          <span className="px-2 py-1 rounded-md bg-gray-100 text-gray-700 text-xs font-medium border border-gray-300">{expense.category}</span>
-                        </td>
-                        <td className="p-3 text-sm text-gray-600 border-r border-gray-200">{expense.description}</td>
-                        <td className="p-3 text-sm text-gray-600 border-r border-gray-200">
-                          {suppliers.find(s => s.id === expense.supplierId)?.name || '-'}
-                        </td>
-                        <td className="p-3 text-sm font-bold text-gray-900 text-right border-r border-gray-200">
-                          {fmtMoney(parseFloat(expense.amount))}
-                        </td>
-                        <td className="p-3 text-center border-r border-gray-200">
-                          {expense.receiptUrl ? (
-                            <a href={expense.receiptUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800 hover:underline text-xs font-medium flex items-center justify-center gap-1">
-                              <FileText size={12} /> View
-                            </a>
-                          ) : (
-                            <span className="text-gray-400 text-xs">-</span>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {['all', 'today', 'yesterday', 'lastWeek', 'lastMonth', 'custom'].map((filter) => (
+                    <button
+                      key={filter}
+                      type="button"
+                      onClick={() => setExpenseFilter(filter)}
+                      className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                        expenseFilter === filter ? 'text-white' : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
+                      }`}
+                      style={expenseFilter === filter ? { backgroundColor: theme.primary, fontFamily: FONT_UI } : { fontFamily: FONT_UI }}
+                    >
+                      {expenseFilterLabel(filter)}
+                    </button>
+                  ))}
+                </div>
+
+                {expenseFilter === 'custom' && (
+                  <div className="bg-white p-4 rounded-xl border border-gray-200 mb-5 flex flex-wrap gap-4 items-end">
+                    <div>
+                      <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>من تاريخ</label>
+                      <input
+                        type="date"
+                        value={expenseCustomDateRange.start}
+                        onChange={(e) => setExpenseCustomDateRange((prev) => ({ ...prev, start: e.target.value }))}
+                        className="px-3 py-2 rounded-xl border border-gray-200 outline-none text-sm"
+                        style={{ fontFamily: FONT_UI }}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>إلى تاريخ</label>
+                      <input
+                        type="date"
+                        value={expenseCustomDateRange.end}
+                        onChange={(e) => setExpenseCustomDateRange((prev) => ({ ...prev, end: e.target.value }))}
+                        className="px-3 py-2 rounded-xl border border-gray-200 outline-none text-sm"
+                        style={{ fontFamily: FONT_UI }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-white shadow-md rounded-xl overflow-hidden border border-gray-200">
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse">
+                      <thead>
+                        <tr className="bg-gray-100 border-b border-gray-300">
+                          <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">التاريخ</th>
+                          {isOperatingView && (
+                            <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">النوع</th>
                           )}
-                        </td>
-                        <td className="p-3 text-center">
-                          <div className="flex items-center justify-center gap-2">
-                            <button 
-                              onClick={() => handleEditExpense(expense)}
-                              className="p-1.5 rounded hover:bg-gray-200 text-gray-600 transition-colors"
-                              title="تعديل"
-                            >
-                              <Pencil size={14} />
-                            </button>
-                            <button 
-                              onClick={() => handleDeleteExpense(expense.id)}
-                              className="p-1.5 rounded hover:bg-red-100 text-red-500 transition-colors"
-                              title="Delete"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                    {getFilteredExpenses().length === 0 && (
-                      <tr>
-                        <td colSpan="7" className="p-8 text-center text-gray-500 text-sm italic bg-gray-50">No expenses found for this period</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                          <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">البيان</th>
+                          {isPurchaseView && (
+                            <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">التاجر</th>
+                          )}
+                          <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-left">المبلغ</th>
+                          <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-center">إيصال</th>
+                          <th className="p-3 text-xs font-bold text-gray-700 text-center">إجراءات</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {getFilteredExpenses().map((expense) => (
+                          <tr key={expense.id} className="hover:bg-blue-50 transition-colors">
+                            <td className="p-3 text-sm text-gray-900 border-r border-gray-200 font-medium">
+                              {expense.date && (expense.date.toDate ? expense.date.toDate().toLocaleDateString('ar') : new Date(expense.date).toLocaleDateString('ar'))}
+                            </td>
+                            {isOperatingView && (
+                              <td className="p-3 text-sm text-gray-900 border-r border-gray-200">
+                                <span className="px-2 py-1 rounded-md bg-gray-100 text-gray-700 text-xs font-medium border border-gray-300">
+                                  {expenseCategoryLabel(expense.category)}
+                                </span>
+                              </td>
+                            )}
+                            <td className="p-3 text-sm text-gray-600 border-r border-gray-200">{expense.description || '—'}</td>
+                            {isPurchaseView && (
+                              <td className="p-3 text-sm text-gray-600 border-r border-gray-200">
+                                {suppliers.find((s) => s.id === expense.supplierId)?.name || '—'}
+                              </td>
+                            )}
+                            <td className="p-3 text-sm font-bold text-gray-900 text-left border-r border-gray-200">
+                              {fmtMoney(parseFloat(expense.amount))}
+                            </td>
+                            <td className="p-3 text-center border-r border-gray-200">
+                              {expense.receiptUrl ? (
+                                <a href={expense.receiptUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800 hover:underline text-xs font-medium inline-flex items-center gap-1">
+                                  <FileText size={12} /> عرض
+                                </a>
+                              ) : (
+                                <span className="text-gray-400 text-xs">—</span>
+                              )}
+                            </td>
+                            <td className="p-3 text-center">
+                              <div className="flex items-center justify-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleEditExpense(expense)}
+                                  className="p-1.5 rounded hover:bg-gray-200 text-gray-600 transition-colors"
+                                  title="تعديل"
+                                >
+                                  <Pencil size={14} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteExpense(expense.id)}
+                                  className="p-1.5 rounded hover:bg-red-100 text-red-500 transition-colors"
+                                  title="حذف"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                        {getFilteredExpenses().length === 0 && (
+                          <tr>
+                            <td colSpan={isPurchaseView ? 6 : 6} className="p-8 text-center text-gray-500 text-sm bg-gray-50">
+                              {isPurchaseView ? 'لا توجد مشتريات في هذه الفترة' : 'لا توجد مصروفات في هذه الفترة'}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
-        )}
+          );
+        })()}
 
         {currentView === 'reports' && (
           <div className="max-w-7xl mx-auto">
@@ -4412,94 +4550,108 @@ const AppCore = () => {
       {/* Expense Modal */}
       {showExpenseModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
-          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
-            <h3 className="text-xl mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>{editingExpenseId ? 'Edit Expense' : 'Add Expense'}</h3>
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200" dir="rtl">
+            <h3 className="text-xl mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
+              {editingExpenseId
+                ? (expenseForm.section === 'purchase' ? 'تعديل مشتريات' : 'تعديل مصروف')
+                : (expenseForm.section === 'purchase' ? 'إضافة مشتريات' : 'إضافة مصروف')}
+            </h3>
             <div className="space-y-3">
               <div>
-                <label className="block text-xs mb-1.5 font-medium text-gray-600">Amount (Rp)</label>
+                <label className="block text-xs mb-1.5 font-medium text-gray-600">المبلغ (₪)</label>
                 <input
                   type="number"
                   value={expenseForm.amount}
-                  onChange={e => setExpenseForm({...expenseForm, amount: e.target.value})}
+                  onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })}
                   className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
                   placeholder="0"
                 />
               </div>
               <div>
-                <label className="block text-xs mb-1.5 font-medium text-gray-600">Date</label>
+                <label className="block text-xs mb-1.5 font-medium text-gray-600">التاريخ</label>
                 <input
                   type="date"
                   value={expenseForm.date}
-                  onChange={e => setExpenseForm({...expenseForm, date: e.target.value})}
+                  onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })}
                   className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
                 />
               </div>
+              {expenseForm.section !== 'purchase' && (
+                <div>
+                  <label className="block text-xs mb-1.5 font-medium text-gray-600">نوع المصروف</label>
+                  <select
+                    value={expenseForm.category}
+                    onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}
+                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm bg-white"
+                  >
+                    {OPERATING_EXPENSE_CATEGORIES.map((cat) => (
+                      <option key={cat.id} value={cat.id}>{cat.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
-                <label className="block text-xs mb-1.5 font-medium text-gray-600">Category</label>
-                <select
-                  value={expenseForm.category}
-                  onChange={e => setExpenseForm({...expenseForm, category: e.target.value})}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm bg-white"
-                >
-                  <option value="Utilities">Utilities</option>
-                  <option value="Rent">Rent</option>
-                  <option value="Inventory">المخزون</option>
-                  <option value="Salaries">Salaries</option>
-                  <option value="Maintenance">Maintenance</option>
-                  <option value="Other">أخرى</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs mb-1.5 font-medium text-gray-600">Description</label>
+                <label className="block text-xs mb-1.5 font-medium text-gray-600">البيان</label>
                 <input
                   type="text"
                   value={expenseForm.description}
-                  onChange={e => setExpenseForm({...expenseForm, description: e.target.value})}
+                  onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })}
                   className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
-                  placeholder="Expense details"
+                  placeholder={expenseForm.section === 'purchase' ? 'تفاصيل المشتريات' : 'تفاصيل المصروف'}
                 />
               </div>
+              {expenseForm.section === 'purchase' && (
+                <div>
+                  <label className="block text-xs mb-1.5 font-medium text-gray-600">التاجر *</label>
+                  <select
+                    value={expenseForm.supplierId}
+                    onChange={(e) => setExpenseForm({ ...expenseForm, supplierId: e.target.value })}
+                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm bg-white"
+                  >
+                    <option value="">اختر التاجر</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                  {suppliers.length === 0 && (
+                    <p className="text-xs text-amber-600 mt-1">أضف تاجراً من تبويب «التجار» أولاً</p>
+                  )}
+                </div>
+              )}
               <div>
-                <label className="block text-xs mb-1.5 font-medium text-gray-600">Supplier (Optional)</label>
-                <select
-                  value={expenseForm.supplierId}
-                  onChange={e => setExpenseForm({...expenseForm, supplierId: e.target.value})}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm bg-white"
-                >
-                  <option value="">Select Supplier</option>
-                  {suppliers.map(s => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs mb-1.5 font-medium text-gray-600">Receipt Image</label>
+                <label className="block text-xs mb-1.5 font-medium text-gray-600">صورة الإيصال</label>
                 <input
                   type="file"
                   accept="image/*"
-                  onChange={e => setExpenseReceiptFile(e.target.files[0])}
+                  onChange={(e) => setExpenseReceiptFile(e.target.files[0])}
                   className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-white hover:file:bg-opacity-90"
                 />
               </div>
               <div className="flex gap-2 pt-2">
                 <button
+                  type="button"
                   onClick={() => {
                     setShowExpenseModal(false);
-                    setExpenseForm({ amount: '', date: new Date().toISOString().split('T')[0], category: 'Other', description: '', supplierId: '' });
+                    setExpenseForm(defaultExpenseForm(financeTab === 'purchases' ? 'purchase' : 'operating'));
                     setExpenseReceiptFile(null);
                     setEditingExpenseId(null);
                   }}
                   className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600"
                 >
-                  Cancel
+                  إلغاء
                 </button>
                 <button
+                  type="button"
                   onClick={handleAddExpense}
-                  disabled={uploadProgress || !expenseForm.amount}
+                  disabled={
+                    uploadProgress ||
+                    !expenseForm.amount ||
+                    (expenseForm.section === 'purchase' && !expenseForm.supplierId)
+                  }
                   className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50 hover:opacity-90"
                   style={{ backgroundColor: theme.primary }}
                 >
-                  {uploadProgress ? 'Saving...' : (editingExpenseId ? 'Save Changes' : 'Save Expense')}
+                  {uploadProgress ? 'جاري الحفظ...' : (editingExpenseId ? 'حفظ التعديلات' : 'حفظ')}
                 </button>
               </div>
             </div>
@@ -4510,21 +4662,21 @@ const AppCore = () => {
       {/* Supplier Modal */}
       {showSupplierModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
-          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
-            <h3 className="text-xl mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>Add Supplier</h3>
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200" dir="rtl">
+            <h3 className="text-xl mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>إضافة تاجر</h3>
             <div className="space-y-3">
               <input
                 type="text"
-                placeholder="Supplier Name"
+                placeholder="اسم التاجر *"
                 value={supplierForm.name}
-                onChange={e => setSupplierForm({...supplierForm, name: e.target.value})}
+                onChange={(e) => setSupplierForm({ ...supplierForm, name: e.target.value })}
                 className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
               />
               <input
                 type="text"
-                placeholder="Contact Person"
+                placeholder="جهة الاتصال"
                 value={supplierForm.contactPerson}
-                onChange={e => setSupplierForm({...supplierForm, contactPerson: e.target.value})}
+                onChange={(e) => setSupplierForm({ ...supplierForm, contactPerson: e.target.value })}
                 className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
               />
               <input
@@ -4549,18 +4701,20 @@ const AppCore = () => {
               />
               <div className="flex gap-2 pt-2">
                 <button
+                  type="button"
                   onClick={() => setShowSupplierModal(false)}
                   className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600"
                 >
-                  Cancel
+                  إلغاء
                 </button>
                 <button
+                  type="button"
                   onClick={handleAddSupplier}
                   disabled={uploadProgress || !supplierForm.name}
                   className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50 hover:opacity-90"
                   style={{ backgroundColor: theme.primary }}
                 >
-                  {uploadProgress ? 'Saving...' : 'Save Supplier'}
+                  {uploadProgress ? 'جاري الحفظ...' : 'حفظ التاجر'}
                 </button>
               </div>
             </div>
