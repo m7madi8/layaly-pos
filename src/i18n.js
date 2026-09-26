@@ -17,7 +17,7 @@ export const orderFilterLabel = (filter) => {
     today: 'اليوم',
     yesterday: 'أمس',
     lastWeek: 'آخر 7 أيام',
-    lastMonth: 'الشهر الماضي',
+    lastMonth: 'آخر 30 يوم',
     custom: 'مخصص',
   };
   return map[filter] || filter;
@@ -29,6 +29,7 @@ export const orderStatusLabel = (status) => {
     paid: 'مدفوع',
     unpaid: 'دين / غير مدفوع',
     partial: 'مدفوع جزئياً',
+    pending: 'مؤجل',
     cancelled: 'ملغى',
   };
   return map[status] || status;
