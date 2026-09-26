@@ -1,13 +1,14 @@
 /**
  * Local demo backend (localStorage). Drop-in replacements for Firebase APIs used by App.js.
  */
-
+import { ADMIN_LOGIN_EMAIL, isAdminPasswordValid } from './adminAuth';
 
 export const DEMO_UID = 'local-demo-user';
 const STORE_KEY = 'layali-cafe-demo-v2';
 const LEGACY_STORE_KEYS = ['layali-cafe-demo-v1'];
 const MIGRATION_FLAG = 'layali-demo-purged-products-v2';
 const CUSTOMERS_RESET_FLAG = 'layali-customers-reset-v3';
+const FULL_WIPE_FLAG = 'layali-full-wipe-v6';
 const AUTH_KEY = 'layali-cafe-demo-auth';
 const BLOB_KEY = 'layali-cafe-demo-blobs';
 
@@ -41,6 +42,26 @@ function stripAllCustomers(store) {
   for (const key of Object.keys(store.docs || {})) {
     if (key.includes('/customers/')) delete store.docs[key];
   }
+}
+
+/** مرة واحدة: مسح كل البيانات المحلية (منتجات، طلبات، عملاء، …) */
+export function runFullDataWipe() {
+  if (localStorage.getItem(FULL_WIPE_FLAG)) return;
+
+  localStorage.removeItem(STORE_KEY);
+  localStorage.removeItem(BLOB_KEY);
+  localStorage.removeItem(AUTH_KEY);
+  for (const legacyKey of LEGACY_STORE_KEYS) localStorage.removeItem(legacyKey);
+  localStorage.removeItem(MIGRATION_FLAG);
+  localStorage.removeItem(CUSTOMERS_RESET_FLAG);
+  localStorage.removeItem('layali-menu-catalog-version');
+
+  localStorage.setItem(STORE_KEY, JSON.stringify({ docs: {} }));
+  localStorage.setItem(BLOB_KEY, JSON.stringify({}));
+  localStorage.setItem(FULL_WIPE_FLAG, '1');
+
+  authUser = null;
+  notifyAll();
 }
 
 /** مرة واحدة: حذف كل بيانات العملاء المحفوظة محلياً */
@@ -512,13 +533,13 @@ export async function ensureDemoProfile(uid) {
     businessName: 'ليالي كافيه',
     logoUrl: `${process.env.PUBLIC_URL || ''}/logo5.png`,
     businessType: 'مقهى',
-    ownerName: 'تجربة محلية',
-    phone: '0500000000',
-    address: 'محلي — بدون سحابة',
-    email: 'demo@local',
+    ownerName: '',
+    phone: '',
+    address: '',
+    email: ADMIN_LOGIN_EMAIL,
     tax: 0,
     serviceCharge: 0,
-    receiptHeader: 'ليالي كافيه — تجريبي',
+    receiptHeader: 'ليالي كافيه',
     receiptFooter: 'شكراً لزيارتكم',
     paymentMethods: { cash: true, qris: true, debit: true, credit: true },
     rounding: false,
@@ -528,6 +549,14 @@ export async function ensureDemoProfile(uid) {
 }
 
 export async function enterLocalDemo(_auth) {
-  await signInWithEmailAndPassword(_auth, 'demo@local', 'demo');
+  await signInWithEmailAndPassword(_auth, ADMIN_LOGIN_EMAIL, 'demo');
+  await ensureDemoProfile(DEMO_UID);
+}
+
+export async function signInWithAdminPassword(_auth, password) {
+  if (!isAdminPasswordValid(password)) {
+    throw new Error('كلمة المرور غير صحيحة');
+  }
+  await signInWithEmailAndPassword(_auth, ADMIN_LOGIN_EMAIL, password);
   await ensureDemoProfile(DEMO_UID);
 }

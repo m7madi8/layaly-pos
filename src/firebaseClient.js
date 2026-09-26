@@ -27,6 +27,7 @@ import {
 } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytes as storageUploadBytes, getDownloadURL as storageGetDownloadURL } from 'firebase/storage';
 import * as demo from './demoBackend';
+import { ADMIN_LOGIN_EMAIL, isAdminPasswordValid } from './adminAuth';
 
 const firebaseEnvKeys = [
   'REACT_APP_FIREBASE_API_KEY',
@@ -56,8 +57,7 @@ let db;
 let storage;
 
 if (isDemoMode) {
-  demo.runDemoStorageMigration();
-  demo.runCustomersDataReset();
+  demo.runFullDataWipe();
   auth = demo.demoAuth;
   db = demo.demoDb;
   storage = demo.demoStorage;
@@ -105,3 +105,13 @@ export const sendPasswordResetEmail = bind(demo.sendPasswordResetEmail, firebase
 export const ref = bind(demo.ref, storageRef);
 export const uploadBytes = bind(demo.uploadBytes, storageUploadBytes);
 export const getDownloadURL = bind(demo.getDownloadURL, storageGetDownloadURL);
+
+export async function signInWithAdminPassword(authInstance, password) {
+  if (!isAdminPasswordValid(password)) {
+    throw new Error('كلمة المرور غير صحيحة');
+  }
+  if (isDemoMode) {
+    return demo.signInWithAdminPassword(authInstance, password);
+  }
+  return firebaseSignIn(authInstance, ADMIN_LOGIN_EMAIL, password);
+}

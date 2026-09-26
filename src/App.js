@@ -10,7 +10,7 @@ import {
 import PosProductCard from './components/PosProductCard';
 import CustomersView from './components/CustomersView';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs } from './productAssets';
-import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Camera, Calendar, Clock, ArrowLeft, Trash2, Percent, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, Gift, ChevronDown, ChevronUp, Bell, Truck } from 'lucide-react';
+import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Camera, Calendar, Clock, Trash2, Percent, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, Gift, ChevronDown, ChevronUp, Bell, Truck } from 'lucide-react';
 
 import {
   auth,
@@ -18,8 +18,6 @@ import {
   storage,
   isDemoMode,
   isFirebaseConfigured,
-  firebaseConnectionInfo,
-  enterLocalDemo,
   collection,
   addDoc,
   getDocs,
@@ -34,10 +32,8 @@ import {
   runTransaction,
   writeBatch,
   onAuthStateChanged,
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
+  signInWithAdminPassword,
   signOut,
-  sendPasswordResetEmail,
   ref,
   uploadBytes,
   getDownloadURL,
@@ -62,17 +58,7 @@ const AppCore = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [showProductModal, setShowProductModal] = useState(false);
-  const [authMode, setAuthMode] = useState('landing'); // landing, login, signup
-  const [authForm, setAuthForm] = useState({ email: '', password: '' });
-  const [signupForm, setSignupForm] = useState({
-    email: '',
-    password: '',
-    businessName: '',
-    businessType: '',
-    ownerName: '',
-    phone: '',
-    address: ''
-  });
+  const [adminPassword, setAdminPassword] = useState('');
   const [productForm, setProductForm] = useState({ name: '', category: '', price: '', stock: '', cost: '', addOns: [] });
   const [editingProductId, setEditingProductId] = useState(null);
   const [editingOrderId, setEditingOrderId] = useState(null);
@@ -120,8 +106,6 @@ const AppCore = () => {
   const [addonSelections, setAddonSelections] = useState({});
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const [showResetPasswordModal, setShowResetPasswordModal] = useState(false);
-  const [resetEmail, setResetEmail] = useState('');
   const [, setPaymentCustomPrice] = useState('');
   const [finalTotalForPayment, setFinalTotalForPayment] = useState(0);
 
@@ -287,80 +271,16 @@ const AppCore = () => {
     return () => unsubscribe();
   }, [user]);
 
-  // Auth handlers
-  const handleLogin = async (e) => {
+  const handleAdminLogin = async (e) => {
     e.preventDefault();
-    if (!authForm.email || !authForm.password) return;
-    
-    try {
-      await signInWithEmailAndPassword(auth, authForm.email, authForm.password);
-      setAuthForm({ email: '', password: '' });
-    } catch (error) {
-      alert(error.message);
-    }
-  };
-
-  const handleForgotPassword = () => {
-    setResetEmail(authForm.email || '');
-    setShowResetPasswordModal(true);
-  };
-
-  const handleSettingsResetPassword = () => {
-    if (!user?.email) return;
-    setResetEmail(user.email);
-    setShowResetPasswordModal(true);
-  };
-
-  const handleSendPasswordReset = async (e) => {
-    e.preventDefault();
-    if (!resetEmail) {
-      alert("يرجى إدخال البريد الإلكتروني.");
-      return;
-    }
-    try {
-      await sendPasswordResetEmail(auth, resetEmail);
-      alert("تم إرسال رابط إعادة تعيين كلمة المرور — راجع بريدك.");
-      setShowResetPasswordModal(false);
-    } catch (error) {
-      alert(error.message);
-    }
-  };
-
-  const handleSignup = async (e) => {
-    e.preventDefault();
+    if (!adminPassword.trim()) return;
     setUploadProgress(true);
-    
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, signupForm.email, signupForm.password);
-      const uid = userCredential.user.uid;
-
-      let logoUrl = '';
-      if (logoFile) {
-        const compressedLogo = await compressImage(logoFile);
-        logoUrl = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target.result);
-          reader.onerror = reject;
-          reader.readAsDataURL(compressedLogo);
-        });
-      }
-
-      const profileData = {
-        businessName: signupForm.businessName,
-        businessType: signupForm.businessType,
-        ownerName: signupForm.ownerName,
-        phone: signupForm.phone,
-        address: signupForm.address,
-        email: signupForm.email,
-        logoUrl,
-        createdAt: serverTimestamp()
-      };
-
-      await setDoc(doc(db, 'users', uid), profileData);
-      setBusinessProfile(profileData);
-      setProfileForm(prev => ({ ...prev, ...profileData }));
+      await signInWithAdminPassword(auth, adminPassword);
+      setAdminPassword('');
+      setShowPassword(false);
     } catch (error) {
-      alert(error.message);
+      alert(error.message || 'كلمة المرور غير صحيحة');
     } finally {
       setUploadProgress(false);
     }
@@ -1857,221 +1777,46 @@ const AppCore = () => {
                 {APP_NAME}
               </h1>
               <p className="text-sm" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>{APP_TAGLINE}</p>
-              {isFirebaseConfigured && !isDemoMode ? (
-                <p className="text-xs mt-3 px-3 py-1.5 rounded-full inline-block bg-green-50 text-green-800 border border-green-200" style={{ fontFamily: FONT_UI }}>
-                  متصل بـ Firebase — البيانات على السحابة
-                </p>
-              ) : (
-                <p className="text-xs mt-3 px-3 py-2 rounded-xl bg-amber-50 text-amber-900 border border-amber-200 text-start leading-relaxed" style={{ fontFamily: FONT_UI }}>
-                  وضع تجريبي محلي. لربط Firebase: أضف مفاتيح المشروع في{' '}
-                  <code className="text-[10px] bg-white px-1 rounded">.env.local</code>
-                  {' '}واجعل <code className="text-[10px] bg-white px-1 rounded">REACT_APP_DEMO_MODE=false</code>
-                  {firebaseConnectionInfo.missingKeys.length > 0 && (
-                    <span className="block mt-1 text-[10px] text-amber-800">
-                      ناقص: {firebaseConnectionInfo.missingKeys.map((k) => k.replace('REACT_APP_FIREBASE_', '')).join('، ')}
-                    </span>
-                  )}
-                </p>
-              )}
+              <p className="text-xs mt-3 text-gray-500" style={{ fontFamily: FONT_UI }}>
+                {isDemoMode ? 'البيانات على هذا المتصفح فقط' : 'متصل بالسحابة — تأكد من حساب Firebase'}
+              </p>
             </div>
 
-            {authMode === 'landing' && (
-              <div className="space-y-3">
-                {isDemoMode && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        setUploadProgress(true);
-                        try {
-                          await enterLocalDemo(auth);
-                        } catch (error) {
-                          alert(error.message);
-                        } finally {
-                          setUploadProgress(false);
-                        }
-                      }}
-                      disabled={uploadProgress}
-                      className="w-full py-3 rounded-xl text-white text-sm font-medium shadow-md hover:shadow-lg transition-all disabled:opacity-50"
-                      style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
-                    >
-                      {uploadProgress ? 'جاري التحميل...' : 'تجربة محلية (بدون إنترنت / Firebase)'}
-                    </button>
-                    <p className="text-xs text-center text-stone-500" style={{ fontFamily: FONT_UI }}>
-                      البيانات تُحفظ على هذا المتصفح فقط
-                    </p>
-                  </>
-                )}
-                <button
-                  onClick={() => { setAuthMode('login'); setShowPassword(false); }}
-                  className="w-full py-3 rounded-xl text-white text-sm font-medium shadow-md hover:shadow-lg transition-all"
-                  style={{ backgroundColor: theme.accent, fontFamily: FONT_UI }}
-                >
-                  تسجيل الدخول (Firebase)
-                </button>
-                <button
-                  onClick={() => { setAuthMode('signup'); setShowPassword(false); }}
-                  className="w-full py-3 rounded-xl border-2 text-sm font-medium transition-all hover:bg-gray-50"
-                  style={{ borderColor: theme.primary, color: theme.text, fontFamily: FONT_UI }}
-                >
-                  إنشاء حساب (Firebase)
-                </button>
-              </div>
-            )}
-
-            {authMode === 'login' && (
-              <div className="space-y-4">
-                <button 
-                  onClick={() => setAuthMode('landing')}
-                  className="flex items-center text-sm mb-2 hover:opacity-70 transition-opacity"
-                  style={{ color: theme.textMuted, fontFamily: FONT_UI }}
-                >
-                  <ArrowLeft size={16} className="mr-1" /> Back
-                </button>
-                <div>
-                  <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>البريد الإلكتروني</label>
-                  <input
-                    type="email"
-                    value={authForm.email}
-                    onChange={(e) => setAuthForm(prev => ({ ...prev, email: e.target.value }))}
-                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
-                    style={{ fontFamily: FONT_UI }}
-                    placeholder="name@example.com"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>كلمة المرور</label>
-                  <div className="relative">
-                    <input
-                      type={showPassword ? "text" : "password"}
-                      value={authForm.password}
-                      onChange={(e) => setAuthForm(prev => ({ ...prev, password: e.target.value }))}
-                      className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm pr-10"
-                      style={{ fontFamily: FONT_UI }}
-                      placeholder="••••••••"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                    >
-                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                    </button>
-                  </div>
-                  <div className="text-right mt-2">
-                    <button 
-                      onClick={handleForgotPassword}
-                      className="text-xs text-primary hover:underline"
-                      style={{ fontFamily: FONT_UI }}
-                    >
-                      Forgot Password?
-                    </button>
-                  </div>
-                </div>
-                <button
-                  onClick={handleLogin}
-                  className="w-full py-3 rounded-xl text-white text-sm font-medium shadow-md hover:shadow-lg transition-all"
-                  style={{ backgroundColor: theme.accent, fontFamily: FONT_UI }}
-                >
-                  دخول
-                </button>
-              </div>
-            )}
-
-            {authMode === 'signup' && (
-              <div className="space-y-3">
-                <button 
-                  onClick={() => setAuthMode('landing')}
-                  className="flex items-center text-sm mb-2 hover:opacity-70 transition-opacity"
-                  style={{ color: theme.textMuted, fontFamily: FONT_UI }}
-                >
-                  <ArrowLeft size={16} className="mr-1" /> Back
-                </button>
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="text"
-                    placeholder="اسم المنشأة"
-                    value={signupForm.businessName}
-                    onChange={(e) => setSignupForm(prev => ({ ...prev, businessName: e.target.value }))}
-                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
-                  />
-                  <input
-                    type="text"
-                    placeholder="نوع النشاط"
-                    value={signupForm.businessType}
-                    onChange={(e) => setSignupForm(prev => ({ ...prev, businessType: e.target.value }))}
-                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
-                  />
-                </div>
-                <input
-                  type="text"
-                  placeholder="اسم المالك"
-                  value={signupForm.ownerName}
-                  onChange={(e) => setSignupForm(prev => ({ ...prev, ownerName: e.target.value }))}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
-                />
-                <input
-                  type="email"
-                  placeholder="البريد الإلكتروني"
-                  value={signupForm.email}
-                  onChange={(e) => setSignupForm(prev => ({ ...prev, email: e.target.value }))}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
-                />
+            <form onSubmit={handleAdminLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
+                  كلمة المرور
+                </label>
                 <div className="relative">
                   <input
-                    type={showPassword ? "text" : "password"}
-                    placeholder="كلمة المرور"
-                    value={signupForm.password}
-                    onChange={(e) => setSignupForm(prev => ({ ...prev, password: e.target.value }))}
-                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm pr-10"
+                    type={showPassword ? 'text' : 'password'}
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                    className="w-full px-3 py-3 rounded-xl border border-gray-200 outline-none text-sm pe-10"
+                    style={{ fontFamily: FONT_UI }}
+                    placeholder="••••••••"
+                    autoComplete="current-password"
+                    autoFocus
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    tabIndex={-1}
                   >
                     {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                   </button>
                 </div>
-                <input
-                  type="tel"
-                  placeholder="الجوال"
-                  value={signupForm.phone}
-                  onChange={(e) => setSignupForm(prev => ({ ...prev, phone: e.target.value }))}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
-                />
-                <input
-                  type="text"
-                  placeholder="العنوان"
-                  value={signupForm.address}
-                  onChange={(e) => setSignupForm(prev => ({ ...prev, address: e.target.value }))}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
-                />
-                <div>
-                  <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>شعار المنشأة (اختياري)</label>
-                  <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-gray-300 cursor-pointer hover:border-gray-400 transition-all">
-                    <Camera size={18} style={{ color: theme.textMuted }} />
-                    <span className="text-sm" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>
-                      {logoFile ? logoFile.name : 'رفع الشعار'}
-                    </span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => setLogoFile(e.target.files[0])}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
-                <button
-                  onClick={handleSignup}
-                  disabled={uploadProgress}
-                  className="w-full py-3 rounded-xl text-white text-sm font-medium shadow-md hover:shadow-lg transition-all disabled:opacity-50"
-                  style={{ backgroundColor: theme.accent, fontFamily: FONT_UI }}
-                >
-                  {uploadProgress ? 'جاري إنشاء الحساب...' : 'إنشاء الحساب'}
-                </button>
               </div>
-            )}
+              <button
+                type="submit"
+                disabled={uploadProgress || !adminPassword.trim()}
+                className="w-full py-3 rounded-xl text-white text-sm font-medium shadow-md hover:shadow-lg transition-all disabled:opacity-50"
+                style={{ backgroundColor: theme.accent, fontFamily: FONT_UI }}
+              >
+                {uploadProgress ? 'جاري الدخول...' : 'دخول'}
+              </button>
+            </form>
           </div>
         </div>
       </div>
@@ -2694,14 +2439,6 @@ const AppCore = () => {
                   <div>
                     <p className="text-xs mb-2" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>الشعار</p>
                     <img src={APP_LOGO} alt={APP_NAME} className="w-20 h-20 object-contain rounded-xl border border-gray-200" />
-                  </div>
-                  <div className="pt-2 border-t border-gray-100">
-                    <button
-                      onClick={handleSettingsResetPassword}
-                      className="text-sm text-red-600 hover:text-red-700 font-medium"
-                    >
-                      Reset Password via Email
-                    </button>
                   </div>
                 </div>
               </div>
@@ -4825,41 +4562,6 @@ const AppCore = () => {
                 </button>
               </div>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Reset Password Modal */}
-      {showResetPasswordModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[70]">
-          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>إعادة تعيين كلمة المرور</h3>
-              <button onClick={() => setShowResetPasswordModal(false)} className="text-gray-400 hover:text-gray-600"><X size={24} /></button>
-            </div>
-            <p className="text-sm text-gray-600 mb-4">
-              Enter your email address and we'll send you a link to reset your password.
-            </p>
-            <form onSubmit={handleSendPasswordReset}>
-              <div className="mb-4">
-                <label className="block text-xs mb-1.5 font-medium text-gray-600">البريد الإلكتروني</label>
-                <input
-                  type="email"
-                  value={resetEmail}
-                  onChange={(e) => setResetEmail(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
-                  placeholder="name@example.com"
-                  required
-                />
-              </div>
-              <button
-                type="submit"
-                className="w-full py-3 rounded-xl text-white text-sm font-medium hover:opacity-90 transition-all"
-                style={{ backgroundColor: theme.primary }}
-              >
-                Send Reset Link
-              </button>
-            </form>
           </div>
         </div>
       )}
