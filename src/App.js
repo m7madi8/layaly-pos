@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { APP_NAME, APP_TAGLINE, APP_LOGO, FONT_UI, FONT_HEADING, theme } from './branding';
-import { fmtMoney, fmtMoneyPlain, orderFilterLabel, orderStatusLabel, categoryLabel, paymentMethodLabel, paymentTypeLabel, expenseCategoryLabel, expenseFilterLabel } from './i18n';
+import { fmtMoney, fmtMoneyPlain, orderFilterLabel, orderStatusLabel, categoryLabel, paymentMethodLabel, paymentTypeLabel, expenseCategoryLabel, expenseFilterLabel, reportFilterLabel } from './i18n';
 import {
-  FINANCE_TABS,
   OPERATING_EXPENSE_CATEGORIES,
   PURCHASE_CATEGORY,
   resolveExpenseSection,
@@ -11,7 +10,7 @@ import {
 import PosProductCard from './components/PosProductCard';
 import CustomersView from './components/CustomersView';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs } from './productAssets';
-import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, TrendingUp, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Camera, Calendar, Clock, ChevronRight, ArrowLeft, Trash2, Percent, TrendingDown, Users, FilePlus, Calculator, Pencil, Download, Eye, EyeOff, Menu, Gift, ChevronDown, ChevronUp, Bell } from 'lucide-react';
+import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Camera, Calendar, Clock, ArrowLeft, Trash2, Percent, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, Gift, ChevronDown, ChevronUp, Bell, Truck } from 'lucide-react';
 
 import {
   auth,
@@ -55,7 +54,7 @@ const AppCore = () => {
   const [currentView, setCurrentView] = useState('pos');
   const [products, setProducts] = useState([]);
   const [orders, setOrders] = useState([]);
-  const [ingredients, setIngredients] = useState([]);
+  const [, setIngredients] = useState([]);
   const [currentOrder, setCurrentOrder] = useState({ items: [], customer: '', customerId: '', notes: '' });
   const [customers, setCustomers] = useState([]);
   const [discount, setDiscount] = useState(0);
@@ -96,13 +95,10 @@ const AppCore = () => {
   const [customDateRange, setCustomDateRange] = useState({ start: '', end: '' });
   const [inventorySearchTerm, setInventorySearchTerm] = useState('');
   const [productIngredients, setProductIngredients] = useState([]);
-  const [ingredientForm, setIngredientForm] = useState({ name: '', unit: 'g', stock: 0, costPerUnit: 0, minStock: 10 });
-  const [editingIngredientId, setEditingIngredientId] = useState(null);
   const [showIngredientModal, setShowIngredientModal] = useState(false);
   const [expenses, setExpenses] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [expenseForm, setExpenseForm] = useState(() => defaultExpenseForm('operating'));
-  const [financeTab, setFinanceTab] = useState('operating');
   const [expenseReceiptFile, setExpenseReceiptFile] = useState(null);
   const [supplierForm, setSupplierForm] = useState({ name: '', contactPerson: '', phone: '', email: '', address: '' });
   const [showExpenseModal, setShowExpenseModal] = useState(false);
@@ -121,13 +117,12 @@ const AppCore = () => {
   const [reportCustomDates, setReportCustomDates] = useState({ start: '', end: '' });
   const [showAddonModal, setShowAddonModal] = useState(false);
   const [pendingAddonProduct, setPendingAddonProduct] = useState(null);
-  const [showRawIngredientModal, setShowRawIngredientModal] = useState(false);
   const [addonSelections, setAddonSelections] = useState({});
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showResetPasswordModal, setShowResetPasswordModal] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
-  const [paymentCustomPrice, setPaymentCustomPrice] = useState('');
+  const [, setPaymentCustomPrice] = useState('');
   const [finalTotalForPayment, setFinalTotalForPayment] = useState(0);
 
   const [selectedInventoryCategory, setSelectedInventoryCategory] = useState('all');
@@ -319,12 +314,12 @@ const AppCore = () => {
   const handleSendPasswordReset = async (e) => {
     e.preventDefault();
     if (!resetEmail) {
-      alert("Please enter your email address.");
+      alert("يرجى إدخال البريد الإلكتروني.");
       return;
     }
     try {
       await sendPasswordResetEmail(auth, resetEmail);
-      alert("Password reset email sent! Check your inbox.");
+      alert("تم إرسال رابط إعادة تعيين كلمة المرور — راجع بريدك.");
       setShowResetPasswordModal(false);
     } catch (error) {
       alert(error.message);
@@ -483,7 +478,7 @@ const AppCore = () => {
       }
 
       setShowExpenseModal(false);
-      setExpenseForm(defaultExpenseForm(financeTab === 'purchases' ? 'purchase' : 'operating'));
+      setExpenseForm(defaultExpenseForm(currentView === 'purchases' ? 'purchase' : 'operating'));
       setExpenseReceiptFile(null);
       setEditingExpenseId(null);
     } catch (error) {
@@ -510,7 +505,7 @@ const AppCore = () => {
       linkedIngredientId: expense.linkedIngredientId || '',
       quantityBought: expense.quantityBought || 0
     });
-    setFinanceTab(section === 'purchase' ? 'purchases' : 'operating');
+    setCurrentView(section === 'purchase' ? 'purchases' : 'expenses');
     setEditingExpenseId(expense.id);
     setShowExpenseModal(true);
   };
@@ -521,7 +516,7 @@ const AppCore = () => {
         await deleteDoc(doc(db, 'users', user.uid, 'expenses', expenseId));
       } catch (error) {
         console.error("Error deleting expense:", error);
-        alert("Failed to delete expense");
+        alert("تعذّر حذف المصروف");
       }
     }
   };
@@ -558,7 +553,7 @@ const AppCore = () => {
         updatedAt: serverTimestamp()
       });
       setShowSettingsModal(false);
-      alert('Store settings updated successfully!');
+      alert('تم حفظ إعدادات المتجر بنجاح!');
     } catch (error) {
       alert(error.message);
     } finally {
@@ -744,60 +739,18 @@ const AppCore = () => {
   };
 
   const handleDeleteProduct = async (productId) => {
-    if (window.confirm('Are you sure you want to delete this product?')) {
+    if (window.confirm('هل تريد حذف هذا الصنف؟')) {
       try {
         await deleteDoc(doc(db, 'users', user.uid, 'products', productId));
       } catch (error) {
         console.error("Error deleting product:", error);
-        alert("Failed to delete product");
+        alert("تعذّر حذف الصنف");
       }
-    }
-  };
-
-  // Raw Ingredient Handlers
-  const handleSaveRawIngredient = async (e) => {
-    e.preventDefault();
-    setUploadProgress(true);
-    try {
-      const data = {
-        ...ingredientForm,
-        stock: parseFloat(ingredientForm.stock),
-        costPerUnit: parseFloat(ingredientForm.costPerUnit),
-        minStock: parseFloat(ingredientForm.minStock),
-        userId: user.uid,
-        updatedAt: serverTimestamp()
-      };
-
-      if (editingIngredientId) {
-        await updateDoc(doc(db, 'users', user.uid, 'ingredients', editingIngredientId), data);
-      } else {
-        data.createdAt = serverTimestamp();
-        await addDoc(collection(db, 'users', user.uid, 'ingredients'), data);
-      }
-      setShowRawIngredientModal(false);
-      setIngredientForm({ name: '', unit: 'g', stock: 0, costPerUnit: 0, minStock: 10 });
-      setEditingIngredientId(null);
-    } catch (error) {
-      alert(error.message);
-    } finally {
-      setUploadProgress(false);
-    }
-  };
-
-  const handleEditIngredient = (ing) => {
-    setIngredientForm(ing);
-    setEditingIngredientId(ing.id);
-    setShowRawIngredientModal(true);
-  };
-
-  const handleDeleteIngredient = async (id) => {
-    if (window.confirm('Delete this ingredient?')) {
-      await deleteDoc(doc(db, 'users', user.uid, 'ingredients', id));
     }
   };
 
   const handleDeleteOrder = async (orderId) => {
-    if (window.confirm('Are you sure you want to delete this order history? This cannot be undone.')) {
+    if (window.confirm('حذف هذا الطلب من السجل؟ لا يمكن التراجع.')) {
       setLoading(true);
       try {
         // Note: Re-indexing was removed from here. It's a heavy operation
@@ -806,10 +759,10 @@ const AppCore = () => {
         // by a cloud function or should be added back if essential for your workflow.
         // For now, we just delete the document.
         await deleteDoc(doc(db, 'users', user.uid, 'orders', orderId));
-        alert('Order deleted. Stock was not automatically restored.');
+        alert('تم حذف الطلب. لم يُسترجَع المخزون تلقائياً.');
       } catch (error) {
         console.error("Error deleting order:", error);
-        alert("Failed to delete order");
+        alert("تعذّر حذف الطلب");
       } finally {
         setLoading(false);
       }
@@ -817,7 +770,7 @@ const AppCore = () => {
   };
 
   const handleReindexOrders = async () => {
-    if (!window.confirm("This will re-number all your orders sequentially based on their date. This cannot be undone. Continue?")) return;
+    if (!window.confirm("سيتم إعادة ترقيم جميع الطلبات حسب التاريخ. لا يمكن التراجع. هل تتابع؟")) return;
     
     setLoading(true);
     try {
@@ -827,7 +780,7 @@ const AppCore = () => {
       if (snapshot.empty) {
         await setDoc(doc(db, 'users', user.uid, 'counters', 'orders'), { count: 0 }, { merge: true });
         setLoading(false);
-        alert("No orders to re-index.");
+        alert("لا توجد طلبات لإعادة ترقيمها.");
         return;
       }
 
@@ -859,17 +812,17 @@ const AppCore = () => {
       }
       
       await setDoc(doc(db, 'users', user.uid, 'counters', 'orders'), { count: newCount }, { merge: true });
-      alert(`Successfully re-indexed ${newCount} orders.`);
+      alert(`تم إعادة ترقيم ${newCount} طلباً بنجاح.`);
     } catch (error) {
       console.error("Error re-indexing:", error);
-      alert("Failed to re-index orders: " + error.message);
+      alert("فشل إعادة الترقيم: " + error.message);
     } finally {
       setLoading(false);
     }
   };
 
   const handleCancelOrder = async (orderId) => {
-    if (window.confirm('Are you sure you want to cancel this order?')) {
+    if (window.confirm('هل تريد إلغاء هذا الطلب؟')) {
       try {
         await runTransaction(db, async (transaction) => {
           const orderRef = doc(db, 'users', user.uid, 'orders', orderId);
@@ -899,7 +852,7 @@ const AppCore = () => {
         });
       } catch (error) {
         console.error("Error cancelling order:", error);
-        alert("Failed to cancel order");
+        alert("تعذّر إلغاء الطلب");
       }
     }
   };
@@ -1131,15 +1084,6 @@ const AppCore = () => {
     }));
   };
 
-  const clearCart = () => {
-    if (currentOrder.items.length > 0 && window.confirm('هل تريد إفراغ السلة؟')) {
-      setCurrentOrder({ items: [], customer: '', customerId: '', notes: '' });
-      setDiscount(0);
-      setDiscountType('percentage');
-      setEditingOrderId(null);
-    }
-  };
-
   const completeOrder = async (status, paymentOrMethod = {}, customPriceLegacy = '') => {
     if (currentOrder.items.length === 0) return;
 
@@ -1164,8 +1108,6 @@ const AppCore = () => {
       }
 
       const taxableAmount = subtotal - discountAmount;
-      const taxAmount = 0;
-      const serviceChargeAmount = 0;
       let total = taxableAmount;
 
       const methodEarly = payment.method || '';
@@ -1473,7 +1415,7 @@ const AppCore = () => {
       console.log('Starting print...');
       
       if (!navigator.bluetooth) {
-        alert("Bluetooth printing is not supported on this browser. On iOS (iPad/iPhone), please use a Web Bluetooth enabled browser like 'Bluefy'.");
+        alert("الطباعة عبر Bluetooth غير مدعومة في هذا المتصفح. على iOS استخدم متصفحاً يدعم Web Bluetooth مثل Bluefy.");
         return;
       }
 
@@ -1615,9 +1557,9 @@ const AppCore = () => {
       // Left align
       await sendData(new Uint8Array([0x1B, 0x61, 0x00]));
       
-      await sendData(`Customer: ${order.customer || 'ضيف'}\n`);
-      await sendData(`${orderDate.toLocaleDateString()} ${orderDate.toLocaleTimeString()}\n`);
-      await sendData(`Order: #${order.orderNumber || order.id.slice(-8).toUpperCase()}\n`);
+      await sendData(`العميل: ${order.customer || 'ضيف'}\n`);
+      await sendData(`${orderDate.toLocaleDateString('ar')} ${orderDate.toLocaleTimeString('ar')}\n`);
+      await sendData(`طلب: #${order.orderNumber || order.id.slice(-8).toUpperCase()}\n`);
       await sendData('================================\n');
       
       // Items
@@ -1653,14 +1595,14 @@ const AppCore = () => {
         if (order.discountType === 'amount') {
           await sendData(formatLine(`الخصم`, -order.discountAmount));
         } else {
-          await sendData(formatLine(`Discount (${order.discount}%)`, -order.discountAmount));
+          await sendData(formatLine(`خصم (${order.discount}%)`, -order.discountAmount));
         }
       }
       if (order.tax > 0) {
-        await sendData(formatLine(`Tax (${order.tax}%)`, order.taxAmount));
+        await sendData(formatLine(`ضريبة (${order.tax}%)`, order.taxAmount));
       }
       if (order.serviceCharge > 0) {
-        await sendData(formatLine(`Service (${order.serviceCharge}%)`, order.serviceChargeAmount));
+        await sendData(formatLine(`خدمة (${order.serviceCharge}%)`, order.serviceChargeAmount));
       }
       await sendData('--------------------------------\n');
 
@@ -1668,11 +1610,11 @@ const AppCore = () => {
       await sendData(new Uint8Array([0x1B, 0x61, 0x01]));
       await sendData(new Uint8Array([0x1B, 0x45, 0x01])); // Bold
       await sendData(new Uint8Array([0x1D, 0x21, 0x01])); // Double height
-      await sendData(`TOTAL: ${fmtMoneyPlain(order.total || 0)}\n\n`);
+      await sendData(`الإجمالي: ${fmtMoneyPlain(order.total || 0)}\n\n`);
       await sendData(new Uint8Array([0x1B, 0x45, 0x00]));
       await sendData(new Uint8Array([0x1D, 0x21, 0x00])); // Reset size
       
-      await sendData(`${order.status === 'paid' ? '[PAID]' : '[UNPAID]'}\n`);
+      await sendData(`${order.status === 'paid' ? '[مدفوع]' : '[غير مدفوع]'}\n`);
       await sendData('شكراً لزيارتكم!\n');
       
       if (businessProfile?.address) {
@@ -1696,12 +1638,12 @@ const AppCore = () => {
       await new Promise(resolve => setTimeout(resolve, 500));
       await sendData(new Uint8Array([0x1D, 0x56, 0x41, 0x00]));
       
-      alert('✅ Receipt printed!');
+      alert('✅ تمت طباعة الإيصال!');
       
     } catch (error) {
       console.error('Print error:', error);
       if (error.name !== 'NotFoundError' && !error.message?.includes('cancelled')) {
-        alert(`❌ Print error: ${error.message}`);
+        alert(`❌ خطأ في الطباعة: ${error.message}`);
       }
     }
   };
@@ -1709,6 +1651,12 @@ const AppCore = () => {
   // Computed values
   const menuCategoryList = useMemo(() => mergeMenuCategories(products), [products]);
   const posMenuTabs = useMemo(() => buildPosMenuTabs(menuCategoryList), [menuCategoryList]);
+
+  const financeTab = useMemo(() => {
+    if (currentView === 'purchases') return 'purchases';
+    if (currentView === 'traders') return 'traders';
+    return 'operating';
+  }, [currentView]);
 
   useEffect(() => {
     if (selectedCategory !== 'all' && !menuCategoryList.includes(selectedCategory)) {
@@ -1738,29 +1686,6 @@ const AppCore = () => {
     const orderDate = o.timestamp.toDate ? o.timestamp.toDate() : new Date(o.timestamp);
     return orderDate >= today;
   });
-
-  const todaySales = orders
-    .filter(o => {
-      if (!o.timestamp) return false;
-      const orderDate = o.timestamp.toDate ? o.timestamp.toDate() : new Date(o.timestamp);
-      return o.status === 'paid' && orderDate >= today;
-    })
-    .reduce((sum, o) => sum + o.total, 0);
-
-  const todayOrders = orders
-    .filter(o => {
-      if (!o.timestamp) return false;
-      const orderDate = o.timestamp.toDate ? o.timestamp.toDate() : new Date(o.timestamp);
-      return orderDate >= today;
-    }).length;
-
-  const todayItemsSold = orders
-    .filter(o => {
-      if (!o.timestamp) return false;
-      const orderDate = o.timestamp.toDate ? o.timestamp.toDate() : new Date(o.timestamp);
-      return o.status === 'paid' && orderDate >= today;
-    })
-    .reduce((sum, o) => sum + o.items.reduce((isum, item) => isum + item.quantity, 0), 0);
 
   const totalProfit = orders
     .filter(o => o.status === 'paid')
@@ -1811,7 +1736,7 @@ const AppCore = () => {
     return Array.from(salesByDay.values())
       .sort((a, b) => a.date - b.date)
       .map(data => ({
-        day: data.date.toLocaleDateString('en-US', { weekday: 'short' }),
+        day: data.date.toLocaleDateString('ar', { weekday: 'short' }),
         sales: data.sales
       }));
   };
@@ -1915,7 +1840,7 @@ const AppCore = () => {
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: theme.bgWarm }}>
         <div className="text-center animate-pulse">
           <div className="w-12 h-12 border-3 border-t-transparent rounded-full animate-spin mb-3 mx-auto" style={{ borderColor: theme.primary }}></div>
-          <p className="text-sm" style={{ color: theme.text, fontFamily: FONT_UI }}>Loading...</p>
+          <p className="text-sm" style={{ color: theme.text, fontFamily: FONT_UI }}>جاري التحميل...</p>
         </div>
       </div>
     );
@@ -1923,7 +1848,7 @@ const AppCore = () => {
 
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4 font-['Inter']" style={{ backgroundColor: theme.bgWarm }}>
+      <div className="min-h-screen flex items-center justify-center p-4 font-cairo" style={{ backgroundColor: theme.bgWarm }} dir="rtl">
         <div className="w-full max-w-md">
           <div className="bg-white rounded-3xl shadow-xl p-8 border border-primary border-opacity-5">
             <div className="text-center mb-8">
@@ -2004,7 +1929,7 @@ const AppCore = () => {
                   <ArrowLeft size={16} className="mr-1" /> Back
                 </button>
                 <div>
-                  <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>Email</label>
+                  <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>البريد الإلكتروني</label>
                   <input
                     type="email"
                     value={authForm.email}
@@ -2015,7 +1940,7 @@ const AppCore = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>Password</label>
+                  <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>كلمة المرور</label>
                   <div className="relative">
                     <input
                       type={showPassword ? "text" : "password"}
@@ -2127,7 +2052,7 @@ const AppCore = () => {
                   <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-gray-300 cursor-pointer hover:border-gray-400 transition-all">
                     <Camera size={18} style={{ color: theme.textMuted }} />
                     <span className="text-sm" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>
-                      {logoFile ? logoFile.name : 'Upload Logo'}
+                      {logoFile ? logoFile.name : 'رفع الشعار'}
                     </span>
                     <input
                       type="file"
@@ -2160,13 +2085,15 @@ const AppCore = () => {
     { id: 'customers', icon: Users, label: 'العملاء' },
     { id: 'inventory', icon: Package, label: 'المخزون' },
     { id: 'expenses', icon: TrendingDown, label: 'المصروفات' },
+    { id: 'purchases', icon: ShoppingBag, label: 'المشتريات' },
+    { id: 'traders', icon: Truck, label: 'التجار' },
     { id: 'reports', icon: FileText, label: 'التقارير' },
     { id: 'settings', icon: Settings, label: 'الإعدادات' },
   ];
 
   if (showProfileSetup) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4 font-['Inter']" style={{ backgroundColor: theme.bgWarm }}>
+      <div className="min-h-screen flex items-center justify-center p-4 font-cairo" style={{ backgroundColor: theme.bgWarm }} dir="rtl">
         <div className="w-full max-w-2xl">
           <div className="bg-white rounded-3xl shadow-xl p-8 border border-primary border-opacity-5">
             <h2 className="text-2xl mb-1" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 600 }}>
@@ -2178,7 +2105,7 @@ const AppCore = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
               <div>
-                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>Business Name *</label>
+                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>اسم المنشأة *</label>
                 <input
                   type="text"
                   value={profileForm.businessName}
@@ -2189,7 +2116,7 @@ const AppCore = () => {
                 />
               </div>
               <div>
-                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>Business Type *</label>
+                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>نوع النشاط *</label>
                 <input
                   type="text"
                   value={profileForm.businessType}
@@ -2200,7 +2127,7 @@ const AppCore = () => {
                 />
               </div>
               <div>
-                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>Owner Name *</label>
+                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>اسم المالك *</label>
                 <input
                   type="text"
                   value={profileForm.ownerName}
@@ -2211,25 +2138,25 @@ const AppCore = () => {
                 />
               </div>
               <div>
-                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>Phone *</label>
+                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>الجوال *</label>
                 <input
                   type="tel"
                   value={profileForm.phone}
                   onChange={(e) => setProfileForm(prev => ({ ...prev, phone: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
                   style={{ fontFamily: FONT_UI }}
-                  placeholder="+62 xxx xxxx xxxx"
+                  placeholder="05xxxxxxxx"
                 />
               </div>
               <div className="md:col-span-2">
-                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>Address</label>
+                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>العنوان</label>
                 <input
                   type="text"
                   value={profileForm.address}
                   onChange={(e) => setProfileForm(prev => ({ ...prev, address: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
                   style={{ fontFamily: FONT_UI }}
-                  placeholder="Full address"
+                  placeholder="العنوان الكامل"
                 />
               </div>
               <div className="md:col-span-2">
@@ -2237,7 +2164,7 @@ const AppCore = () => {
                 <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-gray-300 cursor-pointer hover:border-gray-400 transition-all">
                   <Camera size={18} style={{ color: theme.textMuted }} />
                   <span className="text-sm" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>
-                    {logoFile ? logoFile.name : 'Upload Logo'}
+                    {logoFile ? logoFile.name : 'رفع الشعار'}
                   </span>
                   <input
                     type="file"
@@ -2255,7 +2182,7 @@ const AppCore = () => {
               className="w-full py-3 rounded-xl text-white text-sm font-medium shadow-md disabled:opacity-50"
               style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
             >
-              {uploadProgress ? 'Setting up...' : 'Complete Setup'}
+              {uploadProgress ? 'جاري الإعداد...' : 'إكمال الإعداد'}
             </button>
           </div>
         </div>
@@ -2357,7 +2284,7 @@ const AppCore = () => {
                  {showNotifications && (
                    <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-xl shadow-xl border border-gray-100 p-4 z-50">
                      <div className="flex justify-between items-center mb-3">
-                        <h3 className="font-bold text-primary">Notifications</h3>
+                        <h3 className="font-bold text-primary">الإشعارات</h3>
                         <button onClick={() => setShowNotifications(false)} className="text-gray-400 hover:text-gray-600"><X size={16} /></button>
                      </div>
                      <div className="space-y-3 max-h-64 overflow-y-auto">
@@ -2384,7 +2311,7 @@ const AppCore = () => {
                             <div className="bg-gray-50 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-2">
                                 <Bell size={20} className="text-gray-400" />
                             </div>
-                            <p className="text-sm text-gray-500">No new notifications</p>
+                            <p className="text-sm text-gray-500">لا إشعارات جديدة</p>
                          </div>
                        )}
                      </div>
@@ -2393,7 +2320,7 @@ const AppCore = () => {
                </div>
 
                <div className="text-right hidden md:block">
-                  <p className="text-xs text-gray-500 font-medium">{new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                  <p className="text-xs text-gray-500 font-medium">{new Date().toLocaleDateString('ar', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
                   <p className="text-sm font-bold text-primary">{businessProfile?.businessName || 'ليالي كافيه'}</p>
                </div>
                <div className="w-10 h-10 rounded-full bg-primary text-white flex items-center justify-center font-bold text-sm">
@@ -2406,7 +2333,7 @@ const AppCore = () => {
           <div className="max-w-7xl mx-auto space-y-8">
             <div>
               <h2 className="text-3xl font-bold text-primary mb-1" style={{ fontFamily: FONT_HEADING }}>نظرة عامة</h2>
-              <p className="text-gray-500 text-sm">Welcome back, here is what's happening with your store today.</p>
+              <p className="text-gray-500 text-sm">مرحباً، هذا ملخص نشاط متجرك اليوم.</p>
             </div>
             
             {/* Key Metrics Row */}
@@ -2431,7 +2358,7 @@ const AppCore = () => {
                   <div className="p-3 rounded-xl bg-orange-50 text-accent">
                     <Clock size={24} />
                   </div>
-                  <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-orange-100 text-orange-700">Pending</span>
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-orange-100 text-orange-700">معلّق</span>
                 </div>
                 <p className="text-gray-500 text-sm font-medium mb-1">طلبات غير مدفوعة</p>
                 <h3 className="text-2xl font-bold text-accent">
@@ -2467,19 +2394,19 @@ const AppCore = () => {
             {/* Secondary Metrics */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
               <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100">
-                <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">Avg. Transaction Value</p>
+                <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">متوسط قيمة العملية</p>
                 <p className="text-xl font-bold text-primary">
                   {fmtMoney(dashboardOrders.length > 0 ? dashboardOrders.reduce((sum, o) => sum + o.total, 0) / dashboardOrders.length : 0)}
                 </p>
               </div>
               <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100">
-                <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">Avg. Items / Transaction</p>
+                <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">متوسط الأصناف / عملية</p>
                 <p className="text-xl font-bold text-primary">
                   {(dashboardOrders.length > 0 ? dashboardOrders.reduce((sum, o) => sum + o.items.reduce((isum, item) => isum + item.quantity, 0), 0) / dashboardOrders.length : 0).toFixed(1)}
                 </p>
               </div>
               <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100">
-                <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">Low Stock Items</p>
+                <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">أصناف منخفضة المخزون</p>
                 <p className="text-xl font-bold text-red-500">{lowStock}</p>
               </div>
             </div>
@@ -2489,8 +2416,8 @@ const AppCore = () => {
               {/* Sales Trend */}
               <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100 lg:col-span-2">
                 <div className="flex justify-between items-center mb-6">
-                  <h3 className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>Sales Trend</h3>
-                  <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-lg">Last 7 Days</span>
+                  <h3 className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>اتجاه المبيعات</h3>
+                  <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-lg">آخر 7 أيام</span>
                 </div>
                 <div className="h-64 flex items-end justify-between gap-3">
                   {(() => {
@@ -2521,11 +2448,11 @@ const AppCore = () => {
 
               {/* Payment Methods */}
               <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100">
-                <h3 className="text-lg font-bold text-primary mb-6" style={{ fontFamily: FONT_HEADING }}>Payment Methods</h3>
+                <h3 className="text-lg font-bold text-primary mb-6" style={{ fontFamily: FONT_HEADING }}>طرق الدفع</h3>
                 <div className="space-y-5">
                   {(() => {
                     const paymentStats = dashboardOrders.filter(o => o.status === 'paid').reduce((acc, order) => {
-                      const method = order.paymentMethod || 'Unknown';
+                      const method = order.paymentMethod || 'غير محدد';
                       acc[method] = (acc[method] || 0) + order.total;
                       return acc;
                     }, {});
@@ -2538,7 +2465,7 @@ const AppCore = () => {
                         return (
                           <div key={idx}>
                             <div className="flex justify-between text-sm mb-1.5">
-                              <span className="text-gray-700 font-medium">{method}</span>
+                              <span className="text-gray-700 font-medium">{paymentMethodLabel(method)}</span>
                               <span className="text-gray-900 font-bold">{percentage.toFixed(1)}%</span>
                             </div>
                             <div className="w-full bg-gray-100 rounded-full h-2">
@@ -2550,7 +2477,7 @@ const AppCore = () => {
                       });
                   })()}
                   {dashboardOrders.filter(o => o.status === 'paid').length === 0 && (
-                    <p className="text-gray-400 text-sm text-center py-4">No payment data yet</p>
+                    <p className="text-gray-400 text-sm text-center py-4">لا بيانات دفع بعد</p>
                   )}
                 </div>
               </div>
@@ -2559,13 +2486,13 @@ const AppCore = () => {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Best Sellers */}
               <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100">
-                <h3 className="text-lg font-bold text-primary mb-4" style={{ fontFamily: FONT_HEADING }}>Best Sellers</h3>
+                <h3 className="text-lg font-bold text-primary mb-4" style={{ fontFamily: FONT_HEADING }}>الأكثر مبيعاً</h3>
                 <div className="overflow-hidden">
                   <table className="w-full">
                     <thead>
                       <tr className="text-left text-xs text-gray-400 uppercase tracking-wider border-b border-gray-100">
-                        <th className="pb-3 font-medium">Product</th>
-                        <th className="pb-3 font-medium text-right">Sold</th>
+                        <th className="pb-3 font-medium">الصنف</th>
+                        <th className="pb-3 font-medium text-right">مباع</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-50">
@@ -2584,13 +2511,13 @@ const AppCore = () => {
                       ))}
                     </tbody>
                   </table>
-                  {getTopSellingProducts(dashboardOrders).length === 0 && <p className="text-center text-gray-400 text-sm py-4">No sales data</p>}
+                  {getTopSellingProducts(dashboardOrders).length === 0 && <p className="text-center text-gray-400 text-sm py-4">لا بيانات مبيعات</p>}
                 </div>
               </div>
 
               {/* Sales by Category */}
               <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100">
-                <h3 className="text-lg font-bold text-primary mb-4" style={{ fontFamily: FONT_HEADING }}>Sales by Category</h3>
+                <h3 className="text-lg font-bold text-primary mb-4" style={{ fontFamily: FONT_HEADING }}>المبيعات حسب القسم</h3>
                 <div className="space-y-3">
                   {(() => {
                     const categoryStats = dashboardOrders.filter(o => o.status === 'paid').reduce((acc, order) => {
@@ -2610,14 +2537,14 @@ const AppCore = () => {
                           <div className="w-1.5 h-8 bg-primary rounded-full"></div>
                           <div>
                             <p className="text-sm font-bold text-gray-700">{cat}</p>
-                            <p className="text-[10px] text-gray-500 uppercase tracking-wide">Revenue</p>
+                            <p className="text-[10px] text-gray-500 uppercase tracking-wide">الإيراد</p>
                           </div>
                         </div>
                         <span className="text-sm font-bold text-primary">{fmtMoney(amount)}</span>
                       </div>
                     ));
                   })()}
-                  {dashboardOrders.filter(o => o.status === 'paid').length === 0 && <p className="text-center text-gray-400 text-sm py-4">No category data</p>}
+                  {dashboardOrders.filter(o => o.status === 'paid').length === 0 && <p className="text-center text-gray-400 text-sm py-4">لا بيانات أقسام</p>}
                 </div>
               </div>
             </div>
@@ -2625,18 +2552,18 @@ const AppCore = () => {
             {/* Today's Sales Details */}
             <div className="bg-white shadow-md rounded-xl overflow-hidden border border-gray-200">
               <div className="p-5 border-b border-gray-200 bg-gray-50">
-                <h3 className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>Today's Sales Details</h3>
+                <h3 className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>تفاصيل مبيعات اليوم</h3>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-white border-b border-gray-200">
-                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Time</th>
-                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Order #</th>
-                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Customer</th>
-                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Items</th>
-                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">Total</th>
-                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center">Status</th>
+                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">الوقت</th>
+                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">رقم الطلب</th>
+                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">العميل</th>
+                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">الأصناف</th>
+                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">الإجمالي</th>
+                      <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center">الحالة</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -2662,7 +2589,7 @@ const AppCore = () => {
                               order.status === 'paid' ? 'bg-green-100 text-green-700' : 
                               order.status === 'cancelled' ? 'bg-gray-100 text-gray-600' : 'bg-yellow-100 text-yellow-700'
                             }`}>
-                              {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
+                              {orderStatusLabel(order.status)}
                             </span>
                           </td>
                         </tr>
@@ -2674,7 +2601,7 @@ const AppCore = () => {
                         return orderDate >= today;
                     }).length === 0 && (
                       <tr>
-                        <td colSpan="6" className="p-8 text-center text-gray-400 text-sm">No sales today</td>
+                        <td colSpan="6" className="p-8 text-center text-gray-400 text-sm">لا مبيعات اليوم</td>
                       </tr>
                     )}
                   </tbody>
@@ -2687,7 +2614,7 @@ const AppCore = () => {
         {currentView === 'settings' && (
           <div className="max-w-7xl mx-auto">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl md:text-3xl text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>Account Settings</h2>
+              <h2 className="text-2xl md:text-3xl text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>إعدادات الحساب</h2>
               <div className="flex gap-2">
                 <button
                   onClick={() => setShowSettingsModal(true)}
@@ -2713,35 +2640,35 @@ const AppCore = () => {
                   style={{ backgroundColor: theme.primary, fontFamily: FONT_UI, fontWeight: 500 }}
                 >
                   <User size={16} />
-                  Edit Profile
+                  تعديل الملف
                 </button>
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-white rounded-xl p-5 shadow-md border border-gray-200">
-                <h3 className="text-base md:text-lg mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>Business Information</h3>
+                <h3 className="text-base md:text-lg mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>معلومات المنشأة</h3>
                 <div className="space-y-3">
                   <div>
-                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>Business Name</p>
+                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>اسم المنشأة</p>
                     <p className="text-sm" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 500 }}>
                       {businessProfile?.businessName || '-'}
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>Business Type</p>
+                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>نوع النشاط</p>
                     <p className="text-sm" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 500 }}>
                       {businessProfile?.businessType || '-'}
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>Phone</p>
+                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>الجوال</p>
                     <p className="text-sm" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 500 }}>
                       {businessProfile?.phone || '-'}
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>Address</p>
+                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>العنوان</p>
                     <p className="text-sm" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 500 }}>
                       {businessProfile?.address || '-'}
                     </p>
@@ -2750,16 +2677,16 @@ const AppCore = () => {
               </div>
 
               <div className="bg-white rounded-xl p-5 shadow-md border border-gray-200">
-                <h3 className="text-base md:text-lg mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>Account Details</h3>
+                <h3 className="text-base md:text-lg mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>تفاصيل الحساب</h3>
                 <div className="space-y-3">
                   <div>
-                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>Owner Name</p>
+                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>اسم المالك</p>
                     <p className="text-sm" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 500 }}>
                       {businessProfile?.ownerName || '-'}
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>Email</p>
+                    <p className="text-xs mb-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>البريد الإلكتروني</p>
                     <p className="text-sm" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 500 }}>
                       {user.email}
                     </p>
@@ -2781,42 +2708,44 @@ const AppCore = () => {
             </div>
 
             <div className="mt-6 bg-white rounded-xl p-5 shadow-md border border-gray-200">
-              <h3 className="text-base md:text-lg mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>Statistics</h3>
+              <h3 className="text-base md:text-lg mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>إحصائيات</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="text-center p-3 rounded-xl" style={{ backgroundColor: '#f3f4f6' }}>
                   <p className="text-2xl mb-1" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 600 }}>
                     {products.length}
                   </p>
-                  <p className="text-xs" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>Products</p>
+                  <p className="text-xs" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>المنتجات</p>
                 </div>
                 <div className="text-center p-3 rounded-xl" style={{ backgroundColor: '#f3f4f6' }}>
                   <p className="text-2xl mb-1" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 600 }}>
                     {orders.length}
                   </p>
-                  <p className="text-xs" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>Total Orders</p>
+                  <p className="text-xs" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>إجمالي الطلبات</p>
                 </div>
                 <div className="text-center p-3 rounded-xl" style={{ backgroundColor: '#f3f4f6' }}>
                   <p className="text-2xl mb-1" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 600 }}>
                     {fmtMoney(orders.filter(o => o.status === 'paid').reduce((sum, o) => sum + o.total, 0))}
                   </p>
-                  <p className="text-xs" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>Total Revenue</p>
+                  <p className="text-xs" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>إجمالي الإيرادات</p>
                 </div>
                 <div className="text-center p-3 rounded-xl" style={{ backgroundColor: '#f3f4f6' }}>
                   <p className="text-2xl mb-1" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 600 }}>
                     {fmtMoney(totalProfit)}
                   </p>
-                  <p className="text-xs" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>Total Profit</p>
+                  <p className="text-xs" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>إجمالي الربح</p>
                 </div>
               </div>
             </div>
           </div>
         )}
 
-        {currentView === 'expenses' && (() => {
+        {(currentView === 'expenses' || currentView === 'purchases' || currentView === 'traders') && (() => {
           const summarySection = financeTab === 'purchases' ? 'purchase' : 'operating';
           const summaryExpenses = financeTab === 'traders'
             ? []
             : expenses.filter((e) => resolveExpenseSection(e) === summarySection);
+          const pageTitle =
+            currentView === 'purchases' ? 'المشتريات' : currentView === 'traders' ? 'التجار' : 'المصروفات';
           const monthTotal = summaryExpenses.filter((e) => {
             if (!e.date) return false;
             const d = e.date.toDate ? e.date.toDate() : new Date(e.date);
@@ -2830,7 +2759,7 @@ const AppCore = () => {
           return (
           <div className="max-w-7xl mx-auto" dir="rtl">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-              <h2 className="text-3xl font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>المالية</h2>
+              <h2 className="text-3xl font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>{pageTitle}</h2>
               <div className="flex gap-2 flex-wrap">
                 {financeTab === 'traders' && (
                   <button
@@ -2866,22 +2795,6 @@ const AppCore = () => {
                   </button>
                 )}
               </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2 mb-6 p-1.5 bg-gray-100 rounded-2xl w-fit max-w-full">
-              {FINANCE_TABS.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setFinanceTab(tab.id)}
-                  className={`px-5 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                    financeTab === tab.id ? 'text-white shadow-sm' : 'text-gray-600 hover:bg-white/80'
-                  }`}
-                  style={financeTab === tab.id ? { backgroundColor: theme.primary, fontFamily: FONT_UI } : { fontFamily: FONT_UI }}
-                >
-                  {tab.label}
-                </button>
-              ))}
             </div>
 
             {financeTab === 'traders' ? (
@@ -3094,7 +3007,7 @@ const AppCore = () => {
         {currentView === 'reports' && (
           <div className="max-w-7xl mx-auto">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
-              <h2 className="text-2xl md:text-3xl text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>Reports</h2>
+              <h2 className="text-2xl md:text-3xl text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>التقارير</h2>
               
               <div className="flex flex-wrap gap-2">
                 {['today', 'yesterday', 'lastWeek', 'lastMonth', 'all', 'custom'].map(filter => (
@@ -3108,7 +3021,7 @@ const AppCore = () => {
                     }`}
                     style={reportFilter === filter ? { backgroundColor: theme.primary, fontFamily: FONT_UI } : { fontFamily: FONT_UI }}
                   >
-                    {filter === 'lastWeek' ? 'Last 7 Days' : filter === 'lastMonth' ? 'Last 30 Days' : filter.charAt(0).toUpperCase() + filter.slice(1)}
+                    {reportFilterLabel(filter)}
                   </button>
                 ))}
               </div>
@@ -3202,7 +3115,7 @@ const AppCore = () => {
               // Sales by Payment Method
               const salesByPaymentMethod = {};
               filteredOrders.forEach(order => {
-                const method = order.paymentMethod || 'Unknown';
+                const method = order.paymentMethod || 'غير محدد';
                 salesByPaymentMethod[method] = (salesByPaymentMethod[method] || 0) + order.total;
               });
 
@@ -3260,39 +3173,39 @@ const AppCore = () => {
 
               const handleExport = () => {
                 const csvContent = [
-                  ['Sales Report', `Filter: ${reportFilter}`],
-                  ['Generated', new Date().toLocaleString()],
+                  ['تقرير المبيعات', `الفترة: ${reportFilterLabel(reportFilter)}`],
+                  ['تاريخ التقرير', new Date().toLocaleString()],
                   [],
-                  ['Summary Metrics'],
-                  ['Total Revenue (Gross)', totalRevenue],
-                  ['Net Sales', netSales],
-                  ['Total Cost (COGS)', totalCost],
-                  ['Gross Profit', grossProfit],
-                  ['Total Expenses', totalExpenses],
-                  ['Net Profit', netProfit],
+                  ['ملخص المؤشرات'],
+                  ['إجمالي الإيرادات', totalRevenue],
+                  ['صافي المبيعات', netSales],
+                  ['إجمالي التكلفة', totalCost],
+                  ['إجمالي الربح', grossProfit],
+                  ['إجمالي المصروفات', totalExpenses],
+                  ['صافي الربح', netProfit],
                   [],
-                  ['Key Performance Indicators'],
-                  ['Total Transactions', totalTransactions],
-                  ['Total Items Sold', totalItemsSoldPeriod],
-                  ['Avg. Transaction Value', avgTransactionValue],
-                  ['Gross Profit Margin', `${grossProfitMargin.toFixed(2)}%`],
-                  ['Net Profit Margin', `${netProfitMargin.toFixed(2)}%`],
+                  ['مؤشرات الأداء'],
+                  ['عدد العمليات', totalTransactions],
+                  ['إجمالي الأصناف المباعة', totalItemsSoldPeriod],
+                  ['متوسط قيمة العملية', avgTransactionValue],
+                  ['هامش إجمالي الربح', `${grossProfitMargin.toFixed(2)}%`],
+                  ['هامش صافي الربح', `${netProfitMargin.toFixed(2)}%`],
                   [],
-                  ['Total Discounts', totalDiscounts],
+                  ['إجمالي الخصومات', totalDiscounts],
                   [],
-                  ['Sales by Payment Method'],
-                  ['Method', 'Amount'],
-                  ...Object.entries(salesByPaymentMethod).map(([method, amount]) => [method, amount]),
+                  ['المبيعات حسب طريقة الدفع'],
+                  ['الطريقة', 'المبلغ'],
+                  ...Object.entries(salesByPaymentMethod).map(([method, amount]) => [paymentMethodLabel(method), amount]),
                   [],
-                  ['Top Selling Products'],
-                  ['Product', 'Quantity'],
+                  ['الأكثر مبيعاً'],
+                  ['الصنف', 'الكمية'],
                   ...sortedProducts,
                   [],
-                  ['Expenses List'],
-                  ['Date', 'Category', 'Description', 'Amount'],
+                  ['قائمة المصروفات'],
+                  ['التاريخ', 'الفئة', 'البيان', 'المبلغ'],
                   ...filteredExpenses.map(e => [
                     e.date && (e.date.toDate ? e.date.toDate().toLocaleDateString() : new Date(e.date).toLocaleDateString()),
-                    e.category,
+                    expenseCategoryLabel(e.category),
                     e.description || '-',
                     e.amount
                   ])
@@ -3314,7 +3227,7 @@ const AppCore = () => {
                       style={{ fontFamily: FONT_UI }}
                     >
                       <Download size={16} />
-                      Export Report
+                      تصدير التقرير
                     </button>
                   </div>
 
@@ -3327,21 +3240,21 @@ const AppCore = () => {
                       <p className="text-[10px] text-gray-400 mt-1">أسعار الأصناف فقط — بدون ضريبة</p>
                     </div>
                     <div className="bg-white rounded-xl p-4 shadow-md border border-gray-200">
-                      <p className="text-xs mb-1 text-gray-500">Gross Profit</p>
+                      <p className="text-xs mb-1 text-gray-500">إجمالي الربح</p>
                       <p className="text-2xl font-bold text-primary">
                         {fmtMoney(grossProfit)}
                       </p>
                       <p className="text-[10px] text-gray-400 mt-1">Margin: {grossProfitMargin.toFixed(1)}%</p>
                     </div>
                     <div className="bg-white rounded-xl p-4 shadow-md border border-gray-200">
-                      <p className="text-xs mb-1 text-gray-500">Total Expenses</p>
+                      <p className="text-xs mb-1 text-gray-500">إجمالي المصروفات</p>
                       <p className="text-2xl font-bold text-orange-600">
                         {fmtMoney(totalExpenses)}
                       </p>
                       <p className="text-[10px] text-gray-400 mt-1">OpEx + COGS: {fmtMoney((totalExpenses + totalCost))}</p>
                     </div>
                     <div className="bg-white rounded-xl p-4 shadow-md border border-gray-200">
-                      <p className="text-xs mb-1 text-gray-500">Net Profit</p>
+                      <p className="text-xs mb-1 text-gray-500">صافي الربح</p>
                       <p className={`text-2xl font-bold ${netProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                         {fmtMoney(netProfit)}
                       </p>
@@ -3357,25 +3270,25 @@ const AppCore = () => {
                       </p>
                     </div>
                     <div className="bg-white rounded-xl p-4 shadow-md border border-gray-200">
-                      <p className="text-xs mb-1 text-gray-500">Total Items Sold</p>
+                      <p className="text-xs mb-1 text-gray-500">إجمالي الأصناف المباعة</p>
                       <p className="text-xl font-bold text-primary">
                         {totalItemsSoldPeriod}
                       </p>
                     </div>
                     <div className="bg-white rounded-xl p-4 shadow-md border border-gray-200">
-                      <p className="text-xs mb-1 text-gray-500">Avg. Transaction Value</p>
+                      <p className="text-xs mb-1 text-gray-500">متوسط قيمة العملية</p>
                       <p className="text-xl font-bold text-primary">
                         {fmtMoney(avgTransactionValue)}
                       </p>
                     </div>
                     <div className="bg-white rounded-xl p-4 shadow-md border border-gray-200">
-                      <p className="text-xs mb-1 text-gray-500">Total Discounts</p>
+                      <p className="text-xs mb-1 text-gray-500">إجمالي الخصومات</p>
                       <p className="text-xl font-bold text-red-500">
                         - {fmtMoney(totalDiscounts)}
                       </p>
                     </div>
                     <div className="bg-white rounded-xl p-4 shadow-md border border-gray-200">
-                      <p className="text-xs mb-1 text-gray-500">Compliments Given</p>
+                      <p className="text-xs mb-1 text-gray-500">إهداءات مجانية</p>
                       <p className="text-xl font-bold text-accent">
                         {fmtMoney(totalComplimentsValue)}
                       </p>
@@ -3385,7 +3298,7 @@ const AppCore = () => {
 
                   {/* Sales by Category Chart */}
                   <div className="bg-white rounded-xl p-6 shadow-md border border-gray-200 mb-6">
-                    <h3 className="text-lg md:text-xl font-bold mb-4 text-primary" style={{ fontFamily: FONT_HEADING }}>Sales by Category</h3>
+                    <h3 className="text-lg md:text-xl font-bold mb-4 text-primary" style={{ fontFamily: FONT_HEADING }}>المبيعات حسب القسم</h3>
                     <div className="space-y-4">
                       {salesByCategory.length > 0 ? salesByCategory.map((data, i) => (
                         <div key={i}>
@@ -3401,30 +3314,30 @@ const AppCore = () => {
                           </div>
                         </div>
                       )) : (
-                        <div className="text-center text-gray-400 py-8">No sales data available for this period</div>
+                        <div className="text-center text-gray-400 py-8">لا بيانات مبيعات لهذه الفترة</div>
                       )}
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div className="bg-white rounded-xl p-6 shadow-md border border-gray-200">
-                      <h3 className="text-lg md:text-xl font-bold mb-4 text-primary" style={{ fontFamily: FONT_HEADING }}>Sales by Payment Method</h3>
+                      <h3 className="text-lg md:text-xl font-bold mb-4 text-primary" style={{ fontFamily: FONT_HEADING }}>المبيعات حسب طريقة الدفع</h3>
                       <div className="space-y-4">
                         {Object.entries(salesByPaymentMethod).sort(([,a], [,b]) => b - a).map(([method, amount], idx) => (
                           <div key={idx} className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                               <div className="w-2 h-2 rounded-full bg-primary"></div>
-                              <span className="text-sm font-medium text-gray-700">{method}</span>
+                              <span className="text-sm font-medium text-gray-700">{paymentMethodLabel(method)}</span>
                             </div>
                             <span className="text-sm font-bold text-primary">{fmtMoney(amount)}</span>
                           </div>
                         ))}
-                        {Object.keys(salesByPaymentMethod).length === 0 && <p className="text-sm text-gray-400 text-center">No sales data</p>}
+                        {Object.keys(salesByPaymentMethod).length === 0 && <p className="text-sm text-gray-400 text-center">لا بيانات مبيعات</p>}
                       </div>
                     </div>
 
                     <div className="bg-white rounded-xl p-6 shadow-md border border-gray-200">
-                      <h3 className="text-lg md:text-xl font-bold mb-4 text-primary" style={{ fontFamily: FONT_HEADING }}>Top Selling Products</h3>
+                      <h3 className="text-lg md:text-xl font-bold mb-4 text-primary" style={{ fontFamily: FONT_HEADING }}>الأكثر مبيعاً</h3>
                       <div className="space-y-4">
                         {sortedProducts.map(([name, qty], idx) => (
                           <div key={idx} className="flex items-center justify-between">
@@ -3432,35 +3345,35 @@ const AppCore = () => {
                             <span className="text-sm text-gray-500">{qty} sold</span>
                           </div>
                         ))}
-                        {sortedProducts.length === 0 && <p className="text-sm text-gray-400 text-center">No sales in this period</p>}
+                        {sortedProducts.length === 0 && <p className="text-sm text-gray-400 text-center">لا مبيعات في هذه الفترة</p>}
                       </div>
                     </div>
 
                     <div className="bg-white rounded-xl p-6 shadow-md border border-gray-200 lg:col-span-2">
-                      <h3 className="text-lg md:text-xl font-bold mb-4 text-primary" style={{ fontFamily: FONT_HEADING }}>Expenses in Period</h3>
+                      <h3 className="text-lg md:text-xl font-bold mb-4 text-primary" style={{ fontFamily: FONT_HEADING }}>مصروفات الفترة</h3>
                       <div className="space-y-4">
                         {filteredExpenses.slice(0, 5).map(expense => (
                           <div key={expense.id} className="flex items-center justify-between border-b border-gray-50 pb-2 last:border-0">
                             <div>
-                              <p className="text-sm font-medium text-gray-700">{expense.description || expense.category}</p>
+                              <p className="text-sm font-medium text-gray-700">{expense.description || expenseCategoryLabel(expense.category)}</p>
                               <p className="text-xs text-gray-400">{expense.date && (expense.date.toDate ? expense.date.toDate().toLocaleDateString() : new Date(expense.date).toLocaleDateString())}</p>
                             </div>
                             <span className="text-sm font-bold text-red-500">- {fmtMoney(parseFloat(expense.amount))}</span>
                           </div>
                         ))}
-                        {filteredExpenses.length === 0 && <p className="text-sm text-gray-400 text-center">No expenses in this period</p>}
+                        {filteredExpenses.length === 0 && <p className="text-sm text-gray-400 text-center">لا مصروفات في هذه الفترة</p>}
                       </div>
                     </div>
 
                     <div className="bg-white rounded-xl p-6 shadow-md border border-gray-200 lg:col-span-2">
-                      <h3 className="text-lg md:text-xl font-bold mb-4 text-primary" style={{ fontFamily: FONT_HEADING }}>Products Sold Details</h3>
+                      <h3 className="text-lg md:text-xl font-bold mb-4 text-primary" style={{ fontFamily: FONT_HEADING }}>تفاصيل الأصناف المباعة</h3>
                       <div className="overflow-x-auto">
                         <table className="w-full text-left">
                           <thead>
                             <tr className="border-b border-gray-100">
-                              <th className="pb-3 text-xs font-medium text-gray-500">Product Name</th>
-                              <th className="pb-3 text-xs font-medium text-gray-500 text-right">Quantity</th>
-                              <th className="pb-3 text-xs font-medium text-gray-500 text-right">Revenue</th>
+                              <th className="pb-3 text-xs font-medium text-gray-500">اسم الصنف</th>
+                              <th className="pb-3 text-xs font-medium text-gray-500 text-right">الكمية</th>
+                              <th className="pb-3 text-xs font-medium text-gray-500 text-right">الإيراد</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -3473,7 +3386,7 @@ const AppCore = () => {
                             ))}
                             {sortedProductDetails.length === 0 && (
                               <tr>
-                                <td colSpan="3" className="py-4 text-center text-sm text-gray-400">No products sold in this period</td>
+                                <td colSpan="3" className="py-4 text-center text-sm text-gray-400">لم تُبَع أصناف في هذه الفترة</td>
                               </tr>
                             )}
                           </tbody>
@@ -3839,7 +3752,7 @@ const AppCore = () => {
                               className="px-3 py-1.5 rounded-lg bg-red-100 text-red-600 hover:bg-red-200 text-xs font-medium transition-colors border border-red-200"
                               style={{ fontFamily: FONT_UI }}
                             >
-                              Cancel
+                              إلغاء
                             </button>
                           )}
                           <button
@@ -3847,7 +3760,7 @@ const AppCore = () => {
                             className="px-3 py-1.5 rounded-lg bg-blue-100 text-blue-600 hover:bg-blue-200 text-xs font-medium transition-colors"
                             style={{ fontFamily: FONT_UI }}
                           >
-                            Edit
+                            تعديل
                           </button>
                           <button
                             onClick={() => handleDeleteOrder(order.id)}
@@ -3862,7 +3775,7 @@ const AppCore = () => {
                             style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
                           >
                             <Printer size={14} />
-                            Print
+                            طباعة
                           </button>
                           <button
                             onClick={() => toggleOrderExpansion(order.id)}
@@ -3964,14 +3877,14 @@ const AppCore = () => {
                 type="text"
                 value={inventorySearchTerm}
                 onChange={(e) => setInventorySearchTerm(e.target.value)}
-                placeholder="Search products in inventory..."
+                placeholder="بحث في المخزون..."
                 className="w-full pl-11 pr-4 py-3 rounded-2xl border-none shadow-sm outline-none text-sm focus:ring-2 focus:ring-primary transition-all"
                 style={{ fontFamily: FONT_UI }}
               />
             </div>
 
             <div className="mb-4 text-sm text-gray-500 font-medium px-1">
-              Showing {filteredInventory.length} of {products.length} products
+              عرض {filteredInventory.length} من {products.length} صنف
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
@@ -3994,7 +3907,7 @@ const AppCore = () => {
                     {fmtMoney(product.price)}
                   </p>
                   <p className={`text-xs ${product.stock < 10 ? 'text-red-500' : ''}`} style={{ fontFamily: FONT_UI, fontWeight: 500 }}>
-                    Stock: {product.stock}
+                    المخزون: {product.stock}
                   </p>
                   <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button 
@@ -4036,7 +3949,7 @@ const AppCore = () => {
                     const product = products.find(p => p.id === e.target.value);
                     if (product) {
                       setProductForm({
-                        name: product.name + ' (Copy)',
+                        name: product.name + ' (نسخة)',
                         category: product.category,
                         price: product.price,
                         stock: product.stock,
@@ -4050,7 +3963,7 @@ const AppCore = () => {
                   className="w-full px-3 py-2 rounded-xl border border-accent/30 outline-none text-sm bg-white"
                   style={{ fontFamily: FONT_UI, color: theme.text }}
                 >
-                  <option value="">Select a product to copy...</option>
+                  <option value="">اختر صنفاً للنسخ...</option>
                   {products.slice().sort((a, b) => a.name.localeCompare(b.name)).map(p => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
@@ -4124,7 +4037,7 @@ const AppCore = () => {
                       type="button"
                       onClick={() => setShowIngredientModal(true)}
                       className="px-3 py-2.5 rounded-xl bg-layali-surface-muted text-primary hover:bg-gray-200 transition-colors"
-                      title="Calculate from Ingredients"
+                      title="حساب من المكوّنات"
                     >
                       <Calculator size={18} />
                     </button>
@@ -4135,13 +4048,13 @@ const AppCore = () => {
               <div className="bg-gray-50 p-3 rounded-xl border border-gray-200">
                 <div className="flex justify-between items-center">
                   <div>
-                    <p className="text-xs text-gray-500">Estimated Profit</p>
+                    <p className="text-xs text-gray-500">الربح التقديري</p>
                     <p className="text-sm font-semibold text-primary">
                       {fmtMoney(((parseFloat(productForm.price) || 0) - (parseFloat(productForm.cost) || 0)))}
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="text-xs text-gray-500">Margin</p>
+                    <p className="text-xs text-gray-500">الهامش</p>
                     <p className="text-sm font-semibold text-primary">
                       {parseFloat(productForm.price) > 0 
                         ? (((parseFloat(productForm.price) || 0) - (parseFloat(productForm.cost) || 0)) / parseFloat(productForm.price) * 100).toFixed(1) 
@@ -4194,15 +4107,15 @@ const AppCore = () => {
               {/* Add-ons Section */}
               <div className="border-t pt-4 mt-4">
                 <div className="flex justify-between items-center mb-3">
-                  <label className="block text-xs font-medium text-gray-600">Add-ons / Variants</label>
-                  <button type="button" onClick={addAddonGroup} className="text-xs text-primary font-medium hover:underline">+ Add Group</button>
+                  <label className="block text-xs font-medium text-gray-600">إضافات / خيارات</label>
+                  <button type="button" onClick={addAddonGroup} className="text-xs text-primary font-medium hover:underline">+ مجموعة</button>
                 </div>
                 <div className="space-y-4">
                   {(productForm.addOns || []).map((group, gIdx) => (
                     <div key={gIdx} className="bg-gray-50 p-3 rounded-xl border border-gray-200">
                       <div className="flex gap-2 mb-2">
                         <input 
-                          placeholder="Group Name (e.g. Sugar)" 
+                          placeholder="اسم المجموعة (مثال: سكر)" 
                           value={group.name} 
                           onChange={e => updateAddonGroup(gIdx, 'name', e.target.value)}
                           className="flex-1 px-2 py-1.5 text-xs rounded-lg border border-gray-200"
@@ -4212,8 +4125,8 @@ const AppCore = () => {
                           onChange={e => updateAddonGroup(gIdx, 'type', e.target.value)}
                           className="px-2 py-1.5 text-xs rounded-lg border border-gray-200 bg-white"
                         >
-                          <option value="single">Single Choice</option>
-                          <option value="multiple">Multiple Choice</option>
+                          <option value="single">اختيار واحد</option>
+                          <option value="multiple">اختيار متعدد</option>
                         </select>
                         <button type="button" onClick={() => removeAddonGroup(gIdx)} className="text-red-500"><Trash2 size={14} /></button>
                       </div>
@@ -4221,48 +4134,48 @@ const AppCore = () => {
                         {group.options.map((opt, oIdx) => (
                           <div key={oIdx} className="flex flex-col gap-2 p-3 bg-white rounded border border-gray-100 shadow-sm">
                             <div className="flex gap-2 items-center">
-                              <input placeholder="Option Name" value={opt.name} onChange={e => updateAddonOption(gIdx, oIdx, 'name', e.target.value)} className="flex-1 px-2 py-1.5 text-xs rounded border border-gray-200" />
+                              <input placeholder="اسم الخيار" value={opt.name} onChange={e => updateAddonOption(gIdx, oIdx, 'name', e.target.value)} className="flex-1 px-2 py-1.5 text-xs rounded border border-gray-200" />
                               <button type="button" onClick={() => removeAddonOption(gIdx, oIdx)} className="text-gray-400 hover:text-red-500"><X size={14} /></button>
                             </div>
                             
                             <div className="grid grid-cols-2 gap-3">
                               <div>
-                                <label className="block text-[10px] text-gray-500 mb-1">Selling Price</label>
+                                <label className="block text-[10px] text-gray-500 mb-1">سعر البيع</label>
                                 <input type="number" placeholder="0" value={opt.price} onChange={e => updateAddonOption(gIdx, oIdx, 'price', e.target.value)} className="w-full px-2 py-1.5 text-xs rounded border border-gray-200" />
                               </div>
                               <div>
-                                <label className="block text-[10px] text-gray-500 mb-1">Cost (Auto-calc)</label>
+                                <label className="block text-[10px] text-gray-500 mb-1">التكلفة (تلقائي)</label>
                                 <input type="number" placeholder="0" value={opt.cost} onChange={e => updateAddonOption(gIdx, oIdx, 'cost', e.target.value)} className="w-full px-2 py-1.5 text-xs rounded border border-gray-200 bg-gray-50" />
                               </div>
                             </div>
 
                             <div className="bg-gray-50 p-2 rounded border border-gray-200 mt-1">
-                              <p className="text-[10px] font-medium text-gray-500 mb-2">Ingredient Cost Calculator</p>
+                              <p className="text-[10px] font-medium text-gray-500 mb-2">حاسبة تكلفة المكوّن</p>
                               <div className="grid grid-cols-3 gap-2">
                                 <div>
-                                  <input type="number" placeholder="Batch Price" value={opt.batchPrice} onChange={e => updateAddonOption(gIdx, oIdx, 'batchPrice', e.target.value)} className="w-full px-2 py-1 text-xs rounded border border-gray-200" />
-                                  <span className="text-[9px] text-gray-400 block mt-0.5">Batch Price</span>
+                                  <input type="number" placeholder="سعر الدفعة" value={opt.batchPrice} onChange={e => updateAddonOption(gIdx, oIdx, 'batchPrice', e.target.value)} className="w-full px-2 py-1 text-xs rounded border border-gray-200" />
+                                  <span className="text-[9px] text-gray-400 block mt-0.5">سعر الدفعة</span>
                                 </div>
                                 <div>
-                                  <input type="number" placeholder="Batch Qty" value={opt.batchQty} onChange={e => updateAddonOption(gIdx, oIdx, 'batchQty', e.target.value)} className="w-full px-2 py-1 text-xs rounded border border-gray-200" />
-                                  <span className="text-[9px] text-gray-400 block mt-0.5">Batch Qty</span>
+                                  <input type="number" placeholder="كمية الدفعة" value={opt.batchQty} onChange={e => updateAddonOption(gIdx, oIdx, 'batchQty', e.target.value)} className="w-full px-2 py-1 text-xs rounded border border-gray-200" />
+                                  <span className="text-[9px] text-gray-400 block mt-0.5">كمية الدفعة</span>
                                 </div>
                                 <div>
-                                  <input type="number" placeholder="Usage Qty" value={opt.usageQty} onChange={e => updateAddonOption(gIdx, oIdx, 'usageQty', e.target.value)} className="w-full px-2 py-1 text-xs rounded border border-gray-200" />
-                                  <span className="text-[9px] text-gray-400 block mt-0.5">Usage Qty</span>
+                                  <input type="number" placeholder="كمية الاستخدام" value={opt.usageQty} onChange={e => updateAddonOption(gIdx, oIdx, 'usageQty', e.target.value)} className="w-full px-2 py-1 text-xs rounded border border-gray-200" />
+                                  <span className="text-[9px] text-gray-400 block mt-0.5">كمية الاستخدام</span>
                                 </div>
                               </div>
                             </div>
 
                             <div className="flex justify-between items-center pt-1 border-t border-gray-100 mt-1">
-                              <span className="text-xs text-gray-500">Estimated Profit:</span>
+                              <span className="text-xs text-gray-500">الربح التقديري:</span>
                               <span className={`text-xs font-bold ${((parseFloat(opt.price)||0) - (parseFloat(opt.cost)||0)) >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                                 {fmtMoney(((parseFloat(opt.price) || 0) - (parseFloat(opt.cost) || 0)))}
                               </span>
                             </div>
                           </div>
                         ))}
-                        <button type="button" onClick={() => addAddonOption(gIdx)} className="text-[10px] text-gray-500 hover:text-primary">+ Add Option</button>
+                        <button type="button" onClick={() => addAddonOption(gIdx)} className="text-[10px] text-gray-500 hover:text-primary">+ خيار</button>
                       </div>
                     </div>
                   ))}
@@ -4282,7 +4195,7 @@ const AppCore = () => {
                 className="flex-1 py-2.5 rounded-xl text-sm font-medium"
                 style={{ backgroundColor: '#f3f4f6', color: theme.textMuted, fontFamily: FONT_UI }}
               >
-                Cancel
+                إلغاء
               </button>
               <button
                 onClick={handleSaveProduct}
@@ -4290,7 +4203,7 @@ const AppCore = () => {
                 className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50 hover:opacity-90"
                 style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
               >
-                {uploadProgress ? 'Saving...' : (editingProductId ? 'Save Changes' : 'إضافة منتج')}
+                {uploadProgress ? 'جاري الحفظ...' : (editingProductId ? 'حفظ التعديلات' : 'إضافة منتج')}
               </button>
             </div>
           </div>
@@ -4315,13 +4228,13 @@ const AppCore = () => {
                 {productIngredients.map((ing) => (
                   <div key={ing.id} className="bg-gray-50 p-3 rounded-xl space-y-2 border border-gray-100">
                     <div className="flex gap-2">
-                      <input placeholder="Ingredient Name (e.g. Milk)" value={ing.name} onChange={e => handleIngredientChange(ing.id, 'name', e.target.value)} className="flex-1 px-2 py-1.5 text-xs rounded-lg border border-gray-200 outline-none" />
+                      <input placeholder="اسم المكوّن (مثال: حليب)" value={ing.name} onChange={e => handleIngredientChange(ing.id, 'name', e.target.value)} className="flex-1 px-2 py-1.5 text-xs rounded-lg border border-gray-200 outline-none" />
                       <button type="button" onClick={() => handleRemoveIngredient(ing.id)} className="text-red-500 hover:bg-red-50 p-1 rounded"><Trash2 size={14} /></button>
                     </div>
                     <div className="grid grid-cols-3 gap-2">
-                      <div className="space-y-1"><span className="text-[10px] text-gray-400">Batch Price (Rp)</span><input type="number" placeholder="350000" value={ing.batchPrice} onChange={e => handleIngredientChange(ing.id, 'batchPrice', e.target.value)} className="w-full px-2 py-1.5 text-xs rounded-lg border border-gray-200 outline-none" /></div>
-                      <div className="space-y-1"><span className="text-[10px] text-gray-400">Batch Qty</span><input type="number" placeholder="1000 (ml/g)" value={ing.batchQty} onChange={e => handleIngredientChange(ing.id, 'batchQty', e.target.value)} className="w-full px-2 py-1.5 text-xs rounded-lg border border-gray-200 outline-none" /></div>
-                      <div className="space-y-1"><span className="text-[10px] text-gray-400">Usage Qty</span><input type="number" placeholder="250 (ml/g)" value={ing.usageQty} onChange={e => handleIngredientChange(ing.id, 'usageQty', e.target.value)} className="w-full px-2 py-1.5 text-xs rounded-lg border border-gray-200 outline-none" /></div>
+                      <div className="space-y-1"><span className="text-[10px] text-gray-400">سعر الدفعة (₪)</span><input type="number" placeholder="350000" value={ing.batchPrice} onChange={e => handleIngredientChange(ing.id, 'batchPrice', e.target.value)} className="w-full px-2 py-1.5 text-xs rounded-lg border border-gray-200 outline-none" /></div>
+                      <div className="space-y-1"><span className="text-[10px] text-gray-400">كمية الدفعة</span><input type="number" placeholder="1000 (ml/g)" value={ing.batchQty} onChange={e => handleIngredientChange(ing.id, 'batchQty', e.target.value)} className="w-full px-2 py-1.5 text-xs rounded-lg border border-gray-200 outline-none" /></div>
+                      <div className="space-y-1"><span className="text-[10px] text-gray-400">كمية الاستخدام</span><input type="number" placeholder="250 (ml/g)" value={ing.usageQty} onChange={e => handleIngredientChange(ing.id, 'usageQty', e.target.value)} className="w-full px-2 py-1.5 text-xs rounded-lg border border-gray-200 outline-none" /></div>
                     </div>
                     <div className="text-[10px] text-gray-500 text-right font-medium">
                       Cost: {fmtMoney(Math.round(((parseFloat(ing.batchPrice)||0) / (parseFloat(ing.batchQty)||1)) * (parseFloat(ing.usageQty)||0)))}
@@ -4341,7 +4254,7 @@ const AppCore = () => {
                 + Add Ingredient
               </button>
               <div className="flex justify-between items-center px-1">
-                <span className="text-sm font-medium text-gray-600">Total Calculated Cost:</span>
+                <span className="text-sm font-medium text-gray-600">إجمالي التكلفة المحسوبة:</span>
                 <span className="text-lg font-bold text-primary">
                   {fmtMoney(productIngredients.reduce((sum, ing) => sum + Math.round(((parseFloat(ing.batchPrice)||0) / (parseFloat(ing.batchQty)||1)) * (parseFloat(ing.usageQty)||0)), 0))}
                 </span>
@@ -4614,7 +4527,7 @@ const AppCore = () => {
                     ))}
                   </select>
                   {suppliers.length === 0 && (
-                    <p className="text-xs text-amber-600 mt-1">أضف تاجراً من تبويب «التجار» أولاً</p>
+                    <p className="text-xs text-amber-600 mt-1">أضف تاجراً من «التجار» في القائمة أولاً</p>
                   )}
                 </div>
               )}
@@ -4632,7 +4545,7 @@ const AppCore = () => {
                   type="button"
                   onClick={() => {
                     setShowExpenseModal(false);
-                    setExpenseForm(defaultExpenseForm(financeTab === 'purchases' ? 'purchase' : 'operating'));
+                    setExpenseForm(defaultExpenseForm(currentView === 'purchases' ? 'purchase' : 'operating'));
                     setExpenseReceiptFile(null);
                     setEditingExpenseId(null);
                   }}
@@ -4727,13 +4640,13 @@ const AppCore = () => {
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50 overflow-y-auto">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-2xl border border-gray-200 my-8">
             <h3 className="text-xl mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
-              Edit Business Profile
+              تعديل ملف المنشأة
             </h3>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
               <div>
                 <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
-                  Business Name
+                  اسم المنشأة
                 </label>
                 <input
                   type="text"
@@ -4746,7 +4659,7 @@ const AppCore = () => {
               </div>
               <div>
                 <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
-                  Business Type
+                  نوع النشاط
                 </label>
                 <input
                   type="text"
@@ -4759,7 +4672,7 @@ const AppCore = () => {
               </div>
               <div>
                 <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
-                  Owner Name
+                  اسم المالك
                 </label>
                 <input
                   type="text"
@@ -4772,7 +4685,7 @@ const AppCore = () => {
               </div>
               <div>
                 <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
-                  Phone
+                  الجوال
                 </label>
                 <input
                   type="tel"
@@ -4785,7 +4698,7 @@ const AppCore = () => {
               </div>
               <div className="md:col-span-2">
                 <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
-                  Address
+                  العنوان
                 </label>
                 <input
                   type="text"
@@ -4798,12 +4711,12 @@ const AppCore = () => {
               </div>
               <div className="md:col-span-2">
                 <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
-                  Update Logo
+                  تحديث الشعار
                 </label>
                 <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-dashed border-gray-300 cursor-pointer hover:border-gray-400 transition-all bg-gray-50">
                   <Camera size={16} style={{ color: theme.textMuted }} />
                   <span className="text-sm" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>
-                    {logoFile ? logoFile.name : 'Choose new logo'}
+                    {logoFile ? logoFile.name : 'اختر شعاراً جديداً'}
                   </span>
                   <input
                     type="file"
@@ -4825,7 +4738,7 @@ const AppCore = () => {
                 className="flex-1 py-2.5 rounded-xl text-sm font-medium"
                 style={{ backgroundColor: '#f3f4f6', color: theme.textMuted, fontFamily: FONT_UI }}
               >
-                Cancel
+                إلغاء
               </button>
               <button
                 onClick={handleProfileUpdate}
@@ -4833,7 +4746,7 @@ const AppCore = () => {
                 className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50 hover:opacity-90"
                 style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
               >
-                {uploadProgress ? 'Updating...' : 'Save Changes'}
+                {uploadProgress ? 'جاري التحديث...' : 'حفظ التعديلات'}
               </button>
             </div>
           </div>
@@ -4871,25 +4784,25 @@ const AppCore = () => {
                 المبيعات بالأسعار المعروضة فقط — بدون ضريبة أو رسوم إضافية.
               </p>
               <div>
-                <label className="block text-xs mb-1.5 font-medium text-gray-600">Receipt Header</label>
+                <label className="block text-xs mb-1.5 font-medium text-gray-600">رأس الإيصال</label>
                 <textarea
                   value={appSettings.receiptHeader}
                   onChange={e => setAppSettings({...appSettings, receiptHeader: e.target.value})}
                   className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm resize-none h-20"
-                  placeholder="Message at top of receipt"
+                  placeholder="رسالة أعلى الإيصال"
                 />
               </div>
               <div>
-                <label className="block text-xs mb-1.5 font-medium text-gray-600">Receipt Footer</label>
+                <label className="block text-xs mb-1.5 font-medium text-gray-600">ذيل الإيصال</label>
                 <textarea
                   value={appSettings.receiptFooter}
                   onChange={e => setAppSettings({...appSettings, receiptFooter: e.target.value})}
                   className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm resize-none h-20"
-                  placeholder="Message at bottom of receipt"
+                  placeholder="رسالة أسفل الإيصال"
                 />
               </div>
               <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-200">
-                <label className="text-sm font-medium text-gray-600">Round Total to Nearest Whole Number</label>
+                <label className="text-sm font-medium text-gray-600">تقريب الإجمالي لأقرب عدد صحيح</label>
                 <input
                   type="checkbox"
                   checked={appSettings.rounding}
@@ -4902,13 +4815,13 @@ const AppCore = () => {
                   onClick={handleReindexOrders}
                   className="w-full py-2.5 rounded-xl text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 transition-colors"
                 >
-                  Re-index Order Numbers (Fix Gaps)
+                  إعادة ترقيم الطلبات (إصلاح الفجوات)
                 </button>
               </div>
               <div className="flex gap-2 pt-2">
-                <button onClick={() => setShowSettingsModal(false)} className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600">Cancel</button>
+                <button onClick={() => setShowSettingsModal(false)} className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-gray-100 text-gray-600">إلغاء</button>
                 <button onClick={handleSaveSettings} disabled={uploadProgress} className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50 hover:opacity-90" style={{ backgroundColor: theme.primary }}>
-                  {uploadProgress ? 'Saving...' : 'Save Settings'}
+                  {uploadProgress ? 'جاري الحفظ...' : 'حفظ الإعدادات'}
                 </button>
               </div>
             </div>
@@ -4921,7 +4834,7 @@ const AppCore = () => {
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[70]">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>Reset Password</h3>
+              <h3 className="text-xl font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>إعادة تعيين كلمة المرور</h3>
               <button onClick={() => setShowResetPasswordModal(false)} className="text-gray-400 hover:text-gray-600"><X size={24} /></button>
             </div>
             <p className="text-sm text-gray-600 mb-4">
@@ -4929,7 +4842,7 @@ const AppCore = () => {
             </p>
             <form onSubmit={handleSendPasswordReset}>
               <div className="mb-4">
-                <label className="block text-xs mb-1.5 font-medium text-gray-600">Email Address</label>
+                <label className="block text-xs mb-1.5 font-medium text-gray-600">البريد الإلكتروني</label>
                 <input
                   type="email"
                   value={resetEmail}
@@ -4955,7 +4868,7 @@ const AppCore = () => {
       {showDiscountModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[80]">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-sm border border-gray-200">
-            <h3 className="text-lg font-bold text-primary mb-4" style={{ fontFamily: FONT_HEADING }}>Set Discount</h3>
+            <h3 className="text-lg font-bold text-primary mb-4" style={{ fontFamily: FONT_HEADING }}>تعيين الخصم</h3>
             
             <div className="flex gap-2 mb-4 bg-gray-100 p-1 rounded-xl">
               <button 
