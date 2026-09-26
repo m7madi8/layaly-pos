@@ -1,0 +1,26 @@
+{
+  "short_name": "ليالي كافيه",
+  "name": "ليالي كافيه — نقاط البيع",
+  "icons": [
+    {
+      "src": "logo5.png",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/png"
+    },
+    {
+      "src": "logo5.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "logo5.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#1a3328",
+  "background_color": "#f5efe3",
+  "lang": "ar"
+}
