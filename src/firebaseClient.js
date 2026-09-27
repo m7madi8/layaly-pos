@@ -37,9 +37,15 @@ const firebaseEnvKeys = [
   'REACT_APP_FIREBASE_APP_ID',
 ];
 
-const missingFirebaseEnv = firebaseEnvKeys.filter((key) => !process.env[key]);
+function envValue(key) {
+  const raw = process.env[key];
+  if (raw == null) return '';
+  return String(raw).trim();
+}
+
+const missingFirebaseEnv = firebaseEnvKeys.filter((key) => !envValue(key));
 export const isFirebaseConfigured = missingFirebaseEnv.length === 0;
-const forceDemo = process.env.REACT_APP_DEMO_MODE === 'true';
+const forceDemo = envValue('REACT_APP_DEMO_MODE').toLowerCase() === 'true';
 
 /** Local demo when Firebase is missing or REACT_APP_DEMO_MODE=true */
 export const isDemoMode = forceDemo || !isFirebaseConfigured;
@@ -60,12 +66,12 @@ if (isDemoMode) {
   db = demo.demoDb;
 } else {
   const firebaseConfig = {
-    apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
-    authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
-    projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
-    storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
-    messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
-    appId: process.env.REACT_APP_FIREBASE_APP_ID,
+    apiKey: envValue('REACT_APP_FIREBASE_API_KEY'),
+    authDomain: envValue('REACT_APP_FIREBASE_AUTH_DOMAIN'),
+    projectId: envValue('REACT_APP_FIREBASE_PROJECT_ID'),
+    storageBucket: envValue('REACT_APP_FIREBASE_STORAGE_BUCKET'),
+    messagingSenderId: envValue('REACT_APP_FIREBASE_MESSAGING_SENDER_ID'),
+    appId: envValue('REACT_APP_FIREBASE_APP_ID'),
   };
   const app = initializeApp(firebaseConfig);
   auth = getAuth(app);

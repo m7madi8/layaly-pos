@@ -17,6 +17,7 @@ import {
   db,
   isDemoMode,
   isFirebaseConfigured,
+  firebaseConnectionInfo,
   collection,
   addDoc,
   getDocs,
@@ -1892,7 +1893,14 @@ const AppCore = () => {
           className="fixed top-0 left-0 right-0 z-50 py-1.5 px-4 text-center text-xs text-white bg-accent shadow-layali"
           style={{ fontFamily: FONT_UI }}
         >
-          وضع تجريبي محلي — البيانات على هذا الجهاز فقط (localStorage)
+          <div>وضع تجريبي محلي — البيانات على هذا الجهاز فقط (localStorage)</div>
+          {firebaseConnectionInfo.forceDemo ? (
+            <div className="opacity-90 mt-0.5">السبب: REACT_APP_DEMO_MODE=true — غيّره إلى false ثم أعد البناء (Redeploy على Vercel)</div>
+          ) : firebaseConnectionInfo.missingKeys.length > 0 ? (
+            <div className="opacity-90 mt-0.5">
+              مفاتيح Firebase غير موجودة عند البناء ({firebaseConnectionInfo.missingKeys.length}) — أضفها في Vercel ثم Deploy جديد (Redeploy)
+            </div>
+          ) : null}
         </div>
       )}
       {/* Overlay for mobile/tablet */}
@@ -4454,7 +4462,11 @@ const AppCore = () => {
               >
                 {isFirebaseConfigured && !isDemoMode
                   ? 'البيانات مربوطة بـ Firebase (Firestore). الصور تُحفظ داخل القاعدة بدون Storage.'
-                  : 'التطبيق يعمل محلياً. لربط Firebase راجع ملف .env.example'}
+                  : firebaseConnectionInfo.forceDemo
+                    ? 'وضع التجربة مفعّل (REACT_APP_DEMO_MODE=true). على Vercel: غيّره إلى false ثم Redeploy.'
+                    : firebaseConnectionInfo.missingKeys.length > 0
+                      ? `مفاتيح ناقصة عند آخر بناء: ${firebaseConnectionInfo.missingKeys.join('، ')}. أضفها في Environment Variables ثم Redeploy.`
+                      : 'التطبيق يعمل محلياً. لربط Firebase راجع ملف .env.example'}
               </div>
               {!isDemoMode && hasLocalDemoData() && !wasDemoMigratedForUser(user?.uid) && (
                 <button
