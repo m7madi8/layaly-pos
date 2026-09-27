@@ -25,7 +25,6 @@ import {
   runTransaction as firestoreRunTransaction,
   writeBatch as firestoreWriteBatch,
 } from 'firebase/firestore';
-import { getStorage, ref as storageRef, uploadBytes as storageUploadBytes, getDownloadURL as storageGetDownloadURL } from 'firebase/storage';
 import * as demo from './demoBackend';
 import { ADMIN_LOGIN_EMAIL, isAdminPasswordValid } from './adminAuth';
 
@@ -54,13 +53,11 @@ export const firebaseConnectionInfo = {
 
 let auth;
 let db;
-let storage;
 
 if (isDemoMode) {
   demo.runFullDataWipe();
   auth = demo.demoAuth;
   db = demo.demoDb;
-  storage = demo.demoStorage;
 } else {
   const firebaseConfig = {
     apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
@@ -73,10 +70,9 @@ if (isDemoMode) {
   const app = initializeApp(firebaseConfig);
   auth = getAuth(app);
   db = getFirestore(app);
-  storage = getStorage(app);
 }
 
-export { auth, db, storage };
+export { auth, db };
 
 export const enterLocalDemo = demo.enterLocalDemo;
 
@@ -102,9 +98,6 @@ export const createUserWithEmailAndPassword = bind(demo.createUserWithEmailAndPa
 export const signInWithEmailAndPassword = bind(demo.signInWithEmailAndPassword, firebaseSignIn);
 export const signOut = bind(demo.signOut, firebaseSignOut);
 export const sendPasswordResetEmail = bind(demo.sendPasswordResetEmail, firebaseSendPasswordReset);
-export const ref = bind(demo.ref, storageRef);
-export const uploadBytes = bind(demo.uploadBytes, storageUploadBytes);
-export const getDownloadURL = bind(demo.getDownloadURL, storageGetDownloadURL);
 
 export async function signInWithAdminPassword(authInstance, password) {
   if (!isAdminPasswordValid(password)) {

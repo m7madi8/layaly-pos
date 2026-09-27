@@ -15,7 +15,6 @@ import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, Doll
 import {
   auth,
   db,
-  storage,
   isDemoMode,
   isFirebaseConfigured,
   collection,
@@ -34,10 +33,8 @@ import {
   onAuthStateChanged,
   signInWithAdminPassword,
   signOut,
-  ref,
-  uploadBytes,
-  getDownloadURL,
 } from './firebaseClient';
+import { fileToStoredDataUrl } from './utils/fileToDataUrl';
 import {
   hasLocalDemoData,
   migrateLocalDemoToFirebase,
@@ -303,13 +300,7 @@ const AppCore = () => {
       let logoUrl = businessProfile?.logoUrl || '';
       
       if (logoFile) {
-        const compressedLogo = await compressImage(logoFile);
-        logoUrl = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target.result);
-          reader.onerror = reject;
-          reader.readAsDataURL(compressedLogo);
-        });
+        logoUrl = await fileToStoredDataUrl(logoFile);
       }
       
       const profileData = {
@@ -349,9 +340,7 @@ const AppCore = () => {
     try {
       let receiptUrl = expenseForm.receiptUrl || '';
       if (expenseReceiptFile) {
-        const storageRef = ref(storage, `receipts/${user.uid}/${Date.now()}_${expenseReceiptFile.name}`);
-        await uploadBytes(storageRef, expenseReceiptFile);
-        receiptUrl = await getDownloadURL(storageRef);
+        receiptUrl = await fileToStoredDataUrl(expenseReceiptFile);
       }
 
       const category =
@@ -604,11 +593,7 @@ const AppCore = () => {
       let imageUrl = productForm.image || '';
       
       if (imageFile) {
-        // Compress image before upload
-        const compressedFile = await compressImage(imageFile);
-        const storageRef = ref(storage, `products/${user.uid}/${Date.now()}_${imageFile.name}`);
-        await uploadBytes(storageRef, compressedFile);
-        imageUrl = await getDownloadURL(storageRef);
+        imageUrl = await fileToStoredDataUrl(imageFile);
       }
       
       const productData = {
@@ -775,41 +760,6 @@ const AppCore = () => {
         alert("تعذّر إلغاء الطلب");
       }
     }
-  };
-
-  // Image compression
-  const compressImage = (file) => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
-          
-          const maxSize = 800;
-          if (width > height && width > maxSize) {
-            height = (height / width) * maxSize;
-            width = maxSize;
-          } else if (height > maxSize) {
-            width = (width / height) * maxSize;
-            height = maxSize;
-          }
-          
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, width, height);
-          
-          canvas.toBlob((blob) => {
-            resolve(blob);
-          }, 'image/jpeg', 0.7);
-        };
-        img.src = e.target.result;
-      };
-      reader.readAsDataURL(file);
-    });
   };
 
   // Order handlers
@@ -4503,7 +4453,7 @@ const AppCore = () => {
                 style={{ fontFamily: FONT_UI }}
               >
                 {isFirebaseConfigured && !isDemoMode
-                  ? 'البيانات مربوطة بـ Firebase (Firestore + Storage).'
+                  ? 'البيانات مربوطة بـ Firebase (Firestore). الصور تُحفظ داخل القاعدة بدون Storage.'
                   : 'التطبيق يعمل محلياً. لربط Firebase راجع ملف .env.example'}
               </div>
               {!isDemoMode && hasLocalDemoData() && !wasDemoMigratedForUser(user?.uid) && (
