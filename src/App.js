@@ -45,6 +45,7 @@ import {
 } from './migrateDemoToFirebase';
 import CloudConfigRequired from './components/CloudConfigRequired';
 import { mapFirebaseAuthError } from './authErrors';
+import IosInstallHint from './components/IosInstallHint';
 import {
   EMPLOYEE_LOGIN_PASSWORD,
   EMPLOYEE_VIEWS,
@@ -2019,6 +2020,7 @@ const AppCore = () => {
               </button>
             )}
           </div>
+          <IosInstallHint />
         </div>
       </div>
     );
