@@ -56,6 +56,8 @@ import { printReceiptViaBrowser } from './utils/printReceiptBrowser';
 import { downloadBusinessReportPdf } from './utils/businessReportPdf';
 import { downloadCustomersLedgerPdf } from './utils/customersLedgerPdf';
 
+const LOW_STOCK_THRESHOLD = 10;
+
 function layoutNotificationPanel(anchor) {
   const margin = 12;
   const vw = window.innerWidth;
@@ -207,6 +209,7 @@ const AppCore = () => {
   const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [notificationLayout, setNotificationLayout] = useState(null);
+  const [lowStockExpanded, setLowStockExpanded] = useState(false);
   const notificationButtonRef = useRef(null);
   const [expenseFilter, setExpenseFilter] = useState('all');
   const [expenseCustomDateRange, setExpenseCustomDateRange] = useState({ start: '', end: '' });
@@ -1760,7 +1763,10 @@ const AppCore = () => {
     .filter(o => o.status === 'paid')
     .reduce((sum, o) => sum + (o.profit || 0), 0);
 
-  const lowStock = products.filter(p => p.stock < 10).length;
+  const lowStockProducts = products
+    .filter((p) => Number(p.stock) < LOW_STOCK_THRESHOLD)
+    .sort((a, b) => Number(a.stock) - Number(b.stock));
+  const lowStock = lowStockProducts.length;
 
   // Top selling for dashboard
   const getTopSellingProducts = (orderList = orders) => {
@@ -2259,12 +2265,96 @@ const AppCore = () => {
                        </div>
                        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
                          {lowStock > 0 && (
-                           <div className="flex items-start gap-3 rounded-xl border border-red-100 bg-red-50 p-3">
-                             <AlertCircle size={18} className="mt-0.5 shrink-0 text-red-500" />
-                             <div className="min-w-0">
-                               <p className="text-sm font-medium text-red-700 break-words">تنبيه مخزون منخفض</p>
-                               <p className="mt-0.5 text-xs text-red-600 break-words">{lowStock} منتجاً بمخزون منخفض</p>
-                             </div>
+                           <div className="overflow-hidden rounded-xl border border-red-100 bg-red-50">
+                             <button
+                               type="button"
+                               aria-expanded={lowStockExpanded}
+                               onClick={() => setLowStockExpanded((v) => !v)}
+                               className="flex w-full items-start gap-3 p-3 text-start transition-colors hover:bg-red-100/60"
+                             >
+                               <AlertCircle size={18} className="mt-0.5 shrink-0 text-red-500" />
+                               <div className="min-w-0 flex-1">
+                                 <p className="text-sm font-medium text-red-700 break-words">تنبيه مخزون منخفض</p>
+                                 <p className="mt-0.5 text-xs text-red-600 break-words">
+                                   {lowStock} {lowStock === 1 ? 'صنف' : 'أصناف'} أقل من {LOW_STOCK_THRESHOLD} قطع
+                                   {' · '}
+                                   {lowStockExpanded ? 'إخفاء التفاصيل' : 'اضغط لعرض التفاصيل'}
+                                 </p>
+                               </div>
+                               <ChevronDown
+                                 size={18}
+                                 className={`mt-0.5 shrink-0 text-red-400 transition-transform duration-200 ${lowStockExpanded ? 'rotate-180' : ''}`}
+                               />
+                             </button>
+
+                             {lowStockExpanded && (
+                               <div className="border-t border-red-100 bg-white">
+                                 <ul className="divide-y divide-gray-100">
+                                   {lowStockProducts.map((product) => {
+                                     const stock = Number(product.stock) || 0;
+                                     const isOut = stock <= 0;
+                                     const content = (
+                                       <>
+                                         <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-gray-100 bg-white">
+                                           {product.image ? (
+                                             <img src={product.image} alt="" className="h-full w-full object-contain" />
+                                           ) : (
+                                             <Package size={18} className="text-gray-300" />
+                                           )}
+                                         </div>
+                                         <div className="min-w-0 flex-1">
+                                           <p className="truncate text-sm font-medium text-primary">{product.name}</p>
+                                           {product.category ? (
+                                             <p className="truncate text-[11px] text-gray-400">{product.category}</p>
+                                           ) : null}
+                                         </div>
+                                         <span
+                                           className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                                             isOut ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700'
+                                           }`}
+                                         >
+                                           {isOut ? 'نفد' : `متبقي ${stock}`}
+                                         </span>
+                                       </>
+                                     );
+                                     return (
+                                       <li key={product.id}>
+                                         {isEmployee ? (
+                                           <div className="flex items-center gap-3 px-3 py-2.5">{content}</div>
+                                         ) : (
+                                           <button
+                                             type="button"
+                                             onClick={() => {
+                                               setShowNotifications(false);
+                                               setCurrentView('inventory');
+                                               handleEditProduct(product);
+                                             }}
+                                             className="flex w-full items-center gap-3 px-3 py-2.5 text-start transition-colors hover:bg-gray-50"
+                                             title="تعديل الكمية"
+                                           >
+                                             {content}
+                                           </button>
+                                         )}
+                                       </li>
+                                     );
+                                   })}
+                                 </ul>
+                                 {!isEmployee && (
+                                   <button
+                                     type="button"
+                                     onClick={() => {
+                                       setShowNotifications(false);
+                                       setSelectedInventoryCategory('all');
+                                       setInventorySearchTerm('');
+                                       setCurrentView('inventory');
+                                     }}
+                                     className="w-full border-t border-gray-100 py-2.5 text-xs font-medium text-accent hover:bg-gray-50"
+                                   >
+                                     فتح صفحة المخزون
+                                   </button>
+                                 )}
+                               </div>
+                             )}
                            </div>
                          )}
                          {lowStock === 0 && (
@@ -3911,7 +4001,7 @@ const AppCore = () => {
                   <p className="text-base md:text-lg mb-1" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 600 }}>
                     {fmtMoney(product.price)}
                   </p>
-                  <p className={`text-xs ${product.stock < 10 ? 'text-red-500' : ''}`} style={{ fontFamily: FONT_UI, fontWeight: 500 }}>
+                  <p className={`text-xs ${Number(product.stock) < LOW_STOCK_THRESHOLD ? 'text-red-500' : ''}`} style={{ fontFamily: FONT_UI, fontWeight: 500 }}>
                     المخزون: {product.stock}
                   </p>
                   <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
