@@ -1,4 +1,4 @@
-import { APP_NAME, APP_LOGO } from '../branding';
+import { APP_NAME, resolveAppLogo } from '../branding';
 import { escapeHtml, renderHtmlToPdfBlob } from './pdfExport';
 import {
   formatStatementDateTime,
@@ -6,14 +6,17 @@ import {
   orderPaymentSummary,
   resolveCustomerStatementOrders,
   computeStatementTotals,
+  computeLegacyDebtTotal,
+  customerTransactionTypeLabel,
 } from './customerStatementData';
 
 function logoUrl() {
-  if (typeof window === 'undefined') return APP_LOGO;
+  const src = resolveAppLogo();
+  if (typeof window === 'undefined') return src;
   try {
-    return new URL(APP_LOGO, window.location.origin).href;
+    return new URL(src, window.location.origin).href;
   } catch {
-    return APP_LOGO;
+    return src;
   }
 }
 
@@ -56,6 +59,7 @@ export function buildCustomerStatementHtml({ customer, orders, business, fmtMone
   const statementOrders = resolveCustomerStatementOrders(customer, orders);
   const { orderCount, debtOrderCount, totalPurchases, totalCash, totalDebtOnOrders } =
     computeStatementTotals(statementOrders);
+  const legacyDebtTotal = computeLegacyDebtTotal(customer);
 
   const orderBlocks = statementOrders
     .map((order) => {
@@ -98,8 +102,14 @@ export function buildCustomerStatementHtml({ customer, orders, business, fmtMone
     .map(
       (t) => `
     <tr>
-      <td>${escapeHtml(t.orderNumber ? `#${t.orderNumber}` : '—')}</td>
-      <td>${t.type === 'order_debt' ? 'دين من طلب' : escapeHtml(t.type || '—')}</td>
+      <td>${escapeHtml(
+        t.type === 'legacy_debt'
+          ? t.description || 'دين قديم'
+          : t.orderNumber
+            ? `#${t.orderNumber}`
+            : '—'
+      )}</td>
+      <td>${escapeHtml(customerTransactionTypeLabel(t.type))}</td>
       <td class="num debt">${fmtMoney(t.amount)}</td>
     </tr>`
     )
@@ -279,7 +289,8 @@ export function buildCustomerStatementHtml({ customer, orders, business, fmtMone
       <p>إجمالي المشتريات: <strong>${fmtMoney(totalPurchases)}</strong></p>
       <p>إجمالي المدفوع نقداً: <strong>${fmtMoney(totalCash)}</strong></p>
       <p>إجمالي الدين على الطلبات: <strong>${fmtMoney(totalDebtOnOrders)}</strong></p>
-      <p class="hint">يُحسب كل طلب مرتبط بالعميل — بما في ذلك الطلبات بالدين والدفع الجزئي.</p>
+      ${legacyDebtTotal > 0 ? `<p>دين قديم (رصيد سابق): <strong>${fmtMoney(legacyDebtTotal)}</strong></p>` : ''}
+      <p class="hint">يُحسب كل طلب مرتبط بالعميل — بما في ذلك الطلبات بالدين والدفع الجزئي. الدين القديم يُضاف للرصيد دون أن يُعدّ طلباً.</p>
     </div>
   </div>
 
@@ -305,7 +316,7 @@ export function buildCustomerStatementHtml({ customer, orders, business, fmtMone
     <thead><tr><th>مرجع الطلب</th><th>نوع الحركة</th><th>المبلغ</th></tr></thead>
     <tbody>${txRows}</tbody>
   </table>
-  <p class="hint" style="margin-bottom:16px;font-size:11px;color:#8a958e;">كل حركة دين مرتبطة برقم طلب تظهر أيضاً في تفاصيل الطلبات أدناه.</p>`
+  <p class="hint" style="margin-bottom:16px;font-size:11px;color:#8a958e;">حركات «دين من طلب» مرتبطة برقم طلب وتظهر في تفاصيل الطلبات. «دين قديم» رصيد سابق على الحساب.</p>`
       : ''
   }
 
@@ -342,7 +353,7 @@ function openPrintWindow(html) {
   };
 }
 
-export { resolveCustomerStatementOrders, computeStatementTotals } from './customerStatementData';
+export { resolveCustomerStatementOrders, computeStatementTotals, computeLegacyDebtTotal, customerTransactionTypeLabel } from './customerStatementData';
 
 export function printCustomerAccountStatement(opts) {
   const html = buildCustomerStatementHtml(opts);

@@ -1,5 +1,5 @@
 import React from 'react';
-import { APP_LOGO, APP_NAME, FONT_UI, theme } from '../branding';
+import { resolveAppLogo, APP_NAME, FONT_UI, theme } from '../branding';
 
 export default function CloudConfigRequired({ missingKeys = [] }) {
   return (
@@ -10,7 +10,7 @@ export default function CloudConfigRequired({ missingKeys = [] }) {
     >
       <div className="w-full max-w-lg bg-white rounded-3xl shadow-xl p-8 border border-red-100">
         <div className="text-center mb-6">
-          <img src={APP_LOGO} alt="" className="w-20 h-20 mx-auto mb-4 rounded-2xl object-cover" />
+          <img src={resolveAppLogo()} alt="" className="w-20 h-20 mx-auto mb-4 rounded-2xl object-contain bg-white p-1" />
           <h1 className="text-xl font-semibold text-primary" style={{ fontFamily: FONT_UI }}>
             {APP_NAME}
           </h1>

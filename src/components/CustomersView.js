@@ -5,6 +5,8 @@ import {
   downloadCustomerAccountStatementPdf,
   resolveCustomerStatementOrders,
   computeStatementTotals,
+  computeLegacyDebtTotal,
+  customerTransactionTypeLabel,
 } from '../utils/customerAccountStatement';
 import { orderStatusLabel, paymentTypeLabel, paymentMethodLabel } from '../i18n';
 
@@ -16,6 +18,7 @@ export default function CustomersView({
   FONT_UI,
   FONT_HEADING,
   onSaveCustomer,
+  onAddLegacyDebt,
   onDeleteCustomer,
   onExportCustomerFile,
   onClearAllCustomers,
@@ -28,8 +31,18 @@ export default function CustomersView({
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [detailId, setDetailId] = useState(null);
-  const [form, setForm] = useState({ name: '', phone: '', address: '', notes: '' });
+  const [form, setForm] = useState({
+    name: '',
+    phone: '',
+    address: '',
+    notes: '',
+    openingDebt: '',
+    openingDebtNote: '',
+  });
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [legacyModalOpen, setLegacyModalOpen] = useState(false);
+  const [legacyForm, setLegacyForm] = useState({ amount: '', note: '' });
+  const [legacySaving, setLegacySaving] = useState(false);
 
   const formatOrderDate = (order) => {
     if (!order?.timestamp) return '—';
@@ -62,9 +75,29 @@ export default function CustomersView({
   }, [orders, detailId, detailCustomer]);
 
   const statementTotals = useMemo(() => computeStatementTotals(customerOrders), [customerOrders]);
+  const legacyDebtTotal = useMemo(
+    () => (detailCustomer ? computeLegacyDebtTotal(detailCustomer) : 0),
+    [detailCustomer]
+  );
+
+  const formatLegacyDate = (iso) => {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleString('ar-EG', { dateStyle: 'medium', timeStyle: 'short' });
+    } catch {
+      return '';
+    }
+  };
 
   const openNew = () => {
-    setForm({ name: '', phone: '', address: '', notes: '' });
+    setForm({
+      name: '',
+      phone: '',
+      address: '',
+      notes: '',
+      openingDebt: '',
+      openingDebtNote: '',
+    });
     setEditingId(null);
     setShowForm(true);
   };
@@ -75,6 +108,8 @@ export default function CustomersView({
       phone: c.phone || '',
       address: c.address || '',
       notes: c.notes || '',
+      openingDebt: '',
+      openingDebtNote: '',
     });
     setEditingId(c.id);
     setShowForm(true);
@@ -101,6 +136,31 @@ export default function CustomersView({
       alert(e.message || 'تعذّر إنشاء ملف PDF');
     } finally {
       setPdfLoading(false);
+    }
+  };
+
+  const handleSubmitLegacyDebt = async (e) => {
+    e.preventDefault();
+    if (!detailCustomer || legacySaving) return;
+    const amt = Number(legacyForm.amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      alert('أدخل مبلغاً صحيحاً أكبر من صفر.');
+      return;
+    }
+    if (
+      !window.confirm(
+        `إضافة دين قديم بقيمة ${fmtMoney(amt)} للعميل «${detailCustomer.name}»؟\nسيُزاد رصيد الدين على الحساب.`
+      )
+    ) {
+      return;
+    }
+    setLegacySaving(true);
+    try {
+      await onAddLegacyDebt(detailCustomer.id, amt, legacyForm.note);
+      setLegacyModalOpen(false);
+      setLegacyForm({ amount: '', note: '' });
+    } finally {
+      setLegacySaving(false);
     }
   };
 
@@ -247,6 +307,18 @@ export default function CustomersView({
                   </button>
                   <button
                     type="button"
+                    onClick={() => {
+                      setLegacyForm({ amount: '', note: '' });
+                      setLegacyModalOpen(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-amber-200 bg-amber-50/80 text-xs font-medium text-amber-900 hover:bg-amber-100"
+                    style={{ fontFamily: FONT_UI }}
+                  >
+                    <Plus size={14} />
+                    دين قديم
+                  </button>
+                  <button
+                    type="button"
                     onClick={handlePrintStatement}
                     className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-gray-200 text-xs font-medium hover:bg-gray-50"
                     style={{ fontFamily: FONT_UI }}
@@ -291,6 +363,9 @@ export default function CustomersView({
                 <div className="bg-white rounded-xl p-3 border border-gray-100">
                   <p className="text-[10px] text-gray-400">إجمالي الدين</p>
                   <p className="text-lg font-bold text-red-600">{fmtMoney(detailCustomer.balance || 0)}</p>
+                  {legacyDebtTotal > 0 && (
+                    <p className="text-[10px] text-amber-700">منها دين قديم: {fmtMoney(legacyDebtTotal)}</p>
+                  )}
                 </div>
                 <div className="bg-white rounded-xl p-3 border border-gray-100">
                   <p className="text-[10px] text-gray-400">عدد الطلبات</p>
@@ -326,21 +401,41 @@ export default function CustomersView({
                   {(detailCustomer.transactions || [])
                     .slice()
                     .reverse()
-                    .map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        onClick={() => openOrderByNumber(t.orderNumber)}
-                        className="w-full flex justify-between items-center text-xs p-2.5 rounded-xl bg-gray-50 border border-gray-100 hover:border-accent/40 hover:bg-accent-soft/30 transition-colors text-start"
-                        style={{ fontFamily: FONT_UI }}
-                      >
-                        <span>
-                          طلب #{t.orderNumber || '—'} — {t.type === 'order_debt' ? 'دين' : t.type}
-                          <span className="block text-[10px] text-gray-400 mt-0.5">اضغط لعرض تفاصيل الطلب</span>
-                        </span>
-                        <span className="font-bold text-red-600 shrink-0 ms-2">+{fmtMoney(t.amount)}</span>
-                      </button>
-                    ))}
+                    .map((t) => {
+                      if (t.type === 'legacy_debt') {
+                        return (
+                          <div
+                            key={t.id}
+                            className="w-full flex justify-between items-center text-xs p-2.5 rounded-xl bg-amber-50/80 border border-amber-100 text-start"
+                            style={{ fontFamily: FONT_UI }}
+                          >
+                            <span>
+                              {customerTransactionTypeLabel(t.type)}
+                              {t.description ? ` — ${t.description}` : ''}
+                              {t.date ? (
+                                <span className="block text-[10px] text-gray-400 mt-0.5">{formatLegacyDate(t.date)}</span>
+                              ) : null}
+                            </span>
+                            <span className="font-bold text-red-600 shrink-0 ms-2">+{fmtMoney(t.amount)}</span>
+                          </div>
+                        );
+                      }
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => openOrderByNumber(t.orderNumber)}
+                          className="w-full flex justify-between items-center text-xs p-2.5 rounded-xl bg-gray-50 border border-gray-100 hover:border-accent/40 hover:bg-accent-soft/30 transition-colors text-start"
+                          style={{ fontFamily: FONT_UI }}
+                        >
+                          <span>
+                            طلب #{t.orderNumber || '—'} — {customerTransactionTypeLabel(t.type)}
+                            <span className="block text-[10px] text-gray-400 mt-0.5">اضغط لعرض تفاصيل الطلب</span>
+                          </span>
+                          <span className="font-bold text-red-600 shrink-0 ms-2">+{fmtMoney(t.amount)}</span>
+                        </button>
+                      );
+                    })}
                   {customerOrders.map((o) => (
                     <button
                       key={o.id}
@@ -527,6 +622,36 @@ export default function CustomersView({
                   style={{ fontFamily: FONT_UI }}
                 />
               </div>
+              {!editingId && (
+                <>
+                  <div>
+                    <label className="block text-xs mb-1 text-gray-600">دين قديم (اختياري)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={form.openingDebt}
+                      onChange={(e) => setForm((f) => ({ ...f, openingDebt: e.target.value }))}
+                      placeholder="0"
+                      className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm outline-none"
+                      style={{ fontFamily: FONT_UI }}
+                    />
+                    <p className="text-[10px] text-gray-400 mt-1">رصيد دين سابق قبل استخدام النظام</p>
+                  </div>
+                  {Number(form.openingDebt) > 0 && (
+                    <div>
+                      <label className="block text-xs mb-1 text-gray-600">وصف الدين القديم (اختياري)</label>
+                      <input
+                        value={form.openingDebtNote}
+                        onChange={(e) => setForm((f) => ({ ...f, openingDebtNote: e.target.value }))}
+                        placeholder="مثال: رصيد من دفتر قديم"
+                        className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm outline-none"
+                        style={{ fontFamily: FONT_UI }}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
               <div>
                 <label className="block text-xs mb-1 text-gray-600">ملاحظات</label>
                 <textarea
@@ -544,6 +669,73 @@ export default function CustomersView({
               >
                 {editingId ? 'حفظ التعديلات' : 'إضافة العميل'}
               </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {legacyModalOpen && detailCustomer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-5 border border-gray-100">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>
+                إضافة دين قديم
+              </h3>
+              <button
+                type="button"
+                onClick={() => setLegacyModalOpen(false)}
+                className="p-1 rounded-lg hover:bg-gray-100 text-gray-500"
+                aria-label="إغلاق"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-4" style={{ fontFamily: FONT_UI }}>
+              للعميل: <strong>{detailCustomer.name}</strong> — الرصيد الحالي: {fmtMoney(detailCustomer.balance || 0)}
+            </p>
+            <form onSubmit={handleSubmitLegacyDebt} className="space-y-3">
+              <div>
+                <label className="block text-xs mb-1 text-gray-600">المبلغ</label>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  required
+                  autoFocus
+                  value={legacyForm.amount}
+                  onChange={(e) => setLegacyForm((f) => ({ ...f, amount: e.target.value }))}
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm outline-none"
+                  style={{ fontFamily: FONT_UI }}
+                />
+              </div>
+              <div>
+                <label className="block text-xs mb-1 text-gray-600">ملاحظة (اختياري)</label>
+                <input
+                  value={legacyForm.note}
+                  onChange={(e) => setLegacyForm((f) => ({ ...f, note: e.target.value }))}
+                  placeholder="دين قديم"
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm outline-none"
+                  style={{ fontFamily: FONT_UI }}
+                />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setLegacyModalOpen(false)}
+                  className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium"
+                  style={{ fontFamily: FONT_UI }}
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={legacySaving}
+                  className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-60"
+                  style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
+                >
+                  {legacySaving ? 'جاري الحفظ…' : 'تأكيد الإضافة'}
+                </button>
+              </div>
             </form>
           </div>
         </div>

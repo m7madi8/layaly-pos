@@ -1,6 +1,12 @@
 export const APP_NAME = 'ليالي كافيه';
 export const APP_TAGLINE = 'نظام نقاط البيع';
+/** الشعار الرسمي للموقع — الملف: public/logo5.png */
 export const APP_LOGO = `${process.env.PUBLIC_URL || ''}/logo5.png`;
+
+/** شعار العرض والطباعة والـ PDF (الشعار المعتمد logo5.png) */
+export function resolveAppLogo() {
+  return APP_LOGO;
+}
 export const FONT_UI = 'var(--font-ui)';
 export const FONT_HEADING = 'var(--font-ui)';
 

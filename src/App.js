@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { APP_NAME, APP_TAGLINE, APP_LOGO, FONT_UI, FONT_HEADING, theme } from './branding';
+import { APP_NAME, APP_TAGLINE, APP_LOGO, resolveAppLogo, FONT_UI, FONT_HEADING, theme } from './branding';
 import { fmtMoney, fmtMoneyPlain, orderFilterLabel, orderStatusLabel, categoryLabel, paymentMethodLabel, paymentTypeLabel, expenseCategoryLabel, expenseFilterLabel, reportFilterLabel } from './i18n';
 import {
   OPERATING_EXPENSE_CATEGORIES,
@@ -10,7 +10,7 @@ import {
 import PosProductCard from './components/PosProductCard';
 import CustomersView from './components/CustomersView';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs } from './productAssets';
-import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Camera, Calendar, Clock, Trash2, Percent, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, Gift, ChevronDown, ChevronUp, Bell, Truck } from 'lucide-react';
+import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, Percent, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, Gift, ChevronDown, ChevronUp, Bell, Truck } from 'lucide-react';
 
 import {
   auth,
@@ -81,7 +81,6 @@ const AppCore = () => {
     email: '',
     ownerName: ''
   });
-  const [logoFile, setLogoFile] = useState(null);
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [orderFilter, setOrderFilter] = useState('all');
   const [customDateRange, setCustomDateRange] = useState({ start: '', end: '' });
@@ -306,23 +305,16 @@ const AppCore = () => {
     setUploadProgress(true);
     
     try {
-      let logoUrl = businessProfile?.logoUrl || '';
-      
-      if (logoFile) {
-        logoUrl = await fileToStoredDataUrl(logoFile);
-      }
-      
       const profileData = {
         ...profileForm,
-        logoUrl,
-        updatedAt: serverTimestamp()
+        logoUrl: APP_LOGO,
+        updatedAt: serverTimestamp(),
       };
       
       await setDoc(doc(db, 'users', user.uid), profileData, { merge: true });
       setBusinessProfile(prev => ({ ...prev, ...profileData }));
       setShowProfileSetup(false);
       setShowAccountModal(false);
-      setLogoFile(null);
     } catch (error) {
       alert(error.message);
     } finally {
@@ -856,13 +848,55 @@ const AppCore = () => {
           transactions: existing?.transactions ?? [],
         });
       } else {
+        const openingDebt = Math.max(0, Number(formData.openingDebt) || 0);
+        const transactions = [];
+        let balance = 0;
+        if (openingDebt > 0) {
+          const entry = {
+            id: `legacy_${Date.now()}`,
+            type: 'legacy_debt',
+            amount: openingDebt,
+            description: (formData.openingDebtNote || '').trim() || 'دين قديم',
+            date: new Date().toISOString(),
+          };
+          transactions.push(entry);
+          balance = openingDebt;
+        }
         await addDoc(collection(db, 'users', user.uid, 'customers'), {
           ...payload,
-          balance: 0,
-          transactions: [],
+          balance,
+          transactions,
           createdAt: serverTimestamp(),
         });
       }
+    } catch (error) {
+      alert(error.message);
+    }
+  };
+
+  const handleAddLegacyDebt = async (customerId, amount, description) => {
+    const parsed = Number(amount);
+    if (!customerId || !Number.isFinite(parsed) || parsed <= 0) {
+      alert('أدخل مبلغاً صحيحاً أكبر من صفر.');
+      return;
+    }
+    const existing = customers.find((c) => c.id === customerId);
+    if (!existing) return;
+    const note = String(description || '').trim() || 'دين قديم';
+    const entry = {
+      id: `legacy_${Date.now()}`,
+      type: 'legacy_debt',
+      amount: parsed,
+      description: note,
+      date: new Date().toISOString(),
+    };
+    const transactions = [...(existing.transactions || []), entry].slice(-100);
+    try {
+      await updateDoc(doc(db, 'users', user.uid, 'customers', customerId), {
+        balance: (existing.balance || 0) + parsed,
+        transactions,
+        updatedAt: serverTimestamp(),
+      });
     } catch (error) {
       alert(error.message);
     }
@@ -1426,7 +1460,7 @@ const AppCore = () => {
       // Center align
       await sendData(new Uint8Array([0x1B, 0x61, 0x01]));
 
-      const logoToPrint = APP_LOGO;
+      const logoToPrint = resolveAppLogo();
       if (logoToPrint) {
         await printLogo(logoToPrint);
       }
@@ -1755,7 +1789,7 @@ const AppCore = () => {
         <div className="w-full max-w-md">
           <div className="bg-white rounded-3xl shadow-xl p-8 border border-primary border-opacity-5">
             <div className="text-center mb-8">
-              <img src={APP_LOGO} alt="ليالي كافيه" className="w-24 h-24 mx-auto mb-4 rounded-2xl shadow-lg object-cover" />
+              <img src={resolveAppLogo()} alt="ليالي كافيه" className="w-24 h-24 mx-auto mb-4 rounded-2xl shadow-lg object-contain bg-white p-1" />
               <h1 className="text-2xl mb-1" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 600 }}>
                 {APP_NAME}
               </h1>
@@ -1889,21 +1923,6 @@ const AppCore = () => {
                   placeholder="العنوان الكامل"
                 />
               </div>
-              <div className="md:col-span-2">
-                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>شعار المنشأة (اختياري)</label>
-                <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-gray-300 cursor-pointer hover:border-gray-400 transition-all">
-                  <Camera size={18} style={{ color: theme.textMuted }} />
-                  <span className="text-sm" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>
-                    {logoFile ? logoFile.name : 'رفع الشعار'}
-                  </span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => setLogoFile(e.target.files[0])}
-                    className="hidden"
-                  />
-                </label>
-              </div>
             </div>
 
             <button
@@ -1946,7 +1965,7 @@ const AppCore = () => {
       `}>
         <div className="p-5 border-b border-white/10">
           <div className={`flex items-center gap-3 duration-300 ${!isSidebarOpen && 'lg:justify-center'}`}>
-            <img src={APP_LOGO} alt={APP_NAME} className="w-10 h-10 rounded-lg object-contain flex-shrink-0 bg-white" />
+            <img src={resolveAppLogo()} alt={APP_NAME} className="w-10 h-10 rounded-lg object-contain flex-shrink-0 bg-white p-0.5" />
             <div className={`${isSidebarOpen ? 'block' : 'hidden'} transition-opacity duration-200 overflow-hidden`}>
               <h1 className="text-base tracking-wide" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>{APP_NAME}</h1>
               <p className="text-xs opacity-60" style={{ fontFamily: FONT_UI }}>{APP_TAGLINE}</p>
@@ -2044,9 +2063,11 @@ const AppCore = () => {
                   <p className="text-xs text-gray-500 font-medium">{new Date().toLocaleDateString('ar', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
                   <p className="text-sm font-bold text-primary">{businessProfile?.businessName || 'ليالي كافيه'}</p>
                </div>
-               <div className="w-10 h-10 rounded-full bg-primary text-white flex items-center justify-center font-bold text-sm">
-                  {businessProfile?.businessName ? businessProfile.businessName.charAt(0).toUpperCase() : 'K'}
-               </div>
+               <img
+                  src={resolveAppLogo()}
+                  alt={APP_NAME}
+                  className="w-10 h-10 rounded-full object-contain bg-white border border-gray-200 p-0.5 shrink-0"
+                />
             </div>
         </header>
         <main className="flex-1 overflow-auto p-4 md:p-8 bg-gray-100">
@@ -2414,7 +2435,7 @@ const AppCore = () => {
                   </div>
                   <div>
                     <p className="text-xs mb-2" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>الشعار</p>
-                    <img src={APP_LOGO} alt={APP_NAME} className="w-20 h-20 object-contain rounded-xl border border-gray-200" />
+                    <img src={resolveAppLogo()} alt={APP_NAME} className="w-20 h-20 object-contain rounded-xl border border-gray-200 bg-white p-1" />
                   </div>
                 </div>
               </div>
@@ -3593,6 +3614,7 @@ const AppCore = () => {
             FONT_UI={FONT_UI}
             FONT_HEADING={FONT_HEADING}
             onSaveCustomer={handleSaveCustomer}
+            onAddLegacyDebt={handleAddLegacyDebt}
             onDeleteCustomer={handleDeleteCustomer}
             onExportCustomerFile={exportCustomerFile}
             onClearAllCustomers={handleClearAllCustomers}
@@ -4471,23 +4493,6 @@ const AppCore = () => {
                   placeholder={businessProfile?.address}
                 />
               </div>
-              <div className="md:col-span-2">
-                <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
-                  تحديث الشعار
-                </label>
-                <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-dashed border-gray-300 cursor-pointer hover:border-gray-400 transition-all bg-gray-50">
-                  <Camera size={16} style={{ color: theme.textMuted }} />
-                  <span className="text-sm" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>
-                    {logoFile ? logoFile.name : 'اختر شعاراً جديداً'}
-                  </span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => setLogoFile(e.target.files[0])}
-                    className="hidden"
-                  />
-                </label>
-              </div>
             </div>
 
             <div className="flex gap-2">
@@ -4495,7 +4500,6 @@ const AppCore = () => {
                 onClick={() => {
                   setShowAccountModal(false);
                   setProfileForm({ businessName: '', businessType: '', address: '', phone: '', email: '', ownerName: '' });
-                  setLogoFile(null);
                 }}
                 className="flex-1 py-2.5 rounded-xl text-sm font-medium"
                 style={{ backgroundColor: '#f3f4f6', color: theme.textMuted, fontFamily: FONT_UI }}

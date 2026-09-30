@@ -108,6 +108,18 @@ export function resolveCustomerStatementOrders(customer, orders = []) {
   });
 }
 
+export function customerTransactionTypeLabel(type) {
+  if (type === 'order_debt') return 'دين من طلب';
+  if (type === 'legacy_debt') return 'دين قديم';
+  return type || '—';
+}
+
+export function computeLegacyDebtTotal(customer) {
+  return (customer?.transactions || [])
+    .filter((t) => t.type === 'legacy_debt')
+    .reduce((s, t) => s + Number(t.amount || 0), 0);
+}
+
 export function computeStatementTotals(statementOrders) {
   const orderCount = statementOrders.length;
   const totalPurchases = statementOrders.reduce((s, o) => s + Number(o.total || 0), 0);

@@ -1,5 +1,15 @@
-import { APP_NAME } from '../branding';
+import { APP_NAME, resolveAppLogo } from '../branding';
 import { fmtMoneyPlain } from '../i18n';
+
+function logoSrc() {
+  const url = resolveAppLogo();
+  if (typeof window === 'undefined') return url;
+  try {
+    return new URL(url, window.location.origin).href;
+  } catch {
+    return url;
+  }
+}
 
 /** طباعة إيصال عبر المتصفح عند عدم توفر Bluetooth */
 export function printReceiptViaBrowser(order, { businessProfile, appSettings }) {
@@ -29,6 +39,7 @@ export function printReceiptViaBrowser(order, { businessProfile, appSettings }) 
     <title>إيصال #${order.orderNumber || ''}</title>
     <style>
       body { font-family: Cairo, Tahoma, sans-serif; padding: 16px; max-width: 320px; margin: 0 auto; font-size: 13px; }
+      .logo { display: block; max-width: 120px; max-height: 72px; margin: 0 auto 10px; object-fit: contain; }
       h1 { font-size: 16px; margin: 0 0 8px; text-align: center; }
       .meta { margin-bottom: 12px; line-height: 1.5; }
       table { width: 100%; border-collapse: collapse; }
@@ -38,6 +49,7 @@ export function printReceiptViaBrowser(order, { businessProfile, appSettings }) 
       .total { font-weight: bold; font-size: 15px; margin-top: 12px; text-align: center; }
       .footer { text-align: center; margin-top: 16px; font-size: 11px; }
     </style></head><body>
+    <img class="logo" src="${logoSrc()}" alt="${APP_NAME}" />
     ${appSettings?.receiptHeader ? `<p>${appSettings.receiptHeader}</p>` : ''}
     <h1>${businessProfile?.businessName || APP_NAME}</h1>
     <div class="meta">

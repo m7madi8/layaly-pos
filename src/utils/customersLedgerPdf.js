@@ -1,12 +1,13 @@
-import { APP_NAME, APP_LOGO } from '../branding';
+import { APP_NAME, resolveAppLogo } from '../branding';
 import { escapeHtml, downloadHtmlAsPdf } from './pdfExport';
 
 function logoUrl() {
-  if (typeof window === 'undefined') return APP_LOGO;
+  const src = resolveAppLogo();
+  if (typeof window === 'undefined') return src;
   try {
-    return new URL(APP_LOGO, window.location.origin).href;
+    return new URL(src, window.location.origin).href;
   } catch {
-    return APP_LOGO;
+    return src;
   }
 }
 
