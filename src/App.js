@@ -3700,7 +3700,7 @@ const AppCore = () => {
           </div>
           
           {/* Mobile Cart Toggle Bar */}
-          {!isMobileCartOpen && (
+          {!isMobileCartOpen && !isSidebarOpen && (
             <div className="fixed bottom-4 left-4 right-4 lg:hidden z-40">
               <button
                 onClick={() => setIsMobileCartOpen(true)}
