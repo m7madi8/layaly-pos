@@ -17,6 +17,7 @@ import {
   db,
   isDemoMode,
   isFirebaseConfigured,
+  isCloudUnavailable,
   firebaseConnectionInfo,
   collection,
   addDoc,
@@ -41,6 +42,9 @@ import {
   migrateLocalDemoToFirebase,
   wasDemoMigratedForUser,
 } from './migrateDemoToFirebase';
+import CloudConfigRequired from './components/CloudConfigRequired';
+import { mapFirebaseAuthError } from './authErrors';
+import { printReceiptViaBrowser } from './utils/printReceiptBrowser';
 
 const AppCore = () => {
   const [user, setUser] = useState(null);
@@ -278,7 +282,7 @@ const AppCore = () => {
       setAdminPassword('');
       setShowPassword(false);
     } catch (error) {
-      alert(error.message || 'كلمة المرور غير صحيحة');
+      alert(mapFirebaseAuthError(error));
     } finally {
       setUploadProgress(false);
     }
@@ -957,6 +961,11 @@ const AppCore = () => {
 
   const completeOrder = async (status, paymentOrMethod = {}, customPriceLegacy = '') => {
     if (currentOrder.items.length === 0) return;
+    if (!user) {
+      alert('يجب تسجيل الدخول لحفظ الطلب');
+      return;
+    }
+    if (uploadProgress) return;
 
     const payment =
       typeof paymentOrMethod === 'object' && paymentOrMethod !== null
@@ -1056,7 +1065,7 @@ const AppCore = () => {
         if (editingOrderId) {
             newOrderRef = doc(db, 'users', user.uid, 'orders', editingOrderId);
             const existingDoc = await transaction.get(newOrderRef);
-            if (!existingDoc.exists()) throw new Error("Order not found");
+            if (!existingDoc.exists()) throw new Error('الطلب غير موجود');
             existingOrderData = existingDoc.data();
             orderNumber = existingOrderData.orderNumber;
         } else {
@@ -1129,11 +1138,11 @@ const AppCore = () => {
         // Deduct stock for new items
         for (const item of currentOrder.items) {
           if (!productDocs[item.id]) {
-             throw new Error(`Product "${item.name}" not found`);
+             throw new Error(`الصنف "${item.name}" غير موجود`);
           }
           const p = productDocs[item.id];
           if (p.data.stock < item.quantity) {
-             throw new Error(`Insufficient stock for "${item.name}". Available: ${p.data.stock}`);
+             throw new Error(`مخزون "${item.name}" غير كافٍ. المتاح: ${p.data.stock}`);
           }
           p.data.stock -= item.quantity;
         }
@@ -1283,10 +1292,8 @@ const AppCore = () => {
 
   const printReceipt = async (order) => {
     try {
-      console.log('Starting print...');
-      
       if (!navigator.bluetooth) {
-        alert("الطباعة عبر Bluetooth غير مدعومة في هذا المتصفح. على iOS استخدم متصفحاً يدعم Web Bluetooth مثل Bluefy.");
+        printReceiptViaBrowser(order, { businessProfile, appSettings });
         return;
       }
 
@@ -1301,7 +1308,6 @@ const AppCore = () => {
         const server = await device.gatt.connect();
         
         device.addEventListener('gattserverdisconnected', () => {
-          console.log('Printer disconnected');
           setBluetoothDevice(null);
           setPrintCharacteristic(null);
         });
@@ -1486,6 +1492,9 @@ const AppCore = () => {
       await sendData(new Uint8Array([0x1D, 0x21, 0x00])); // Reset size
       
       await sendData(`${order.status === 'paid' ? '[مدفوع]' : '[غير مدفوع]'}\n`);
+      if (order.paymentMethod) {
+        await sendData(`طريقة الدفع: ${order.paymentMethod}\n`);
+      }
       await sendData('شكراً لزيارتكم!\n');
       
       if (businessProfile?.address) {
@@ -1512,9 +1521,12 @@ const AppCore = () => {
       alert('✅ تمت طباعة الإيصال!');
       
     } catch (error) {
-      console.error('Print error:', error);
       if (error.name !== 'NotFoundError' && !error.message?.includes('cancelled')) {
-        alert(`❌ خطأ في الطباعة: ${error.message}`);
+        try {
+          printReceiptViaBrowser(order, { businessProfile, appSettings });
+        } catch (fallbackErr) {
+          alert(`تعذّرت الطباعة: ${fallbackErr.message || error.message}`);
+        }
       }
     }
   };
@@ -1729,7 +1741,9 @@ const AppCore = () => {
               </h1>
               <p className="text-sm" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>{APP_TAGLINE}</p>
               <p className="text-xs mt-3 text-gray-500" style={{ fontFamily: FONT_UI }}>
-                {isDemoMode ? 'البيانات على هذا المتصفح فقط' : 'متصل بالسحابة — تأكد من حساب Firebase'}
+                {isDemoMode
+                  ? 'وضع تجربة محلي — للتطوير فقط'
+                  : 'تسجيل الدخول إلى نظام نقاط البيع'}
               </p>
             </div>
 
@@ -1793,10 +1807,10 @@ const AppCore = () => {
         <div className="w-full max-w-2xl">
           <div className="bg-white rounded-3xl shadow-xl p-8 border border-primary border-opacity-5">
             <h2 className="text-2xl mb-1" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 600 }}>
-              Setup Your Business Profile
+              إعداد ملف المتجر
             </h2>
             <p className="text-sm mb-6" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>
-              This information will be used on your receipts
+              تُستخدم هذه البيانات على الإيصالات وفي النظام
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -1893,14 +1907,7 @@ const AppCore = () => {
           className="fixed top-0 left-0 right-0 z-50 py-1.5 px-4 text-center text-xs text-white bg-accent shadow-layali"
           style={{ fontFamily: FONT_UI }}
         >
-          <div>وضع تجريبي محلي — البيانات على هذا الجهاز فقط (localStorage)</div>
-          {firebaseConnectionInfo.forceDemo ? (
-            <div className="opacity-90 mt-0.5">السبب: REACT_APP_DEMO_MODE=true — غيّره إلى false ثم أعد البناء (Redeploy على Vercel)</div>
-          ) : firebaseConnectionInfo.missingKeys.length > 0 ? (
-            <div className="opacity-90 mt-0.5">
-              مفاتيح Firebase غير موجودة عند البناء ({firebaseConnectionInfo.missingKeys.length}) — أضفها في Vercel ثم Deploy جديد (Redeploy)
-            </div>
-          ) : null}
+          وضع تجربة — REACT_APP_DEMO_MODE=true (لا تستخدم في المقهى)
         </div>
       )}
       {/* Overlay for mobile/tablet */}
@@ -3279,7 +3286,7 @@ const AppCore = () => {
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={() => completeOrder('unpaid', { paymentType: 'pending' })}
-                    disabled={currentOrder.items.length === 0}
+                    disabled={currentOrder.items.length === 0 || uploadProgress}
                     className="py-2.5 rounded-xl text-white text-sm font-medium shadow-sm disabled:opacity-50"
                     style={{ backgroundColor: theme.accent, fontFamily: FONT_UI }}
                   >
@@ -4097,6 +4104,7 @@ const AppCore = () => {
               <button
                 type="button"
                 onClick={() => completeOrder('paid', { paymentType: 'compliment', method: 'Compliment' })}
+                disabled={uploadProgress}
                 className="w-full py-3 rounded-xl border border-accent bg-orange-50 hover:bg-accent hover:text-white text-sm font-medium text-accent transition-all flex items-center justify-center gap-2"
                 style={{ fontFamily: FONT_UI }}
               >
@@ -4142,6 +4150,7 @@ const AppCore = () => {
                 })
               }
               disabled={
+                uploadProgress ||
                 mixedCashAmount === '' ||
                 parseFloat(mixedCashAmount) < 0 ||
                 parseFloat(mixedCashAmount) >= cartTotal
@@ -4461,12 +4470,10 @@ const AppCore = () => {
                 style={{ fontFamily: FONT_UI }}
               >
                 {isFirebaseConfigured && !isDemoMode
-                  ? 'البيانات مربوطة بـ Firebase (Firestore). الصور تُحفظ داخل القاعدة بدون Storage.'
-                  : firebaseConnectionInfo.forceDemo
-                    ? 'وضع التجربة مفعّل (REACT_APP_DEMO_MODE=true). على Vercel: غيّره إلى false ثم Redeploy.'
-                    : firebaseConnectionInfo.missingKeys.length > 0
-                      ? `مفاتيح ناقصة عند آخر بناء: ${firebaseConnectionInfo.missingKeys.join('، ')}. أضفها في Environment Variables ثم Redeploy.`
-                      : 'التطبيق يعمل محلياً. لربط Firebase راجع ملف .env.example'}
+                  ? 'متصل بـ Firebase — البيانات تُزامَن بين الأجهزة.'
+                  : isDemoMode
+                    ? 'وضع التجربة المحلي مفعّل.'
+                    : 'تحقق من إعدادات السحابة.'}
               </div>
               {!isDemoMode && hasLocalDemoData() && !wasDemoMigratedForUser(user?.uid) && (
                 <button
@@ -4661,7 +4668,7 @@ const AppCore = () => {
                 completeOrder('paid', { paymentType: 'cash', method: 'Cash' });
                 setShowCashModal(false);
               }}
-              disabled={(parseFloat(cashGiven) || 0) < finalTotalForPayment}
+              disabled={uploadProgress || (parseFloat(cashGiven) || 0) < finalTotalForPayment}
               className="w-full py-3 rounded-xl text-white text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
             >
@@ -4674,4 +4681,11 @@ const AppCore = () => {
   );
 };
 
-export default AppCore;
+function App() {
+  if (isCloudUnavailable) {
+    return <CloudConfigRequired missingKeys={firebaseConnectionInfo.missingKeys} />;
+  }
+  return <AppCore />;
+}
+
+export default App;

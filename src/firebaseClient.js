@@ -26,7 +26,7 @@ import {
   writeBatch as firestoreWriteBatch,
 } from 'firebase/firestore';
 import * as demo from './demoBackend';
-import { ADMIN_LOGIN_EMAIL, isAdminPasswordValid } from './adminAuth';
+import { ADMIN_LOGIN_EMAIL } from './adminAuth';
 
 const firebaseEnvKeys = [
   'REACT_APP_FIREBASE_API_KEY',
@@ -45,14 +45,18 @@ function envValue(key) {
 
 const missingFirebaseEnv = firebaseEnvKeys.filter((key) => !envValue(key));
 export const isFirebaseConfigured = missingFirebaseEnv.length === 0;
-const forceDemo = envValue('REACT_APP_DEMO_MODE').toLowerCase() === 'true';
 
-/** Local demo when Firebase is missing or REACT_APP_DEMO_MODE=true */
-export const isDemoMode = forceDemo || !isFirebaseConfigured;
+/** Demo فقط عند REACT_APP_DEMO_MODE=true — لا fallback تلقائي عند نقص المفاتيح */
+const forceDemo = envValue('REACT_APP_DEMO_MODE').toLowerCase() === 'true';
+export const isDemoMode = forceDemo;
+
+/** إنتاج: مفاتيح ناقصة وبدون demo صريح → شاشة إعداد (لا localStorage) */
+export const isCloudUnavailable = !isFirebaseConfigured && !isDemoMode;
 
 export const firebaseConnectionInfo = {
   isDemoMode,
   isFirebaseConfigured,
+  isCloudUnavailable,
   forceDemo,
   missingKeys: missingFirebaseEnv,
 };
@@ -64,7 +68,7 @@ if (isDemoMode) {
   demo.runFullDataWipe();
   auth = demo.demoAuth;
   db = demo.demoDb;
-} else {
+} else if (isFirebaseConfigured) {
   const firebaseConfig = {
     apiKey: envValue('REACT_APP_FIREBASE_API_KEY'),
     authDomain: envValue('REACT_APP_FIREBASE_AUTH_DOMAIN'),
@@ -76,6 +80,9 @@ if (isDemoMode) {
   const app = initializeApp(firebaseConfig);
   auth = getAuth(app);
   db = getFirestore(app);
+} else {
+  auth = null;
+  db = null;
 }
 
 export { auth, db };
@@ -106,11 +113,14 @@ export const signOut = bind(demo.signOut, firebaseSignOut);
 export const sendPasswordResetEmail = bind(demo.sendPasswordResetEmail, firebaseSendPasswordReset);
 
 export async function signInWithAdminPassword(authInstance, password) {
-  if (!isAdminPasswordValid(password)) {
-    throw new Error('كلمة المرور غير صحيحة');
+  if (!String(password || '').trim()) {
+    throw new Error('يرجى إدخال كلمة المرور');
   }
   if (isDemoMode) {
     return demo.signInWithAdminPassword(authInstance, password);
+  }
+  if (!authInstance || !isFirebaseConfigured) {
+    throw new Error('النظام غير مربوط بالسحابة. راجع إعدادات الخادم.');
   }
   return firebaseSignIn(authInstance, ADMIN_LOGIN_EMAIL, password);
 }

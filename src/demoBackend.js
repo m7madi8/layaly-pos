@@ -1,7 +1,7 @@
 /**
  * Local demo backend (localStorage). Drop-in replacements for Firebase APIs used by App.js.
  */
-import { ADMIN_LOGIN_EMAIL, isAdminPasswordValid } from './adminAuth';
+import { ADMIN_LOGIN_EMAIL } from './adminAuth';
 
 export const DEMO_UID = 'local-demo-user';
 const STORE_KEY = 'layali-cafe-demo-v2';
@@ -554,7 +554,7 @@ export async function enterLocalDemo(_auth) {
 }
 
 export async function signInWithAdminPassword(_auth, password) {
-  if (!isAdminPasswordValid(password)) {
+  if (!String(password || '').trim()) {
     throw new Error('كلمة المرور غير صحيحة');
   }
   await signInWithEmailAndPassword(_auth, ADMIN_LOGIN_EMAIL, password);
