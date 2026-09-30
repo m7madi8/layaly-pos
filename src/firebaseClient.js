@@ -26,7 +26,7 @@ import {
   writeBatch as firestoreWriteBatch,
 } from 'firebase/firestore';
 import * as demo from './demoBackend';
-import { ADMIN_LOGIN_EMAIL } from './adminAuth';
+import { ADMIN_LOGIN_EMAIL, normalizeLoginPassword } from './adminAuth';
 
 const firebaseEnvKeys = [
   'REACT_APP_FIREBASE_API_KEY',
@@ -113,14 +113,15 @@ export const signOut = bind(demo.signOut, firebaseSignOut);
 export const sendPasswordResetEmail = bind(demo.sendPasswordResetEmail, firebaseSendPasswordReset);
 
 export async function signInWithAdminPassword(authInstance, password) {
-  if (!String(password || '').trim()) {
+  const normalized = normalizeLoginPassword(password);
+  if (!normalized) {
     throw new Error('يرجى إدخال كلمة المرور');
   }
   if (isDemoMode) {
-    return demo.signInWithAdminPassword(authInstance, password);
+    return demo.signInWithAdminPassword(authInstance, normalized);
   }
   if (!authInstance || !isFirebaseConfigured) {
     throw new Error('النظام غير مربوط بالسحابة. راجع إعدادات الخادم.');
   }
-  return firebaseSignIn(authInstance, ADMIN_LOGIN_EMAIL, password);
+  return firebaseSignIn(authInstance, ADMIN_LOGIN_EMAIL, normalized);
 }

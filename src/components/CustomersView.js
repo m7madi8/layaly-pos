@@ -200,11 +200,11 @@ export default function CustomersView({
               {customersLedgerPdfLoading ? 'جاري PDF…' : 'ملخص الديون PDF'}
             </button>
           )}
-          {customers.length > 0 && (
+          {customers.length > 0 && onClearAllCustomers && (
             <button
               type="button"
               onClick={() => {
-                onClearAllCustomers?.();
+                onClearAllCustomers();
                 setDetailId(null);
               }}
               className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-red-200 text-red-700 text-sm font-medium hover:bg-red-50"
@@ -343,19 +343,21 @@ export default function CustomersView({
                   >
                     <Pencil size={16} />
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm(`حذف العميل «${detailCustomer.name}»؟`)) {
-                        onDeleteCustomer(detailCustomer.id);
-                        setDetailId(null);
-                      }
-                    }}
-                    className="p-2 rounded-xl border border-red-200 hover:bg-red-50 text-red-600"
-                    title="حذف"
-                  >
-                    <Trash2 size={16} />
-                  </button>
+                  {onDeleteCustomer && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`حذف العميل «${detailCustomer.name}»؟`)) {
+                          onDeleteCustomer(detailCustomer.id);
+                          setDetailId(null);
+                        }
+                      }}
+                      className="p-2 rounded-xl border border-red-200 hover:bg-red-50 text-red-600"
+                      title="حذف"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
                 </div>
               </div>
 

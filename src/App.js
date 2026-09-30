@@ -45,6 +45,13 @@ import {
 } from './migrateDemoToFirebase';
 import CloudConfigRequired from './components/CloudConfigRequired';
 import { mapFirebaseAuthError } from './authErrors';
+import {
+  EMPLOYEE_LOGIN_PASSWORD,
+  EMPLOYEE_VIEWS,
+  normalizeLoginPassword,
+  readSessionRole,
+  saveSessionRole,
+} from './adminAuth';
 import { printReceiptViaBrowser } from './utils/printReceiptBrowser';
 import { downloadBusinessReportPdf } from './utils/businessReportPdf';
 import { downloadCustomersLedgerPdf } from './utils/customersLedgerPdf';
@@ -99,7 +106,7 @@ function layoutNotificationPanel(anchor) {
     top = Math.max(margin, vh - margin - maxHeight);
   }
   if (top + maxHeight > vh - margin) {
-    maxHeight = Math.max(0, vh - margin - top);
+    maxHeight = Math.max(120, vh - margin - top);
   }
 
   return {
@@ -131,6 +138,8 @@ const AppCore = () => {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [showProductModal, setShowProductModal] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
+  const [userRole, setUserRole] = useState(readSessionRole);
+  const [loginType, setLoginType] = useState('employee');
   const [productForm, setProductForm] = useState({ name: '', category: '', price: '', stock: '', cost: '', addOns: [] });
   const [editingProductId, setEditingProductId] = useState(null);
   const [editingOrderId, setEditingOrderId] = useState(null);
@@ -367,14 +376,22 @@ const AppCore = () => {
     return () => unsubscribe();
   }, [user]);
 
+  const startRoleSession = (role) => {
+    saveSessionRole(role);
+    setUserRole(role);
+    setCurrentView(role === 'employee' ? 'pos' : 'dashboard');
+    setAdminPassword('');
+    setShowPassword(false);
+  };
+
   const handleAdminLogin = async (e) => {
     e.preventDefault();
-    if (!adminPassword.trim()) return;
+    const password = normalizeLoginPassword(adminPassword);
+    if (!password) return;
     setUploadProgress(true);
     try {
-      await signInWithAdminPassword(auth, adminPassword);
-      setAdminPassword('');
-      setShowPassword(false);
+      await signInWithAdminPassword(auth, password);
+      startRoleSession('admin');
     } catch (error) {
       alert(mapFirebaseAuthError(error));
     } finally {
@@ -382,8 +399,32 @@ const AppCore = () => {
     }
   };
 
-  const handleLogout = async () => {
+  const handleEmployeeLogin = (e) => {
+    e.preventDefault();
+    const password = normalizeLoginPassword(adminPassword);
+    if (!password) return;
+    if (password !== EMPLOYEE_LOGIN_PASSWORD) {
+      alert('كلمة مرور الموظف غير صحيحة');
+      return;
+    }
+    if (!user) {
+      alert('هذا الجهاز غير مربوط بعد. ادخل من تبويب «مدير» مرة واحدة، ثم اخرج، وبعدها يقدر الموظف يدخل.');
+      return;
+    }
+    startRoleSession('employee');
+  };
+
+  const handleLogout = () => {
+    saveSessionRole(null);
+    setUserRole(null);
+    setLoginType('employee');
+  };
+
+  const handleDisconnectDevice = async () => {
+    if (!window.confirm('فصل هذا الجهاز عن حساب المقهى؟ بعدها لازم المدير يدخل من جديد قبل ما يقدر الموظف يدخل.')) return;
     try {
+      saveSessionRole(null);
+      setUserRole(null);
       await signOut(auth);
     } catch (error) {
       alert(error.message);
@@ -1874,7 +1915,7 @@ const AppCore = () => {
     );
   }
 
-  if (!user) {
+  if (!user || !userRole) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4 font-cairo" style={{ backgroundColor: theme.bgWarm }} dir="rtl">
         <div className="w-full max-w-md">
@@ -1892,20 +1933,49 @@ const AppCore = () => {
               </p>
             </div>
 
-            <form onSubmit={handleAdminLogin} className="space-y-4">
+            <div className="grid grid-cols-2 gap-1 p-1 mb-5 rounded-xl bg-gray-100" role="tablist">
+              {[
+                { id: 'employee', label: 'موظف' },
+                { id: 'admin', label: 'مدير' },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={loginType === tab.id}
+                  onClick={() => {
+                    setLoginType(tab.id);
+                    setAdminPassword('');
+                  }}
+                  className={`py-2.5 rounded-lg text-sm transition-all ${
+                    loginType === tab.id ? 'bg-white shadow-sm text-primary font-semibold' : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                  style={{ fontFamily: FONT_UI }}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            <form onSubmit={loginType === 'admin' ? handleAdminLogin : handleEmployeeLogin} className="space-y-4">
               <div>
                 <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
-                  كلمة المرور
+                  {loginType === 'admin' ? 'كلمة مرور المدير' : 'كلمة مرور الموظف'}
                 </label>
                 <div className="relative">
                   <input
+                    key={loginType}
                     type={showPassword ? 'text' : 'password'}
                     value={adminPassword}
                     onChange={(e) => setAdminPassword(e.target.value)}
                     className="w-full px-3 py-3 rounded-xl border border-gray-200 outline-none text-sm pe-10"
                     style={{ fontFamily: FONT_UI }}
                     placeholder="••••••••"
+                    dir="ltr"
                     autoComplete="current-password"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
                     autoFocus
                   />
                   <button
@@ -1926,14 +1996,30 @@ const AppCore = () => {
               >
                 {uploadProgress ? 'جاري الدخول...' : 'دخول'}
               </button>
+              {loginType === 'employee' && !user && (
+                <p className="text-xs leading-relaxed text-center" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>
+                  أول مرة على هذا الجهاز: ادخل كمدير ثم اخرج. بعدها كلمة مرور الموظف تفتح نقطة البيع.
+                </p>
+              )}
             </form>
+            {user && (
+              <button
+                type="button"
+                onClick={handleDisconnectDevice}
+                className="w-full mt-4 text-xs text-gray-400 hover:text-red-600 transition-colors"
+                style={{ fontFamily: FONT_UI }}
+              >
+                فصل هذا الجهاز عن الحساب
+              </button>
+            )}
           </div>
         </div>
       </div>
     );
   }
 
-  const navItems = [
+  const isEmployee = userRole === 'employee';
+  const allNavItems = [
     { id: 'dashboard', icon: BarChart3, label: 'لوحة التحكم' },
     { id: 'pos', icon: ShoppingCart, label: 'نقطة البيع' },
     { id: 'orders', icon: FileText, label: 'الطلبات' },
@@ -1945,8 +2031,12 @@ const AppCore = () => {
     { id: 'reports', icon: FileText, label: 'التقارير' },
     { id: 'settings', icon: Settings, label: 'الإعدادات' },
   ];
+  const navItems = isEmployee
+    ? allNavItems.filter((item) => EMPLOYEE_VIEWS.includes(item.id))
+    : allNavItems;
+  const activeView = isEmployee && !EMPLOYEE_VIEWS.includes(currentView) ? 'pos' : currentView;
 
-  if (showProfileSetup) {
+  if (showProfileSetup && !isEmployee) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4 font-cairo" style={{ backgroundColor: theme.bgWarm }} dir="rtl">
         <div className="w-full max-w-2xl">
@@ -2064,7 +2154,7 @@ const AppCore = () => {
           </div>
         </div>
 
-        <nav className="flex-1 p-3 space-y-1.5">
+        <nav className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5">
           {navItems.map(item => (
             <button
               key={item.id}
@@ -2075,7 +2165,7 @@ const AppCore = () => {
                 }
               }}
               className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-all duration-200 text-sm ${isSidebarOpen ? 'justify-start' : 'lg:justify-center'} ${
-                currentView === item.id ? 'bg-accent text-white shadow-md' : 'hover:bg-white/10 text-white/60 hover:text-white'
+                activeView === item.id ? 'bg-accent text-white shadow-md' : 'hover:bg-white/10 text-white/60 hover:text-white'
               }`}
               title={item.label}
               style={{ fontFamily: FONT_UI, fontWeight: 400 }}
@@ -2086,10 +2176,12 @@ const AppCore = () => {
           ))}
         </nav>
 
-        <div className="p-3 border-t border-white/10">
+        <div className="shrink-0 p-3 border-t border-white/10">
           <div className={`${isSidebarOpen ? 'block' : 'hidden'} px-3 mb-3`}>
-            <p className="text-sm font-medium truncate">{businessProfile?.ownerName || 'المالك'}</p>
-            <p className="text-xs opacity-60 truncate">{user.email}</p>
+            <p className="text-sm font-medium truncate">
+              {isEmployee ? 'الموظف' : businessProfile?.ownerName || 'المدير'}
+            </p>
+            <p className="text-xs opacity-60 truncate">{isEmployee ? 'نقطة البيع فقط' : user.email}</p>
           </div>
           <button
             onClick={handleLogout}
@@ -2202,7 +2294,7 @@ const AppCore = () => {
             </div>
         </header>
         <main className="flex-1 overflow-auto p-4 md:p-8 bg-gray-100">
-          {currentView === 'dashboard' && (
+          {activeView === 'dashboard' && (
           <div className="max-w-7xl mx-auto space-y-8">
             <div>
               <h2 className="text-3xl font-bold text-primary mb-1" style={{ fontFamily: FONT_HEADING }}>نظرة عامة</h2>
@@ -2484,7 +2576,7 @@ const AppCore = () => {
           </div>
         )}
 
-        {currentView === 'settings' && (
+        {activeView === 'settings' && (
           <div className="max-w-7xl mx-auto">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl md:text-3xl text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>إعدادات الحساب</h2>
@@ -2604,7 +2696,7 @@ const AppCore = () => {
           </div>
         )}
 
-        {(currentView === 'expenses' || currentView === 'purchases' || currentView === 'traders') && (() => {
+        {(activeView === 'expenses' || activeView === 'purchases' || activeView === 'traders') && (() => {
           const summarySection = financeTab === 'purchases' ? 'purchase' : 'operating';
           const summaryExpenses = financeTab === 'traders'
             ? []
@@ -2869,7 +2961,7 @@ const AppCore = () => {
           );
         })()}
 
-        {currentView === 'reports' && (
+        {activeView === 'reports' && (
           <div className="max-w-7xl mx-auto">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
               <h2 className="text-2xl md:text-3xl text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>التقارير</h2>
@@ -3310,7 +3402,7 @@ const AppCore = () => {
           </div>
         )}
 
-        {currentView === 'pos' && (
+        {activeView === 'pos' && (
           <div className="max-w-7xl mx-auto h-full">
             <div className="flex h-full flex-col lg:flex-row gap-6">
               <div className="flex-1 min-w-0 pb-20 lg:pb-0">
@@ -3535,7 +3627,7 @@ const AppCore = () => {
           </div>
         )}
 
-        {currentView === 'orders' && (
+        {activeView === 'orders' && (
           <div className="max-w-7xl mx-auto">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
               <h2 className="text-2xl md:text-3xl text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>الطلبات</h2>
@@ -3736,7 +3828,7 @@ const AppCore = () => {
           </div>
         )}
 
-        {currentView === 'customers' && (
+        {activeView === 'customers' && (
           <CustomersView
             customers={customers}
             orders={orders}
@@ -3746,16 +3838,16 @@ const AppCore = () => {
             FONT_HEADING={FONT_HEADING}
             onSaveCustomer={handleSaveCustomer}
             onAddLegacyDebt={handleAddLegacyDebt}
-            onDeleteCustomer={handleDeleteCustomer}
+            onDeleteCustomer={isEmployee ? undefined : handleDeleteCustomer}
             onExportCustomerFile={exportCustomerFile}
-            onClearAllCustomers={handleClearAllCustomers}
+            onClearAllCustomers={isEmployee ? undefined : handleClearAllCustomers}
             businessProfile={businessProfile}
             onExportCustomersLedgerPdf={exportCustomersLedgerPdf}
             customersLedgerPdfLoading={customersLedgerPdfLoading}
           />
         )}
 
-        {currentView === 'inventory' && (
+        {activeView === 'inventory' && (
           <div className="max-w-7xl mx-auto">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl md:text-3xl text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>المخزون</h2>
