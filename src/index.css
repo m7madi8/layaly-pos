@@ -42,7 +42,7 @@ body {
 
   .layali-product-card__media {
     border-radius: calc(var(--radius-card) - 6px);
-    background: var(--color-bg-warm);
+    background: #ffffff;
   }
 
   .layali-btn-primary {
