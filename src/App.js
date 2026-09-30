@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { APP_NAME, APP_TAGLINE, APP_LOGO, resolveAppLogo, FONT_UI, FONT_HEADING, theme } from './branding';
 import { fmtMoney, fmtMoneyPlain, orderFilterLabel, orderStatusLabel, categoryLabel, paymentMethodLabel, paymentTypeLabel, expenseCategoryLabel, expenseFilterLabel, reportFilterLabel } from './i18n';
 import {
@@ -47,6 +48,73 @@ import { mapFirebaseAuthError } from './authErrors';
 import { printReceiptViaBrowser } from './utils/printReceiptBrowser';
 import { downloadBusinessReportPdf } from './utils/businessReportPdf';
 import { downloadCustomersLedgerPdf } from './utils/customersLedgerPdf';
+
+function layoutNotificationPanel(anchor) {
+  const margin = 12;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  if (vw < 640) {
+    return {
+      sheet: true,
+      style: {
+        position: 'fixed',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        top: 'auto',
+        width: 'auto',
+        maxHeight: 'min(85dvh, 36rem)',
+        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+      },
+    };
+  }
+
+  const width = Math.min(380, Math.max(0, vw - margin * 2));
+  const rect = anchor?.getBoundingClientRect();
+  let left = margin;
+  let top = 76;
+  let maxHeight = Math.min(448, Math.max(160, vh - margin * 2));
+
+  if (rect) {
+    left = rect.left;
+    if (left + width > vw - margin) left = vw - margin - width;
+    if (left < margin) left = margin;
+
+    const below = rect.bottom + 8;
+    const spaceBelow = vh - below - margin;
+    if (spaceBelow >= 220) {
+      top = below;
+      maxHeight = Math.min(448, spaceBelow);
+    } else {
+      const spaceAbove = Math.max(0, rect.top - margin - 8);
+      maxHeight = Math.min(448, Math.max(spaceAbove, spaceBelow));
+      top = spaceAbove >= spaceBelow
+        ? Math.max(margin, rect.top - 8 - maxHeight)
+        : below;
+    }
+  }
+
+  if (top + maxHeight > vh - margin) {
+    top = Math.max(margin, vh - margin - maxHeight);
+  }
+  if (top + maxHeight > vh - margin) {
+    maxHeight = Math.max(0, vh - margin - top);
+  }
+
+  return {
+    sheet: false,
+    style: {
+      position: 'fixed',
+      left,
+      top,
+      right: 'auto',
+      bottom: 'auto',
+      width,
+      maxHeight,
+    },
+  };
+}
 
 const AppCore = () => {
   const [user, setUser] = useState(null);
@@ -129,6 +197,8 @@ const AppCore = () => {
   const [printCharacteristic, setPrintCharacteristic] = useState(null);
   const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [notificationLayout, setNotificationLayout] = useState(null);
+  const notificationButtonRef = useRef(null);
   const [expenseFilter, setExpenseFilter] = useState('all');
   const [expenseCustomDateRange, setExpenseCustomDateRange] = useState({ start: '', end: '' });
 
@@ -140,6 +210,27 @@ const AppCore = () => {
     document.head.appendChild(link);
     return () => document.head.removeChild(link);
   }, []);
+
+  useEffect(() => {
+    if (!showNotifications) return undefined;
+
+    const update = () => {
+      setNotificationLayout(layoutNotificationPanel(notificationButtonRef.current));
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') setShowNotifications(false);
+    };
+
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('orientationchange', update);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('orientationchange', update);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [showNotifications]);
 
   // Auth listener
   useEffect(() => {
@@ -2013,15 +2104,25 @@ const AppCore = () => {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="flex items-center justify-between px-6 py-4 bg-white border-b border-gray-100 sticky top-0 z-10 shadow-sm">
-            <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-1 rounded-md hover:bg-gray-200/50">
+        <header className="flex items-center justify-between gap-3 px-3 py-3 sm:px-6 sm:py-4 bg-white border-b border-gray-100 sticky top-0 z-10 shadow-sm">
+            <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="shrink-0 p-1 rounded-md hover:bg-gray-200/50">
                 <Menu size={24} />
             </button>
-            <div className="flex items-center gap-4">
+            <div className="flex min-w-0 items-center gap-2 sm:gap-4">
                {/* Notification Bell */}
-               <div className="relative">
-                 <button 
-                   onClick={() => setShowNotifications(!showNotifications)}
+               <div className="relative" ref={notificationButtonRef}>
+                 <button
+                   type="button"
+                   aria-expanded={showNotifications}
+                   aria-haspopup="dialog"
+                   onClick={() => {
+                     if (showNotifications) {
+                       setShowNotifications(false);
+                       return;
+                     }
+                     setNotificationLayout(layoutNotificationPanel(notificationButtonRef.current));
+                     setShowNotifications(true);
+                   }}
                    className="p-2 rounded-full hover:bg-gray-100 relative transition-colors"
                  >
                    <Bell size={20} className="text-gray-600" />
@@ -2029,39 +2130,69 @@ const AppCore = () => {
                      <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white"></span>
                    )}
                  </button>
-                 
-                 {showNotifications && (
-                   <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-xl shadow-xl border border-gray-100 p-4 z-50">
-                     <div className="flex justify-between items-center mb-3">
-                        <h3 className="font-bold text-primary">الإشعارات</h3>
-                        <button onClick={() => setShowNotifications(false)} className="text-gray-400 hover:text-gray-600"><X size={16} /></button>
-                     </div>
-                     <div className="space-y-3 max-h-64 overflow-y-auto">
-                       {lowStock > 0 && (
-                         <div className="flex items-start gap-3 p-3 bg-red-50 rounded-lg border border-red-100">
-                           <AlertCircle size={18} className="text-red-500 mt-0.5 flex-shrink-0" />
-                           <div>
-                             <p className="text-sm font-medium text-red-700">تنبيه مخزون منخفض</p>
-                             <p className="text-xs text-red-600 mt-0.5">{lowStock} منتجاً بمخزون منخفض</p>
+
+                 {showNotifications && notificationLayout && createPortal(
+                   <>
+                     <button
+                       type="button"
+                       aria-label="إغلاق الإشعارات"
+                       className="fixed inset-0 z-[80] bg-black/40"
+                       onClick={() => setShowNotifications(false)}
+                     />
+                     <div
+                       role="dialog"
+                       aria-modal="true"
+                       aria-labelledby="notifications-title"
+                       dir="rtl"
+                       style={{ ...notificationLayout.style, fontFamily: FONT_UI }}
+                       className={`z-[90] flex min-w-0 flex-col overflow-hidden border border-gray-100 bg-white shadow-2xl ${
+                         notificationLayout.sheet ? 'rounded-t-3xl' : 'rounded-2xl'
+                       }`}
+                     >
+                       {notificationLayout.sheet && (
+                         <div className="flex justify-center pt-2.5 pb-1" aria-hidden="true">
+                           <span className="h-1 w-10 rounded-full bg-gray-200" />
+                         </div>
+                       )}
+                       <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-3">
+                         <h3 id="notifications-title" className="min-w-0 text-base font-bold text-primary">الإشعارات</h3>
+                         <button
+                           type="button"
+                           onClick={() => setShowNotifications(false)}
+                           aria-label="إغلاق"
+                           className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                         >
+                           <X size={18} />
+                         </button>
+                       </div>
+                       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
+                         {lowStock > 0 && (
+                           <div className="flex items-start gap-3 rounded-xl border border-red-100 bg-red-50 p-3">
+                             <AlertCircle size={18} className="mt-0.5 shrink-0 text-red-500" />
+                             <div className="min-w-0">
+                               <p className="text-sm font-medium text-red-700 break-words">تنبيه مخزون منخفض</p>
+                               <p className="mt-0.5 text-xs text-red-600 break-words">{lowStock} منتجاً بمخزون منخفض</p>
+                             </div>
                            </div>
-                         </div>
-                       )}
-                       {lowStock === 0 && (
-                         <div className="text-center py-6">
-                            <div className="bg-gray-50 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-2">
-                                <Bell size={20} className="text-gray-400" />
-                            </div>
-                            <p className="text-sm text-gray-500">لا إشعارات جديدة</p>
-                         </div>
-                       )}
+                         )}
+                         {lowStock === 0 && (
+                           <div className="py-8 text-center">
+                             <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-gray-50">
+                               <Bell size={20} className="text-gray-400" />
+                             </div>
+                             <p className="text-sm text-gray-500">لا إشعارات جديدة</p>
+                           </div>
+                         )}
+                       </div>
                      </div>
-                   </div>
+                   </>,
+                   document.body
                  )}
                </div>
 
-               <div className="text-right hidden md:block">
-                  <p className="text-xs text-gray-500 font-medium">{new Date().toLocaleDateString('ar', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
-                  <p className="text-sm font-bold text-primary">{businessProfile?.businessName || 'ليالي كافيه'}</p>
+               <div className="text-right hidden md:block min-w-0 max-w-[11rem] lg:max-w-[16rem] xl:max-w-xs">
+                  <p className="text-xs text-gray-500 font-medium truncate">{new Date().toLocaleDateString('ar', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                  <p className="text-sm font-bold text-primary truncate">{businessProfile?.businessName || 'ليالي كافيه'}</p>
                </div>
                <img
                   src={resolveAppLogo()}

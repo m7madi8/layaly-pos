@@ -3,6 +3,7 @@ export default {
   expo: {
     name: 'ليالي كافيه',
     slug: 'layali-cafe-pos',
+    owner: 'm7madi8',
     version: '1.0.0',
     orientation: 'default',
     icon: './assets/icon.png',
@@ -40,7 +41,8 @@ export default {
     extra: {
       appUrl: process.env.EXPO_PUBLIC_APP_URL || 'https://layaly-pos.vercel.app',
       eas: {
-        projectId: process.env.EAS_PROJECT_ID || '',
+        projectId:
+          process.env.EAS_PROJECT_ID || '5428fba1-40bf-42e2-95e4-284215c6742d',
       },
     },
   },
