@@ -3,6 +3,8 @@ import { Plus, Pencil, Trash2, Download, Phone, User, FileText, Search, X, Eye, 
 import {
   printCustomerAccountStatement,
   downloadCustomerAccountStatementPdf,
+  resolveCustomerStatementOrders,
+  computeStatementTotals,
 } from '../utils/customerAccountStatement';
 import { orderStatusLabel, paymentTypeLabel, paymentMethodLabel } from '../i18n';
 
@@ -18,6 +20,8 @@ export default function CustomersView({
   onExportCustomerFile,
   onClearAllCustomers,
   businessProfile,
+  onExportCustomersLedgerPdf,
+  customersLedgerPdfLoading,
 }) {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -53,15 +57,11 @@ export default function CustomersView({
 
   const detailCustomer = customers.find((c) => c.id === detailId);
   const customerOrders = useMemo(() => {
-    if (!detailId) return [];
-    return orders
-      .filter((o) => o.customerId === detailId || (o.customer && detailCustomer && o.customer === detailCustomer.name))
-      .sort((a, b) => {
-        const ta = a.timestamp?.toDate ? a.timestamp.toDate().getTime() : 0;
-        const tb = b.timestamp?.toDate ? b.timestamp.toDate().getTime() : 0;
-        return tb - ta;
-      });
+    if (!detailId || !detailCustomer) return [];
+    return resolveCustomerStatementOrders(detailCustomer, orders);
   }, [orders, detailId, detailCustomer]);
+
+  const statementTotals = useMemo(() => computeStatementTotals(customerOrders), [customerOrders]);
 
   const openNew = () => {
     setForm({ name: '', phone: '', address: '', notes: '' });
@@ -128,6 +128,18 @@ export default function CustomersView({
             <Plus size={16} />
             إضافة عميل
           </button>
+          {customers.length > 0 && onExportCustomersLedgerPdf && (
+            <button
+              type="button"
+              onClick={onExportCustomersLedgerPdf}
+              disabled={customersLedgerPdfLoading}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
+              style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
+            >
+              <FileDown size={16} />
+              {customersLedgerPdfLoading ? 'جاري PDF…' : 'ملخص الديون PDF'}
+            </button>
+          )}
           {customers.length > 0 && (
             <button
               type="button"
@@ -282,7 +294,10 @@ export default function CustomersView({
                 </div>
                 <div className="bg-white rounded-xl p-3 border border-gray-100">
                   <p className="text-[10px] text-gray-400">عدد الطلبات</p>
-                  <p className="text-lg font-bold text-primary">{customerOrders.length}</p>
+                  <p className="text-lg font-bold text-primary">{statementTotals.orderCount}</p>
+                  {statementTotals.debtOrderCount > 0 && (
+                    <p className="text-[10px] text-gray-500">يشمل {statementTotals.debtOrderCount} بالدين</p>
+                  )}
                 </div>
                 <div className="bg-white rounded-xl p-3 border border-gray-100 col-span-2 sm:col-span-1">
                   <p className="text-[10px] text-gray-400">آخر نشاط</p>
@@ -340,7 +355,13 @@ export default function CustomersView({
                         {paymentTypeLabel(o.paymentType) ||
                           (o.paymentType === 'debt' ? 'دين' : o.paymentType === 'mixed' ? 'كاش + دين' : 'كاش')}
                         <span className="block text-[10px] text-gray-400 mt-0.5 truncate">
-                          {(o.items || []).length} أصناف · {formatOrderDate(o)}
+                          {(o.items || []).length > 0
+                            ? `${(o.items || []).length} أصناف`
+                            : Number(o.debtAmount) > 0
+                              ? 'طلب بالدين'
+                              : 'بدون أصناف'}
+                          {' · '}
+                          {formatOrderDate(o)}
                         </span>
                       </span>
                       <span className="flex items-center gap-1.5 shrink-0">

@@ -45,6 +45,8 @@ import {
 import CloudConfigRequired from './components/CloudConfigRequired';
 import { mapFirebaseAuthError } from './authErrors';
 import { printReceiptViaBrowser } from './utils/printReceiptBrowser';
+import { downloadBusinessReportPdf } from './utils/businessReportPdf';
+import { downloadCustomersLedgerPdf } from './utils/customersLedgerPdf';
 
 const AppCore = () => {
   const [user, setUser] = useState(null);
@@ -67,6 +69,8 @@ const AppCore = () => {
   const [editingExpenseId, setEditingExpenseId] = useState(null);
   const [imageFile, setImageFile] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(false);
+  const [reportPdfLoading, setReportPdfLoading] = useState(false);
+  const [customersLedgerPdfLoading, setCustomersLedgerPdfLoading] = useState(false);
   const [businessProfile, setBusinessProfile] = useState(null);
   const [showProfileSetup, setShowProfileSetup] = useState(false);
   const [profileForm, setProfileForm] = useState({
@@ -912,6 +916,22 @@ const AppCore = () => {
       alert('تم مسح بيانات العملاء — القائمة فارغة الآن.');
     } catch (error) {
       alert(error.message);
+    }
+  };
+
+  const exportCustomersLedgerPdf = async () => {
+    if (customersLedgerPdfLoading) return;
+    setCustomersLedgerPdfLoading(true);
+    try {
+      await downloadCustomersLedgerPdf({
+        customers,
+        business: businessProfile,
+        fmtMoney,
+      });
+    } catch (e) {
+      alert(e.message || 'تعذّر إنشاء ملف PDF');
+    } finally {
+      setCustomersLedgerPdfLoading(false);
     }
   };
 
@@ -2873,6 +2893,42 @@ const AppCore = () => {
               };
               const salesByCategory = getSalesByCategory();
 
+              const handleExportPdf = async () => {
+                if (reportPdfLoading) return;
+                setReportPdfLoading(true);
+                try {
+                  await downloadBusinessReportPdf({
+                    business: businessProfile,
+                    periodLabel: reportFilterLabel(reportFilter),
+                    fmtMoney,
+                    paymentMethodLabel,
+                    expenseCategoryLabel,
+                    totalRevenue,
+                    netSales,
+                    totalCost,
+                    grossProfit,
+                    grossProfitMargin,
+                    totalExpenses,
+                    netProfit,
+                    netProfitMargin,
+                    totalTransactions,
+                    totalItemsSoldPeriod,
+                    avgTransactionValue,
+                    totalDiscounts,
+                    totalComplimentsValue,
+                    salesByPaymentMethod,
+                    salesByCategory,
+                    sortedProducts,
+                    sortedProductDetails,
+                    filteredExpenses,
+                  });
+                } catch (e) {
+                  alert(e.message || 'تعذّر إنشاء ملف PDF');
+                } finally {
+                  setReportPdfLoading(false);
+                }
+              };
+
               const handleExport = () => {
                 const csvContent = [
                   ['تقرير المبيعات', `الفترة: ${reportFilterLabel(reportFilter)}`],
@@ -2911,7 +2967,7 @@ const AppCore = () => {
                     e.description || '-',
                     e.amount
                   ])
-                ].map(e => e.join(',')).join('\\n');
+                ].map((e) => e.join(',')).join('\n');
 
                 const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
                 const link = document.createElement('a');
@@ -2922,14 +2978,23 @@ const AppCore = () => {
 
               return (
                 <>
-                  <div className="flex justify-end mb-6">
+                  <div className="flex justify-end mb-6 gap-2 flex-wrap">
+                    <button 
+                      onClick={handleExportPdf}
+                      disabled={reportPdfLoading}
+                      className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-white text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50"
+                      style={{ fontFamily: FONT_UI }}
+                    >
+                      <Download size={16} />
+                      {reportPdfLoading ? 'جاري إنشاء PDF…' : 'تصدير PDF'}
+                    </button>
                     <button 
                       onClick={handleExport}
                       className="flex items-center gap-2 px-4 py-2 rounded-xl bg-accent text-white text-sm font-medium hover:opacity-90 transition-all"
                       style={{ fontFamily: FONT_UI }}
                     >
                       <Download size={16} />
-                      تصدير التقرير
+                      تصدير CSV
                     </button>
                   </div>
 
@@ -3541,6 +3606,8 @@ const AppCore = () => {
             onExportCustomerFile={exportCustomerFile}
             onClearAllCustomers={handleClearAllCustomers}
             businessProfile={businessProfile}
+            onExportCustomersLedgerPdf={exportCustomersLedgerPdf}
+            customersLedgerPdfLoading={customersLedgerPdfLoading}
           />
         )}
 
