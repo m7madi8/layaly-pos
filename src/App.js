@@ -2006,7 +2006,7 @@ const AppCore = () => {
                    className="p-2 rounded-full hover:bg-gray-100 relative transition-colors"
                  >
                    <Bell size={20} className="text-gray-600" />
-                   {(lowStock > 0 || dashboardOrders.filter(o => o.status === 'unpaid').length > 0) && (
+                   {(lowStock > 0) && (
                      <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white"></span>
                    )}
                  </button>
@@ -2023,20 +2023,11 @@ const AppCore = () => {
                            <AlertCircle size={18} className="text-red-500 mt-0.5 flex-shrink-0" />
                            <div>
                              <p className="text-sm font-medium text-red-700">تنبيه مخزون منخفض</p>
-                             <p className="text-xs text-red-600 mt-0.5">{lowStock} products are running low on stock.</p>
+                             <p className="text-xs text-red-600 mt-0.5">{lowStock} منتجاً بمخزون منخفض</p>
                            </div>
                          </div>
                        )}
-                       {dashboardOrders.filter(o => o.status === 'unpaid').length > 0 && (
-                         <div className="flex items-start gap-3 p-3 bg-orange-50 rounded-lg border border-orange-100">
-                           <Clock size={18} className="text-orange-500 mt-0.5 flex-shrink-0" />
-                           <div>
-                             <p className="text-sm font-medium text-orange-700">طلبات غير مدفوعة</p>
-                             <p className="text-xs text-orange-600 mt-0.5">{dashboardOrders.filter(o => o.status === 'unpaid').length} orders are pending payment.</p>
-                           </div>
-                         </div>
-                       )}
-                       {lowStock === 0 && dashboardOrders.filter(o => o.status === 'unpaid').length === 0 && (
+                       {lowStock === 0 && (
                          <div className="text-center py-6">
                             <div className="bg-gray-50 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-2">
                                 <Bell size={20} className="text-gray-400" />
