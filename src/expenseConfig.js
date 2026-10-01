@@ -33,6 +33,7 @@ export function defaultExpenseForm(section = 'operating') {
     description: '',
     supplierId: '',
     linkedIngredientId: '',
+    linkedProductId: '',
     quantityBought: 0,
     section,
   };

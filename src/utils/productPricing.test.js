@@ -11,7 +11,15 @@ import {
   validateTimePricing,
   costFromWeight,
   summarizePlaystationSessions,
+  purchaseUnitCost,
 } from './productPricing';
+
+describe('purchase unit cost', () => {
+  test('tobacco: 1000g for 200₪ → 0.4₪ per 2g base', () =>
+    expect(purchaseUnitCost({ productType: 'weight', weightPricing: { baseWeight: 2 } }, 200, 1000)).toBe(0.4));
+  test('standard: 24 cans for 60₪ → 2.5₪ each', () => expect(purchaseUnitCost({}, 60, 24)).toBe(2.5));
+  test('invalid input → 0', () => expect(purchaseUnitCost({}, 60, 0)).toBe(0));
+});
 
 describe('playstation report summary', () => {
   const day = new Date(2026, 8, 30, 12).getTime();

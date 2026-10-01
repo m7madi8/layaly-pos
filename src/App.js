@@ -69,6 +69,7 @@ import {
   productPriceLabel,
   summarizePlaystationSessions,
   itemDetailLabel,
+  purchaseUnitCost,
 } from './utils/productPricing';
 import {
   resolvePlaystationSettings,
@@ -569,15 +570,29 @@ const AppCore = () => {
       const category =
         section === 'purchase' ? PURCHASE_CATEGORY : expenseForm.category;
 
+      const linkedProduct =
+        section === 'purchase' && expenseForm.linkedProductId
+          ? products.find((p) => p.id === expenseForm.linkedProductId)
+          : null;
+      const quantityBought = parseFloat(expenseForm.quantityBought) || 0;
+      if (linkedProduct && !editingExpenseId && !(quantityBought > 0)) {
+        throw new Error(`أدخل الكمية المشتراة من «${linkedProduct.name}»`);
+      }
+      const productUnit = linkedProduct && getProductType(linkedProduct) === 'weight' ? 'غ' : '';
+
       const expenseData = {
         amount: parseFloat(expenseForm.amount),
         date: new Date(expenseForm.date),
         section,
         category,
-        description: expenseForm.description,
+        description:
+          expenseForm.description ||
+          (linkedProduct ? `${linkedProduct.name} — ${quantityBought}${productUnit ? ` ${productUnit}` : ''}` : ''),
         supplierId: section === 'purchase' ? expenseForm.supplierId : expenseForm.supplierId || '',
         linkedIngredientId: expenseForm.linkedIngredientId || null,
-        quantityBought: parseFloat(expenseForm.quantityBought) || 0,
+        linkedProductId: linkedProduct ? linkedProduct.id : null,
+        linkedProductName: linkedProduct ? linkedProduct.name : '',
+        quantityBought,
         receiptUrl,
         userId: user.uid,
         updatedAt: serverTimestamp()
@@ -601,10 +616,27 @@ const AppCore = () => {
               currentStock = ingDoc.data().stock || 0;
             }
           }
+
+          let productRef = null;
+          let productData = null;
+          if (expenseData.linkedProductId && expenseData.quantityBought > 0) {
+            productRef = doc(db, 'users', user.uid, 'products', expenseData.linkedProductId);
+            const productDoc = await transaction.get(productRef);
+            if (!productDoc.exists()) throw new Error('الصنف المرتبط بالمشتريات غير موجود');
+            productData = productDoc.data();
+          }
           
           transaction.set(expenseRef, expenseData);
           if (ingRef) {
             transaction.update(ingRef, { stock: currentStock + expenseData.quantityBought });
+          }
+          if (productRef) {
+            const unitCost = purchaseUnitCost(productData, expenseData.amount, expenseData.quantityBought);
+            transaction.update(productRef, {
+              stock: (Number(productData.stock) || 0) + expenseData.quantityBought,
+              ...(unitCost > 0 ? { cost: unitCost } : {}),
+              updatedAt: serverTimestamp(),
+            });
           }
         });
       }
@@ -635,6 +667,7 @@ const AppCore = () => {
       supplierId: expense.supplierId || '',
       receiptUrl: expense.receiptUrl,
       linkedIngredientId: expense.linkedIngredientId || '',
+      linkedProductId: expense.linkedProductId || '',
       quantityBought: expense.quantityBought || 0
     });
     setCurrentView(section === 'purchase' ? 'purchases' : 'expenses');
@@ -643,9 +676,27 @@ const AppCore = () => {
   };
 
   const handleDeleteExpense = async (expenseId) => {
-    if (window.confirm('هل تريد حذف هذه العملية؟')) {
+    const expense = expenses.find((e) => e.id === expenseId);
+    const reversesStock = Boolean(expense?.linkedProductId && Number(expense.quantityBought) > 0);
+    const message = reversesStock
+      ? `هل تريد حذف هذه العملية؟ سيتم خصم ${expense.quantityBought} من مخزون «${expense.linkedProductName || 'الصنف'}».`
+      : 'هل تريد حذف هذه العملية؟';
+    if (window.confirm(message)) {
       try {
-        await deleteDoc(doc(db, 'users', user.uid, 'expenses', expenseId));
+        const expenseRef = doc(db, 'users', user.uid, 'expenses', expenseId);
+        if (reversesStock) {
+          await runTransaction(db, async (transaction) => {
+            const productRef = doc(db, 'users', user.uid, 'products', expense.linkedProductId);
+            const productDoc = await transaction.get(productRef);
+            transaction.delete(expenseRef);
+            if (productDoc.exists()) {
+              const stock = Number(productDoc.data().stock) || 0;
+              transaction.update(productRef, { stock: Math.max(0, stock - Number(expense.quantityBought)) });
+            }
+          });
+        } else {
+          await deleteDoc(expenseRef);
+        }
       } catch (error) {
         console.error("Error deleting expense:", error);
         alert("تعذّر حذف المصروف");
@@ -2077,7 +2128,18 @@ const AppCore = () => {
 
   // Computed values
   const menuCategoryList = useMemo(() => mergeMenuCategories(products), [products]);
-  const posMenuTabs = useMemo(() => buildPosMenuTabs(menuCategoryList), [menuCategoryList]);
+  const posProducts = useMemo(() => products.filter((p) => getProductType(p) !== 'time'), [products]);
+  const posCategoryList = useMemo(() => mergeMenuCategories(posProducts), [posProducts]);
+  const posMenuTabs = useMemo(() => buildPosMenuTabs(posCategoryList), [posCategoryList]);
+  const purchasableProducts = useMemo(
+    () =>
+      posProducts.slice().sort((a, b) => {
+        const wa = getProductType(a) === 'weight' ? 0 : 1;
+        const wb = getProductType(b) === 'weight' ? 0 : 1;
+        return wa - wb || a.name.localeCompare(b.name, 'ar');
+      }),
+    [posProducts]
+  );
 
   const financeTab = useMemo(() => {
     if (currentView === 'purchases') return 'purchases';
@@ -2086,12 +2148,12 @@ const AppCore = () => {
   }, [currentView]);
 
   useEffect(() => {
-    if (selectedCategory !== 'all' && !menuCategoryList.includes(selectedCategory)) {
+    if (selectedCategory !== 'all' && !posCategoryList.includes(selectedCategory)) {
       setSelectedCategory('all');
     }
-  }, [menuCategoryList, selectedCategory]);
+  }, [posCategoryList, selectedCategory]);
 
-  const filteredProducts = products.filter(p => 
+  const filteredProducts = posProducts.filter(p => 
     (selectedCategory === 'all' || p.category === selectedCategory) &&
     p.name.toLowerCase().includes(searchTerm.toLowerCase())
   ).sort((a, b) => a.name.localeCompare(b.name));
@@ -5184,7 +5246,7 @@ const AppCore = () => {
       {/* Expense Modal */}
       {showExpenseModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
-          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200" dir="rtl">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200 max-h-[90dvh] overflow-y-auto" dir="rtl">
             <h3 className="text-xl mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
               {editingExpenseId
                 ? (expenseForm.section === 'purchase' ? 'تعديل مشتريات' : 'تعديل مصروف')
@@ -5252,6 +5314,60 @@ const AppCore = () => {
                   )}
                 </div>
               )}
+              {expenseForm.section === 'purchase' && (() => {
+                const selected = products.find((p) => p.id === expenseForm.linkedProductId);
+                const isWeight = selected && getProductType(selected) === 'weight';
+                const qty = parseFloat(expenseForm.quantityBought) || 0;
+                const unitCost = selected ? purchaseUnitCost(selected, expenseForm.amount, qty) : 0;
+                const locked = Boolean(editingExpenseId);
+                return (
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 space-y-2">
+                    <label className="block text-xs font-medium text-gray-600">الصنف المشترى (يُضاف للمخزون)</label>
+                    <select
+                      value={expenseForm.linkedProductId || ''}
+                      onChange={(e) => setExpenseForm({ ...expenseForm, linkedProductId: e.target.value, quantityBought: '' })}
+                      disabled={locked}
+                      className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm bg-white disabled:opacity-60"
+                    >
+                      <option value="">بدون صنف — مشتريات عامة</option>
+                      {purchasableProducts.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}{getProductType(p) === 'weight' ? ' (بالغرام)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    {selected && (
+                      <>
+                        <div>
+                          <label className="block text-xs mb-1 font-medium text-gray-600">
+                            الكمية المشتراة {isWeight ? '(غرام)' : '(حبة)'}
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            inputMode="decimal"
+                            value={expenseForm.quantityBought || ''}
+                            onChange={(e) => setExpenseForm({ ...expenseForm, quantityBought: e.target.value })}
+                            disabled={locked}
+                            className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm bg-white disabled:opacity-60"
+                            placeholder={isWeight ? 'مثال: 1000' : 'مثال: 24'}
+                          />
+                        </div>
+                        <p className="text-[11px] text-gray-500">
+                          {locked
+                            ? 'الكمية أُضيفت للمخزون عند الحفظ ولا تتغير بالتعديل.'
+                            : `المخزون الحالي ${Number(selected.stock) || 0}${isWeight ? ' غ' : ''}`
+                              + (qty > 0 ? ` ← يصبح ${(Number(selected.stock) || 0) + qty}${isWeight ? ' غ' : ''}` : '')
+                              + (unitCost > 0
+                                ? ` · التكلفة الجديدة ${fmtMoney(unitCost)}${isWeight ? ` لكل ${selected.weightPricing?.baseWeight || 1} غ` : ' للحبة'}`
+                                : '')}
+                        </p>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
               <div>
                 <label className="block text-xs mb-1.5 font-medium text-gray-600">صورة الإيصال</label>
                 <input
@@ -5280,7 +5396,8 @@ const AppCore = () => {
                   disabled={
                     uploadProgress ||
                     !expenseForm.amount ||
-                    (expenseForm.section === 'purchase' && !expenseForm.supplierId)
+                    (expenseForm.section === 'purchase' && !expenseForm.supplierId) ||
+                    (!editingExpenseId && expenseForm.linkedProductId && !(parseFloat(expenseForm.quantityBought) > 0))
                   }
                   className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50 hover:opacity-90"
                   style={{ backgroundColor: theme.primary }}

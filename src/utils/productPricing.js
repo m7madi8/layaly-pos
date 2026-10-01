@@ -54,6 +54,21 @@ export function costFromWeight(product, grams) {
   return roundMoney((cost / baseWeight) * g);
 }
 
+/**
+ * تكلفة الصنف من فاتورة مشتريات، بنفس صيغة حقل cost في الصنف:
+ * للوزن = تكلفة الوزن الأساسي (مثال: لكل 2غ)، وللعادي = تكلفة الحبة.
+ */
+export function purchaseUnitCost(product, amount, quantity) {
+  const a = Number(amount);
+  const q = Number(quantity);
+  if (!(a > 0) || !(q > 0)) return 0;
+  if (getProductType(product) === 'weight') {
+    const baseWeight = Number(product?.weightPricing?.baseWeight) || 1;
+    return roundMoney((a / q) * baseWeight);
+  }
+  return roundMoney(a / q);
+}
+
 export function validateWeightPricing(weightPricing) {
   const baseWeight = Number(weightPricing?.baseWeight);
   const basePrice = Number(weightPricing?.basePrice);

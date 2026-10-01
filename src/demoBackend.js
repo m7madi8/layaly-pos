@@ -394,7 +394,8 @@ class DemoTransaction {
     let data = getDocData(this.store, ref);
     for (const w of this.writes) {
       if (pathKey(w.ref.path) !== key) continue;
-      data = w.merge ? { ...(data ?? {}), ...w.data } : w.data;
+      if (w.deleted) data = undefined;
+      else data = w.merge ? { ...(data ?? {}), ...w.data } : w.data;
     }
     return data;
   }
@@ -419,9 +420,14 @@ class DemoTransaction {
     });
   }
 
+  delete(ref) {
+    this.writes.push({ ref, deleted: true });
+  }
+
   commitToStore() {
     for (const w of this.writes) {
-      setDocData(this.store, w.ref, w.data, w.merge);
+      if (w.deleted) deleteDocData(this.store, w.ref);
+      else setDocData(this.store, w.ref, w.data, w.merge);
     }
   }
 }
