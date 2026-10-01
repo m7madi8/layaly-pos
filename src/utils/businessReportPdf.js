@@ -184,7 +184,7 @@ export function buildBusinessReportHtml(opts) {
     <div class="stat"><div class="label">عدد العمليات</div><div class="value">${totalTransactions}</div></div>
     <div class="stat"><div class="label">الأصناف المباعة</div><div class="value">${totalItemsSoldPeriod}</div></div>
     <div class="stat"><div class="label">متوسط قيمة العملية</div><div class="value">${escapeHtml(fmtMoney(avgTransactionValue))}</div></div>
-    <div class="stat"><div class="label">الخصومات / الإهداءات</div><div class="value">-${escapeHtml(fmtMoney(totalDiscounts))} · ${escapeHtml(fmtMoney(totalComplimentsValue))}</div></div>
+    <div class="stat"><div class="label">الخصومات</div><div class="value">-${escapeHtml(fmtMoney(totalDiscounts))}${totalComplimentsValue > 0 ? ` · مجاني ${escapeHtml(fmtMoney(totalComplimentsValue))}` : ''}</div></div>
   </div>
 
   <p style="font-size:11px;color:#8a958e;margin-bottom:8px;">إجمالي الإيرادات: ${escapeHtml(fmtMoney(totalRevenue))} · تكلفة المبيعات: ${escapeHtml(fmtMoney(totalCost))}</p>

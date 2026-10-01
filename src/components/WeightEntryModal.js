@@ -30,6 +30,7 @@ export default function WeightEntryModal({ product, fmtMoney, onConfirm, onClose
   let error = '';
   if (weight !== '' && !(grams > 0)) error = 'الوزن يجب أن يكون أكبر من صفر';
   else if (amount !== '' && !(total > 0)) error = 'المبلغ يجب أن يكون أكبر من صفر';
+  else if (grams > 0 && Number.isFinite(stock) && stock <= 0) error = 'المخزون فارغ — حدّث الكمية بالغرام من صفحة المخزون';
   else if (grams > 0 && Number.isFinite(stock) && grams > stock) error = `الكمية المتوفرة ${stock} غ فقط`;
   const canSubmit = grams > 0 && total > 0 && !error && perUnit > 0;
 

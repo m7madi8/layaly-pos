@@ -11,7 +11,7 @@ import {
 import PosProductCard from './components/PosProductCard';
 import CustomersView from './components/CustomersView';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs } from './productAssets';
-import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, Percent, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, Gift, ChevronDown, ChevronUp, Bell, Truck } from 'lucide-react';
+import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, Percent, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck } from 'lucide-react';
 
 import {
   auth,
@@ -48,6 +48,14 @@ import { mapFirebaseAuthError } from './authErrors';
 import IosInstallHint from './components/IosInstallHint';
 import WeightEntryModal from './components/WeightEntryModal';
 import PlayStationPanel from './components/PlayStationPanel';
+import ExternalAssetsPanel from './components/ExternalAssetsPanel';
+import {
+  createExternalAsset,
+  checkoutExternalAsset,
+  returnExternalAsset,
+  assetMovementRef,
+} from './services/externalAssetsService';
+import { ensureStarterProducts } from './services/starterProducts';
 import {
   PRODUCT_TYPES,
   TIME_ROUNDING_OPTIONS,
@@ -223,6 +231,9 @@ const AppCore = () => {
   const [playstationSessions, setPlaystationSessions] = useState([]);
   const [playstationBusy, setPlaystationBusy] = useState(false);
   const playstationPanelRef = useRef(null);
+  const [externalAssets, setExternalAssets] = useState([]);
+  const [assetMovements, setAssetMovements] = useState([]);
+  const [assetsBusy, setAssetsBusy] = useState(false);
 
   const [selectedInventoryCategory, setSelectedInventoryCategory] = useState('all');
   const [orderStatusFilter, setOrderStatusFilter] = useState('all');
@@ -408,6 +419,35 @@ const AppCore = () => {
     );
     return () => unsubscribe();
   }, [user]);
+
+  // Load external assets (hookahs taken outside) and their movements
+  useEffect(() => {
+    if (!user) return;
+    const unsubAssets = onSnapshot(
+      query(collection(db, 'users', user.uid, 'externalAssets')),
+      (snapshot) => setExternalAssets(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (error) => console.error('Error loading external assets:', error)
+    );
+    const unsubMovements = onSnapshot(
+      query(collection(db, 'users', user.uid, 'assetMovements'), orderBy('checkoutAtMs', 'desc')),
+      (snapshot) => setAssetMovements(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (error) => console.error('Error loading asset movements:', error)
+    );
+    return () => {
+      unsubAssets();
+      unsubMovements();
+    };
+  }, [user]);
+
+  const starterSeededRef = useRef(false);
+  useEffect(() => {
+    if (!user || !businessProfile || userRole !== 'admin' || starterSeededRef.current) return;
+    starterSeededRef.current = true;
+    ensureStarterProducts(user.uid, businessProfile).catch((error) => {
+      starterSeededRef.current = false;
+      console.error('Error adding starter products:', error);
+    });
+  }, [user, businessProfile, userRole]);
 
   // Load customers
   useEffect(() => {
@@ -1159,6 +1199,45 @@ const AppCore = () => {
       if (ended) addSessionToCart(ended);
     });
 
+  const cartMovementIds = new Set(currentOrder.assetMovementIds || []);
+
+  const runAssetAction = async (action) => {
+    if (assetsBusy) return false;
+    setAssetsBusy(true);
+    try {
+      await action();
+      return true;
+    } catch (error) {
+      alert(error.message);
+      return false;
+    } finally {
+      setAssetsBusy(false);
+    }
+  };
+
+  const handleCheckoutAsset = ({ assetId, person, notes }) =>
+    runAssetAction(async () => {
+      const movementId = await checkoutExternalAsset(user.uid, {
+        assetId,
+        person,
+        customerId: currentOrder.customerId || null,
+        customerName: currentOrder.customerId ? currentOrder.customer : '',
+        notes,
+        actor: sessionActor(),
+      });
+      setCurrentOrder((prev) => ({
+        ...prev,
+        assetMovementIds: [...(prev.assetMovementIds || []), movementId],
+      }));
+    });
+
+  const handleReturnAsset = (movement) => {
+    if (!window.confirm(`تأكيد إرجاع «${movement.assetName}» من ${movement.person}؟`)) return;
+    runAssetAction(() => returnExternalAsset(user.uid, movement.id, { actor: sessionActor() }));
+  };
+
+  const handleAddAsset = (name) => runAssetAction(() => createExternalAsset(user.uid, { name }));
+
   const handleCancelPlaystation = (session) => {
     if (!window.confirm(`إلغاء جلسة «${session.stationName}»؟ لن تُحتسب في الإيراد.`)) return;
     runPlaystationAction(() => cancelPlaystationSession(user.uid, session.id, { actor: sessionActor() }));
@@ -1601,6 +1680,7 @@ const AppCore = () => {
           customer: currentOrder.customer || 'ضيف',
           customerId: customerId || null,
           notes: currentOrder.notes || '',
+          assetMovementIds: currentOrder.assetMovementIds || [],
           items: currentOrder.items.map((i) => {
             const type = getProductType(i);
             const line = {
@@ -1657,6 +1737,10 @@ const AppCore = () => {
           }
         }
 
+        for (const movementId of currentOrder.assetMovementIds || []) {
+          transaction.update(assetMovementRef(user.uid, movementId), { orderId: newOrderRef.id, orderNumber });
+        }
+
         if (customerDoc && debtAmount > 0) {
           const entry = {
             id: `tx_${Date.now()}`,
@@ -1705,7 +1789,8 @@ const AppCore = () => {
       })),
       customer: order.customer,
       customerId: order.customerId || '',
-      notes: order.notes
+      notes: order.notes,
+      assetMovementIds: order.assetMovementIds || [],
     });
     setDiscount(order.discount || 0);
     setDiscountType(order.discountType || 'percentage');
@@ -3654,13 +3739,15 @@ const AppCore = () => {
                         - {fmtMoney(totalDiscounts)}
                       </p>
                     </div>
+                    {totalComplimentsValue > 0 && (
                     <div className="bg-white rounded-xl p-4 shadow-md border border-gray-200">
-                      <p className="text-xs mb-1 text-gray-500">إهداءات مجانية</p>
+                      <p className="text-xs mb-1 text-gray-500">طلبات مجانية (سابقة)</p>
                       <p className="text-xl font-bold text-accent">
                         {fmtMoney(totalComplimentsValue)}
                       </p>
                       <p className="text-[10px] text-gray-400 mt-1">{filteredOrders.filter(o => o.paymentMethod === 'Compliment').length} طلب</p>
                     </div>
+                    )}
                   </div>
 
                   {(psReport.sessionCount > 0 || timeProducts.length > 0) && (
@@ -3881,6 +3968,18 @@ const AppCore = () => {
                   cartSessionIds={cartSessionIds}
                 />
               </div>
+
+              <ExternalAssetsPanel
+                assets={externalAssets}
+                movements={assetMovements}
+                busy={assetsBusy}
+                canManage={!isEmployee}
+                defaultPerson={currentOrder.customerId ? currentOrder.customer : ''}
+                linkedMovementIds={cartMovementIds}
+                onCheckout={handleCheckoutAsset}
+                onReturn={handleReturnAsset}
+                onAddAsset={handleAddAsset}
+              />
 
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 sm:gap-5">
                 {filteredProducts.map((product) => (
@@ -5012,16 +5111,6 @@ const AppCore = () => {
                 style={{ fontFamily: FONT_UI }}
               >
                 كاش + دين — جزء نقداً والباقي دين
-              </button>
-              <button
-                type="button"
-                onClick={() => completeOrder('paid', { paymentType: 'compliment', method: 'Compliment' })}
-                disabled={uploadProgress}
-                className="w-full py-3 rounded-xl border border-accent bg-orange-50 hover:bg-accent hover:text-white text-sm font-medium text-accent transition-all flex items-center justify-center gap-2"
-                style={{ fontFamily: FONT_UI }}
-              >
-                <Gift size={16} />
-                مجاني (إهداء)
               </button>
             </div>
           </div>
