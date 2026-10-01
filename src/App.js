@@ -1215,20 +1215,28 @@ const AppCore = () => {
     }
   };
 
-  const handleCheckoutAsset = ({ assetId, person, notes }) =>
+  const hookahSaleProducts = products
+    .filter((p) => getProductType(p) === 'standard' && String(p.category || '').includes('أرجيل'))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+
+  const handleCheckoutAsset = ({ assetId, person, notes, productId }) =>
     runAssetAction(async () => {
+      const saleProduct = hookahSaleProducts.find((p) => p.id === productId);
+      if (!saleProduct) throw new Error('اختر صنف الأرجيلة لإضافته للطلب');
       const movementId = await checkoutExternalAsset(user.uid, {
         assetId,
         person,
         customerId: currentOrder.customerId || null,
         customerName: currentOrder.customerId ? currentOrder.customer : '',
         notes,
+        saleProduct,
         actor: sessionActor(),
       });
       setCurrentOrder((prev) => ({
         ...prev,
         assetMovementIds: [...(prev.assetMovementIds || []), movementId],
       }));
+      addToOrder(saleProduct);
     });
 
   const handleReturnAsset = (movement) => {
@@ -3976,6 +3984,8 @@ const AppCore = () => {
                 canManage={!isEmployee}
                 defaultPerson={currentOrder.customerId ? currentOrder.customer : ''}
                 linkedMovementIds={cartMovementIds}
+                saleProducts={hookahSaleProducts}
+                fmtMoney={fmtMoney}
                 onCheckout={handleCheckoutAsset}
                 onReturn={handleReturnAsset}
                 onAddAsset={handleAddAsset}

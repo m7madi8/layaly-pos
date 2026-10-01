@@ -11,14 +11,25 @@ export const EMPLOYEE_VIEWS = ['pos'];
 
 const ROLE_KEY = 'layali-user-role';
 
+/** الدور محفوظ على الجهاز (localStorage) ليبقى الدخول بعد التحديث أو إغلاق التطبيق، حتى تسجيل الخروج */
 export function readSessionRole() {
-  const role = sessionStorage.getItem(ROLE_KEY);
+  let role = null;
+  try {
+    role = localStorage.getItem(ROLE_KEY) || sessionStorage.getItem(ROLE_KEY);
+  } catch {
+    return null;
+  }
   return role === 'admin' || role === 'employee' ? role : null;
 }
 
 export function saveSessionRole(role) {
-  if (role) sessionStorage.setItem(ROLE_KEY, role);
-  else sessionStorage.removeItem(ROLE_KEY);
+  try {
+    if (role) localStorage.setItem(ROLE_KEY, role);
+    else localStorage.removeItem(ROLE_KEY);
+    sessionStorage.removeItem(ROLE_KEY);
+  } catch {
+    /* storage unavailable (private mode) — role lasts for this page only */
+  }
 }
 
 /** يزيل رموز الاتجاه المخفية التي تضيفها لوحات المفاتيح في الصفحات العربية */

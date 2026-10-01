@@ -32,7 +32,7 @@ export async function setExternalAssetStatus(uid, assetId, status) {
 }
 
 /** إخراج أرجيلة — يفشل إذا لم تكن متاحة (يمنع إخراج نفس الأرجيلة مرتين) */
-export async function checkoutExternalAsset(uid, { assetId, person, customerId, customerName, notes, actor }) {
+export async function checkoutExternalAsset(uid, { assetId, person, customerId, customerName, notes, saleProduct, actor }) {
   const who = String(person || customerName || '').trim();
   if (!who) throw new Error('اكتب اسم الشخص الذي أخذ الأرجيلة');
   const newRef = doc(movementsCol(uid));
@@ -52,6 +52,9 @@ export async function checkoutExternalAsset(uid, { assetId, person, customerId, 
       customerId: customerId || null,
       customerName: customerName || '',
       notes: String(notes || '').trim(),
+      saleProductId: saleProduct?.id || null,
+      saleProductName: saleProduct?.name || '',
+      salePrice: Number(saleProduct?.price) || 0,
       status: 'outside',
       checkoutAtMs: Date.now(),
       returnedAtMs: null,

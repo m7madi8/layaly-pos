@@ -13,6 +13,8 @@ export default function ExternalAssetsPanel({
   canManage,
   defaultPerson,
   linkedMovementIds,
+  saleProducts,
+  fmtMoney,
   onCheckout,
   onReturn,
   onAddAsset,
@@ -22,6 +24,7 @@ export default function ExternalAssetsPanel({
   const [assetId, setAssetId] = useState('');
   const [person, setPerson] = useState('');
   const [notes, setNotes] = useState('');
+  const [productId, setProductId] = useState('');
   const [addOpen, setAddOpen] = useState(false);
   const [newName, setNewName] = useState('');
 
@@ -44,12 +47,13 @@ export default function ExternalAssetsPanel({
     setAssetId(available[0]?.id || '');
     setPerson(defaultPerson || '');
     setNotes('');
+    setProductId(saleProducts[0]?.id || '');
     setCheckoutOpen(true);
   };
 
   const submitCheckout = async (e) => {
     e.preventDefault();
-    const ok = await onCheckout({ assetId, person, notes });
+    const ok = await onCheckout({ assetId, person, notes, productId });
     if (ok) setCheckoutOpen(false);
   };
 
@@ -133,6 +137,22 @@ export default function ExternalAssetsPanel({
               aria-label="اسم الشخص"
             />
           </div>
+          {saleProducts.length > 0 ? (
+            <select
+              value={productId}
+              onChange={(e) => setProductId(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm bg-white outline-none"
+              aria-label="صنف الأرجيلة المباع"
+            >
+              {saleProducts.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} — {fmtMoney(p.price)}</option>
+              ))}
+            </select>
+          ) : (
+            <p className="text-xs text-red-600">
+              لا يوجد صنف أرجيلة للبيع. {canManage ? 'أضف صنفاً في قسم «الأرجيل» من المخزون.' : 'اطلب من المدير إضافة صنف أرجيلة.'}
+            </p>
+          )}
           <input
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
@@ -141,14 +161,14 @@ export default function ExternalAssetsPanel({
             aria-label="ملاحظات"
           />
           <div className="flex gap-2">
-            <button type="submit" disabled={busy || !assetId || !person.trim()} className="flex-1 py-2 rounded-lg bg-primary text-white text-xs font-medium disabled:opacity-40">
-              تأكيد الإخراج
+            <button type="submit" disabled={busy || !assetId || !person.trim() || !productId} className="flex-1 py-2 rounded-lg bg-primary text-white text-xs font-medium disabled:opacity-40">
+              تأكيد الإخراج وإضافتها للطلب
             </button>
             <button type="button" onClick={() => setCheckoutOpen(false)} className="px-4 py-2 rounded-lg bg-white border border-gray-200 text-xs text-gray-500">
               إلغاء
             </button>
           </div>
-          <p className="text-[10px] text-gray-400">تُربط بالفاتورة الحالية تلقائياً عند حفظ الطلب.</p>
+          <p className="text-[10px] text-gray-400">تُضاف للطلب كمبيعات بسعرها العادي، وتُربط بالفاتورة عند الحفظ.</p>
         </form>
       )}
 
