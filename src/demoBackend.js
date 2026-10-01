@@ -302,10 +302,8 @@ export function collection(_db, ...pathSegments) {
 }
 
 export function doc(first, ...segments) {
-  if (first?.type === 'collection') {
-    return { type: 'doc', path: [...first.path, generateId()] };
-  }
-  return { type: 'doc', path: segments };
+  const path = first?.type === 'collection' ? [...first.path, generateId()] : segments;
+  return { type: 'doc', path, id: path[path.length - 1] };
 }
 
 export function query(collectionRef, ...constraints) {

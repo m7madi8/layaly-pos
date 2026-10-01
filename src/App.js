@@ -46,6 +46,30 @@ import {
 import CloudConfigRequired from './components/CloudConfigRequired';
 import { mapFirebaseAuthError } from './authErrors';
 import IosInstallHint from './components/IosInstallHint';
+import WeightEntryModal from './components/WeightEntryModal';
+import PlayStationPanel from './components/PlayStationPanel';
+import {
+  PRODUCT_TYPES,
+  TIME_ROUNDING_OPTIONS,
+  getProductType,
+  stockUnitsForItem,
+  costFromWeight,
+  validateWeightPricing,
+  validateTimePricing,
+  weightPricePerUnit,
+  formatDuration,
+  productPriceLabel,
+  summarizePlaystationSessions,
+  itemDetailLabel,
+} from './utils/productPricing';
+import {
+  resolvePlaystationSettings,
+  startPlaystationSession,
+  endPlaystationSession,
+  cancelPlaystationSession,
+  sessionCartItem,
+  playstationSessionRef,
+} from './services/playstationService';
 import {
   EMPLOYEE_LOGIN_PASSWORD,
   EMPLOYEE_VIEWS,
@@ -182,7 +206,8 @@ const AppCore = () => {
     receiptFooter: '',
     receiptQrCode: '',
     paymentMethods: { cash: true, qris: true, debit: true, credit: true },
-    rounding: false
+    rounding: false,
+    playstation: resolvePlaystationSettings(null),
   });
   const [reportFilter, setReportFilter] = useState('today');
   const [reportCustomDates, setReportCustomDates] = useState({ start: '', end: '' });
@@ -193,6 +218,11 @@ const AppCore = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [, setPaymentCustomPrice] = useState('');
   const [finalTotalForPayment, setFinalTotalForPayment] = useState(0);
+
+  const [weightEntryProduct, setWeightEntryProduct] = useState(null);
+  const [playstationSessions, setPlaystationSessions] = useState([]);
+  const [playstationBusy, setPlaystationBusy] = useState(false);
+  const playstationPanelRef = useRef(null);
 
   const [selectedInventoryCategory, setSelectedInventoryCategory] = useState('all');
   const [orderStatusFilter, setOrderStatusFilter] = useState('all');
@@ -271,7 +301,8 @@ const AppCore = () => {
             receiptFooter: data.receiptFooter || '',
             receiptQrCode: data.receiptQrCode || '',
             paymentMethods: data.paymentMethods || { cash: true, qris: true, debit: true, credit: true },
-            rounding: data.rounding || false
+            rounding: data.rounding || false,
+            playstation: resolvePlaystationSettings(data),
           });
           setProfileForm(prev => ({ ...prev, ...data }));
         } else {
@@ -363,6 +394,18 @@ const AppCore = () => {
     }, (error) => {
       console.error("Error loading suppliers:", error);
     });
+    return () => unsubscribe();
+  }, [user]);
+
+  // Load PlayStation sessions
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'users', user.uid, 'playstationSessions'), orderBy('startedAtMs', 'desc'));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => setPlaystationSessions(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (error) => console.error('Error loading PlayStation sessions:', error)
+    );
     return () => unsubscribe();
   }, [user]);
 
@@ -587,6 +630,23 @@ const AppCore = () => {
 
   const handleSaveSettings = async (e) => {
     e.preventDefault();
+    const ps = appSettings.playstation || resolvePlaystationSettings(null);
+    const stations = (ps.stations || []).map((s) => ({ id: s.id, name: String(s.name || '').trim() }));
+    if (stations.length === 0 || stations.some((s) => !s.name)) {
+      alert('أدخل اسماً لكل جهاز بلايستيشن (جهاز واحد على الأقل).');
+      return;
+    }
+    const rate = Number(ps.electricityCostPerHour);
+    if (!Number.isFinite(rate) || rate < 0) {
+      alert('تكلفة الكهرباء للساعة يجب أن تكون رقماً صفراً أو أكثر.');
+      return;
+    }
+    const keptIds = new Set(stations.map((s) => s.id));
+    const busyRemoved = playstationSessions.find((s) => s.status === 'active' && !keptIds.has(s.stationId));
+    if (busyRemoved) {
+      alert(`لا يمكن حذف «${busyRemoved.stationName}» وعليه جلسة شغالة. أنهِ الجلسة أولاً.`);
+      return;
+    }
     setUploadProgress(true);
     try {
       await updateDoc(doc(db, 'users', user.uid), {
@@ -596,6 +656,7 @@ const AppCore = () => {
         receiptFooter: appSettings.receiptFooter,
         receiptQrCode: appSettings.receiptQrCode,
         rounding: appSettings.rounding,
+        playstation: { electricityCostPerHour: rate, stations },
         updatedAt: serverTimestamp()
       });
       setShowSettingsModal(false);
@@ -625,20 +686,42 @@ const AppCore = () => {
   }, [imageFile, productImagePreview]);
 
   const openAddProductModal = () => {
-    setProductForm({ name: '', category: MENU_CATEGORIES[0] || '', price: '', stock: '', cost: '', addOns: [], image: '' });
+    setProductForm({
+      name: '',
+      category: MENU_CATEGORIES[0] || '',
+      price: '',
+      stock: '',
+      cost: '',
+      addOns: [],
+      image: '',
+      productType: 'standard',
+      weightPricing: { baseWeight: '', basePrice: '' },
+      timePricing: { billingMinutes: '', billingPrice: '', rounding: 'up' },
+    });
     setProductIngredients([]);
     setImageFile(null);
     setEditingProductId(null);
     setShowProductModal(true);
   };
 
+  const productFormType = getProductType(productForm);
+  const productFormPricingError =
+    productFormType === 'weight'
+      ? validateWeightPricing(productForm.weightPricing)
+      : productFormType === 'time'
+        ? validateTimePricing(productForm.timePricing)
+        : null;
   const isProductFormValid =
     Boolean(productForm.name?.trim()) &&
     Boolean(productForm.category?.trim()) &&
-    productForm.price !== '' &&
-    !Number.isNaN(parseFloat(productForm.price)) &&
-    productForm.stock !== '' &&
-    !Number.isNaN(parseFloat(productForm.stock));
+    (productFormType !== 'standard' ||
+      (productForm.price !== '' && !Number.isNaN(parseFloat(productForm.price)) && parseFloat(productForm.price) >= 0)) &&
+    !productFormPricingError &&
+    (productFormType === 'time' ||
+      (productForm.stock !== '' && !Number.isNaN(parseFloat(productForm.stock)) && parseFloat(productForm.stock) >= 0));
+
+  const updateProductPricing = (key, field, value) =>
+    setProductForm((prev) => ({ ...prev, [key]: { ...(prev[key] || {}), [field]: value } }));
 
   // Add-on Management Handlers
   const addAddonGroup = () => {
@@ -733,9 +816,12 @@ const AppCore = () => {
         imageUrl = await fileToStoredDataUrl(imageFile);
       }
       
+      const type = getProductType(productForm);
+      if (productFormPricingError) throw new Error(productFormPricingError);
       const productData = {
         name: productForm.name.trim(),
         category: productForm.category.trim(),
+        productType: type,
         price: parseFloat(productForm.price),
         cost: parseFloat(productForm.cost || 0),
         stock: parseFloat(productForm.stock),
@@ -745,6 +831,25 @@ const AppCore = () => {
         userId: user.uid,
         updatedAt: serverTimestamp()
       };
+      if (type === 'weight') {
+        const baseWeight = parseFloat(productForm.weightPricing.baseWeight);
+        const basePrice = parseFloat(productForm.weightPricing.basePrice);
+        Object.assign(productData, {
+          weightPricing: { unit: 'g', baseWeight, basePrice, pricePerUnit: basePrice / baseWeight },
+          price: basePrice,
+          addOns: [],
+        });
+      } else if (type === 'time') {
+        const billingMinutes = parseFloat(productForm.timePricing.billingMinutes);
+        const billingPrice = parseFloat(productForm.timePricing.billingPrice);
+        Object.assign(productData, {
+          timePricing: { billingMinutes, billingPrice, rounding: productForm.timePricing.rounding === 'exact' ? 'exact' : 'up' },
+          price: billingPrice,
+          stock: null,
+          addOns: [],
+          ingredients: [],
+        });
+      }
 
       if (editingProductId) {
         await updateDoc(doc(db, 'users', user.uid, 'products', editingProductId), productData);
@@ -773,7 +878,17 @@ const AppCore = () => {
       stock: product.stock,
       cost: product.cost || 0,
       image: product.image,
-      addOns: product.addOns || []
+      addOns: product.addOns || [],
+      productType: getProductType(product),
+      weightPricing: {
+        baseWeight: product.weightPricing?.baseWeight ?? '',
+        basePrice: product.weightPricing?.basePrice ?? '',
+      },
+      timePricing: {
+        billingMinutes: product.timePricing?.billingMinutes ?? '',
+        billingPrice: product.timePricing?.billingPrice ?? '',
+        rounding: product.timePricing?.rounding || 'up',
+      },
     });
     setProductIngredients(product.ingredients || []); // Load recipe
     setEditingProductId(product.id);
@@ -875,19 +990,29 @@ const AppCore = () => {
           if (orderData.status === 'cancelled') return;
 
           // Read all products first
-          const productUpdates = [];
+          const restoreByProduct = {};
           for (const item of orderData.items) {
-            const productRef = doc(db, 'users', user.uid, 'products', item.id);
+            const units = stockUnitsForItem(item);
+            if (units > 0) restoreByProduct[item.id] = (restoreByProduct[item.id] || 0) + units;
+          }
+          const productUpdates = [];
+          for (const [productId, units] of Object.entries(restoreByProduct)) {
+            const productRef = doc(db, 'users', user.uid, 'products', productId);
             const productDoc = await transaction.get(productRef);
             if (productDoc.exists()) {
               const currentStock = productDoc.data().stock || 0;
-              productUpdates.push({ ref: productRef, newStock: currentStock + item.quantity });
+              productUpdates.push({ ref: productRef, newStock: currentStock + units });
             }
           }
 
           // Perform writes
           for (const update of productUpdates) {
             transaction.update(update.ref, { stock: update.newStock });
+          }
+          for (const item of orderData.items) {
+            if (item.sessionId) {
+              transaction.update(playstationSessionRef(user.uid, item.sessionId), { billed: false, orderId: null, orderNumber: null });
+            }
           }
 
           transaction.update(orderRef, { status: 'cancelled' });
@@ -901,6 +1026,15 @@ const AppCore = () => {
 
   // Order handlers
   const addToOrder = (product) => {
+    const type = getProductType(product);
+    if (type === 'weight') {
+      setWeightEntryProduct(product);
+      return;
+    }
+    if (type === 'time') {
+      playstationPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
     if (product.addOns && product.addOns.length > 0) {
       setPendingAddonProduct(product);
       // Initialize selections
@@ -956,6 +1090,78 @@ const AppCore = () => {
     
     setShowAddonModal(false);
     setPendingAddonProduct(null);
+  };
+
+  const addWeightItemToCart = (product, { weightGrams, amount }) => {
+    setCurrentOrder((prev) => ({
+      ...prev,
+      items: [
+        ...prev.items,
+        {
+          ...product,
+          productType: 'weight',
+          cartItemId: `w-${product.id}-${Date.now()}`,
+          quantity: 1,
+          selectedAddons: [],
+          weightGrams,
+          unitPrice: weightPricePerUnit(product),
+          price: amount,
+          originalPrice: amount,
+          cost: costFromWeight(product, weightGrams),
+        },
+      ],
+    }));
+    setWeightEntryProduct(null);
+  };
+
+  const playstationSettings = resolvePlaystationSettings(businessProfile);
+  const timeProducts = products.filter((p) => getProductType(p) === 'time');
+  const cartSessionIds = new Set(currentOrder.items.filter((i) => i.sessionId).map((i) => i.sessionId));
+  const sessionActor = () => ({ role: userRole || 'admin' });
+
+  const addSessionToCart = (session) => {
+    setCurrentOrder((prev) =>
+      prev.items.some((i) => i.sessionId === session.id)
+        ? prev
+        : { ...prev, items: [...prev.items, sessionCartItem(session)] }
+    );
+  };
+
+  const runPlaystationAction = async (action) => {
+    if (playstationBusy) return;
+    setPlaystationBusy(true);
+    try {
+      await action();
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setPlaystationBusy(false);
+    }
+  };
+
+  const handleStartPlaystation = (station, product) =>
+    runPlaystationAction(() =>
+      startPlaystationSession(user.uid, {
+        station,
+        product,
+        customerId: currentOrder.customerId || null,
+        customerName: currentOrder.customer || '',
+        actor: sessionActor(),
+      })
+    );
+
+  const handleEndPlaystation = (session) =>
+    runPlaystationAction(async () => {
+      const ended = await endPlaystationSession(user.uid, session.id, {
+        electricityCostPerHour: playstationSettings.electricityCostPerHour,
+        actor: sessionActor(),
+      });
+      if (ended) addSessionToCart(ended);
+    });
+
+  const handleCancelPlaystation = (session) => {
+    if (!window.confirm(`إلغاء جلسة «${session.stationName}»؟ لن تُحتسب في الإيراد.`)) return;
+    runPlaystationAction(() => cancelPlaystationSession(user.uid, session.id, { actor: sessionActor() }));
   };
 
   const updateQuantity = (cartItemId, delta) => {
@@ -1305,6 +1511,20 @@ const AppCore = () => {
             }
         }
 
+        const newSessionIds = new Set(currentOrder.items.filter((i) => i.sessionId).map((i) => i.sessionId));
+        const oldSessionIds = new Set(
+          (existingOrderData?.items || []).filter((i) => i.sessionId).map((i) => i.sessionId)
+        );
+        for (const sessionId of newSessionIds) {
+          const sSnap = await transaction.get(playstationSessionRef(user.uid, sessionId));
+          if (!sSnap.exists()) throw new Error('جلسة البلايستيشن غير موجودة');
+          const s = sSnap.data();
+          if (s.status !== 'ended') throw new Error('أنهِ جلسة البلايستيشن قبل حفظ الطلب');
+          if (s.billed && s.orderId !== newOrderRef.id) {
+            throw new Error(`جلسة «${s.stationName}» مضافة لطلب آخر (#${s.orderNumber || '—'})`);
+          }
+        }
+
         let customerDoc = null;
         if (customerId && debtAmount > 0) {
           const cRef = doc(db, 'users', user.uid, 'customers', customerId);
@@ -1318,9 +1538,10 @@ const AppCore = () => {
         // Restore stock if editing
         if (existingOrderData && existingOrderData.status !== 'cancelled') {
             for (const item of existingOrderData.items) {
-                if (productDocs[item.id]) {
+                const units = stockUnitsForItem(item);
+                if (productDocs[item.id] && units > 0) {
                     const p = productDocs[item.id];
-                    p.data.stock = (p.data.stock || 0) + item.quantity;
+                    p.data.stock = (p.data.stock || 0) + units;
                 }
             }
         }
@@ -1330,11 +1551,14 @@ const AppCore = () => {
           if (!productDocs[item.id]) {
              throw new Error(`الصنف "${item.name}" غير موجود`);
           }
+          const units = stockUnitsForItem(item);
+          if (units <= 0) continue;
           const p = productDocs[item.id];
-          if (p.data.stock < item.quantity) {
-             throw new Error(`مخزون "${item.name}" غير كافٍ. المتاح: ${p.data.stock}`);
+          if (p.data.stock < units) {
+             const unitLabel = getProductType(item) === 'weight' ? ' غ' : '';
+             throw new Error(`مخزون "${item.name}" غير كافٍ. المتاح: ${p.data.stock}${unitLabel}`);
           }
-          p.data.stock -= item.quantity;
+          p.data.stock -= units;
         }
 
         // Deduct Ingredients (Recipe)
@@ -1350,9 +1574,9 @@ const AppCore = () => {
           }
         }
 
-        // Apply product updates
+        // Apply product updates (time-based products have no stock)
         for (const pid of productIds) {
-            if (productDocs[pid]) {
+            if (productDocs[pid] && getProductType(productDocs[pid].data) !== 'time') {
                 transaction.update(productDocs[pid].ref, { stock: productDocs[pid].data.stock });
             }
         }
@@ -1377,14 +1601,29 @@ const AppCore = () => {
           customer: currentOrder.customer || 'ضيف',
           customerId: customerId || null,
           notes: currentOrder.notes || '',
-          items: currentOrder.items.map(i => ({
-            id: i.id,
-            name: i.name,
-            price: i.price,
-            cost: i.cost || 0,
-            quantity: i.quantity,
-            selectedAddons: i.selectedAddons || []
-          })),
+          items: currentOrder.items.map((i) => {
+            const type = getProductType(i);
+            const line = {
+              id: i.id,
+              name: i.name,
+              price: i.price,
+              cost: i.cost || 0,
+              quantity: i.quantity,
+              selectedAddons: i.selectedAddons || [],
+            };
+            if (type === 'weight') {
+              Object.assign(line, { productType: 'weight', lineId: i.cartItemId, weightGrams: i.weightGrams, unitPrice: i.unitPrice || 0 });
+            } else if (type === 'time') {
+              Object.assign(line, {
+                productType: 'time',
+                lineId: i.cartItemId,
+                sessionId: i.sessionId || null,
+                durationMinutes: i.durationMinutes || 0,
+                billableMinutes: i.billableMinutes || 0,
+              });
+            }
+            return line;
+          }),
           status: finalStatus,
           paymentMethod,
           paymentType,
@@ -1404,6 +1643,19 @@ const AppCore = () => {
           timestamp: serverTimestamp(),
           userId: user.uid
         }, { merge: true });
+
+        for (const sessionId of newSessionIds) {
+          transaction.update(playstationSessionRef(user.uid, sessionId), {
+            billed: true,
+            orderId: newOrderRef.id,
+            orderNumber,
+          });
+        }
+        for (const sessionId of oldSessionIds) {
+          if (!newSessionIds.has(sessionId)) {
+            transaction.update(playstationSessionRef(user.uid, sessionId), { billed: false, orderId: null, orderNumber: null });
+          }
+        }
 
         if (customerDoc && debtAmount > 0) {
           const entry = {
@@ -1447,9 +1699,9 @@ const AppCore = () => {
     setCurrentOrder({
       items: order.items.map(item => ({
         ...item,
-        cartItemId: item.selectedAddons && item.selectedAddons.length > 0
+        cartItemId: item.lineId || (item.selectedAddons && item.selectedAddons.length > 0
           ? `${item.id}-${JSON.stringify(item.selectedAddons.map(a => a.name).sort())}`
-          : item.id
+          : item.id)
       })),
       customer: order.customer,
       customerId: order.customerId || '',
@@ -1631,7 +1883,8 @@ const AppCore = () => {
       
       // Items
       for (const item of order.items) {
-        await sendData(`${item.name}\n`);
+        const detail = itemDetailLabel(item);
+        await sendData(`${item.name}${detail ? ` (${detail})` : ''}\n`);
         const line = `${item.quantity}x ${fmtMoneyPlain(item.price)}`;
         const total = fmtMoneyPlain(item.price * item.quantity);
         const spaces = 32 - line.length - total.length;
@@ -1764,8 +2017,12 @@ const AppCore = () => {
     .filter(o => o.status === 'paid')
     .reduce((sum, o) => sum + (o.profit || 0), 0);
 
+  const lowStockThresholdFor = (p) =>
+    getProductType(p) === 'weight'
+      ? LOW_STOCK_THRESHOLD * (Number(p.weightPricing?.baseWeight) || 1)
+      : LOW_STOCK_THRESHOLD;
   const lowStockProducts = products
-    .filter((p) => Number(p.stock) < LOW_STOCK_THRESHOLD)
+    .filter((p) => getProductType(p) !== 'time' && Number(p.stock) < lowStockThresholdFor(p))
     .sort((a, b) => Number(a.stock) - Number(b.stock));
   const lowStock = lowStockProducts.length;
 
@@ -2315,7 +2572,7 @@ const AppCore = () => {
                                              isOut ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700'
                                            }`}
                                          >
-                                           {isOut ? 'نفد' : `متبقي ${stock}`}
+                                           {isOut ? 'نفد' : `متبقي ${stock}${getProductType(product) === 'weight' ? ' غ' : ''}`}
                                          </span>
                                        </>
                                      );
@@ -3144,6 +3401,11 @@ const AppCore = () => {
 
               const filteredOrders = orders.filter(o => o.status === 'paid' && filterDate(o.timestamp));
               const filteredExpenses = expenses.filter(e => filterDate(e.date));
+              const psReport = summarizePlaystationSessions(
+                playstationSessions,
+                filterDate,
+                playstationSettings.electricityCostPerHour
+              );
               
               const totalRevenue = filteredOrders.reduce((sum, o) => sum + o.total, 0);
               const totalDiscounts = filteredOrders.reduce((sum, o) => sum + (o.discountAmount || 0), 0);
@@ -3278,6 +3540,17 @@ const AppCore = () => {
                   [],
                   ['إجمالي الخصومات', totalDiscounts],
                   [],
+                  ...(psReport.sessionCount > 0
+                    ? [
+                        ['البلايستيشن'],
+                        ['عدد الجلسات', psReport.sessionCount],
+                        ['ساعات التشغيل', psReport.totalHours],
+                        ['الإيراد', psReport.revenue],
+                        ['تكلفة الكهرباء', psReport.electricity],
+                        ['الصافي بعد الكهرباء', psReport.net],
+                        [],
+                      ]
+                    : []),
                   ['المبيعات حسب طريقة الدفع'],
                   ['الطريقة', 'المبلغ'],
                   ...Object.entries(salesByPaymentMethod).map(([method, amount]) => [paymentMethodLabel(method), amount]),
@@ -3389,6 +3662,68 @@ const AppCore = () => {
                       <p className="text-[10px] text-gray-400 mt-1">{filteredOrders.filter(o => o.paymentMethod === 'Compliment').length} طلب</p>
                     </div>
                   </div>
+
+                  {(psReport.sessionCount > 0 || timeProducts.length > 0) && (
+                    <div className="bg-white rounded-xl p-5 shadow-md border border-gray-200 mb-8" style={{ fontFamily: FONT_UI }}>
+                      <div className="flex items-baseline justify-between gap-3 mb-4 flex-wrap">
+                        <h3 className="text-lg md:text-xl font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>البلايستيشن</h3>
+                        <p className="text-[11px] text-gray-400">الكهرباء محسوبة بسعر الساعة وقت إنهاء كل جلسة</p>
+                      </div>
+                      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+                        <div className="rounded-lg bg-gray-50 p-3">
+                          <p className="text-xs text-gray-500">عدد الجلسات</p>
+                          <p className="text-xl font-bold text-primary">{psReport.sessionCount}</p>
+                        </div>
+                        <div className="rounded-lg bg-gray-50 p-3">
+                          <p className="text-xs text-gray-500">ساعات التشغيل</p>
+                          <p className="text-xl font-bold text-primary">{formatDuration(psReport.totalMinutes)}</p>
+                        </div>
+                        <div className="rounded-lg bg-gray-50 p-3">
+                          <p className="text-xs text-gray-500">الإيراد</p>
+                          <p className="text-xl font-bold text-primary">{fmtMoney(psReport.revenue)}</p>
+                        </div>
+                        <div className="rounded-lg bg-gray-50 p-3">
+                          <p className="text-xs text-gray-500">تكلفة الكهرباء</p>
+                          <p className="text-xl font-bold text-orange-600">- {fmtMoney(psReport.electricity)}</p>
+                        </div>
+                        <div className="rounded-lg bg-gray-50 p-3 col-span-2 lg:col-span-1">
+                          <p className="text-xs text-gray-500">الصافي بعد الكهرباء</p>
+                          <p className={`text-xl font-bold ${psReport.net >= 0 ? 'text-green-600' : 'text-red-600'}`}>{fmtMoney(psReport.net)}</p>
+                        </div>
+                      </div>
+                      {psReport.unbilledCount > 0 && (
+                        <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                          {psReport.unbilledCount} جلسة منتهية لم تُضف لفاتورة بعد ({fmtMoney(psReport.unbilledValue)}) — غير محسوبة في الإيراد.
+                        </p>
+                      )}
+                      {psReport.byStation.length > 1 && (
+                        <div className="mt-4 overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-xs text-gray-500 border-b border-gray-100">
+                                <th className="text-start py-2 font-medium">الجهاز</th>
+                                <th className="text-start py-2 font-medium">الجلسات</th>
+                                <th className="text-start py-2 font-medium">المدة</th>
+                                <th className="text-start py-2 font-medium">الإيراد</th>
+                                <th className="text-start py-2 font-medium">الكهرباء</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {psReport.byStation.map((row) => (
+                                <tr key={row.station} className="border-b border-gray-50 last:border-0">
+                                  <td className="py-2 font-medium text-primary">{row.station}</td>
+                                  <td className="py-2">{row.sessions}</td>
+                                  <td className="py-2">{formatDuration(row.minutes)}</td>
+                                  <td className="py-2">{fmtMoney(row.revenue)}</td>
+                                  <td className="py-2 text-orange-600">{fmtMoney(row.electricity)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Sales by Category Chart */}
                   <div className="bg-white rounded-xl p-6 shadow-md border border-gray-200 mb-6">
@@ -3532,6 +3867,21 @@ const AppCore = () => {
                 </div>
               </div>
 
+              <div ref={playstationPanelRef}>
+                <PlayStationPanel
+                  stations={playstationSettings.stations}
+                  sessions={playstationSessions}
+                  timeProducts={timeProducts}
+                  fmtMoney={fmtMoney}
+                  busy={playstationBusy}
+                  onStart={handleStartPlaystation}
+                  onEnd={handleEndPlaystation}
+                  onCancel={handleCancelPlaystation}
+                  onAddEndedToCart={addSessionToCart}
+                  cartSessionIds={cartSessionIds}
+                />
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 sm:gap-5">
                 {filteredProducts.map((product) => (
                   <PosProductCard key={product.id} product={product} onAdd={addToOrder} />
@@ -3625,6 +3975,18 @@ const AppCore = () => {
                       </button>
                     </div>
                     <div className="flex justify-between items-center">
+                      {getProductType(item) === 'weight' ? (
+                        <span className="text-xs text-gray-600" style={{ fontFamily: FONT_UI }}>
+                          {item.weightGrams} غ
+                        </span>
+                      ) : getProductType(item) === 'time' ? (
+                        <span className="text-xs text-gray-600" style={{ fontFamily: FONT_UI }}>
+                          {formatDuration(item.durationMinutes)}
+                          {item.billableMinutes && Math.round(item.billableMinutes) !== Math.round(item.durationMinutes)
+                            ? ` · يُحتسب ${formatDuration(item.billableMinutes)}`
+                            : ''}
+                        </span>
+                      ) : (
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => updateQuantity(item.cartItemId || item.id, -1)}
@@ -3644,6 +4006,7 @@ const AppCore = () => {
                           +
                         </button>
                       </div>
+                      )}
                       <p className="text-sm" style={{ fontFamily: FONT_UI, fontWeight: 600, color: theme.text }}>
                         {fmtMoney((item.price * item.quantity))}
                       </p>
@@ -3888,7 +4251,10 @@ const AppCore = () => {
                           <div key={idx} className="p-3 rounded-xl text-sm" style={{ backgroundColor: '#f3f4f6' }}>
                             <div className="flex justify-between mb-1">
                               <span style={{ fontFamily: FONT_UI, color: theme.text, fontWeight: 500 }}>
-                                {item.quantity}x {item.name}
+                                {getProductType(item) === 'standard' ? `${item.quantity}x ` : ''}{item.name}
+                                {itemDetailLabel(item) && (
+                                  <span className="text-xs text-gray-500 ms-1.5">({itemDetailLabel(item)})</span>
+                                )}
                               </span>
                               <span style={{ fontFamily: FONT_UI, fontWeight: 600, color: theme.text }}>
                                 {fmtMoney((item.price * item.quantity))}
@@ -4001,11 +4367,17 @@ const AppCore = () => {
                     {product.category}
                   </p>
                   <p className="text-base md:text-lg mb-1" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 600 }}>
-                    {fmtMoney(product.price)}
+                    {productPriceLabel(product, fmtMoney)}
                   </p>
-                  <p className={`text-xs ${Number(product.stock) < LOW_STOCK_THRESHOLD ? 'text-red-500' : ''}`} style={{ fontFamily: FONT_UI, fontWeight: 500 }}>
-                    المخزون: {product.stock}
-                  </p>
+                  {getProductType(product) === 'time' ? (
+                    <p className="text-xs" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
+                      خدمة بالوقت
+                    </p>
+                  ) : (
+                    <p className={`text-xs ${Number(product.stock) < lowStockThresholdFor(product) ? 'text-red-500' : ''}`} style={{ fontFamily: FONT_UI, fontWeight: 500 }}>
+                      المخزون: {product.stock}{getProductType(product) === 'weight' ? ' غ' : ''}
+                    </p>
+                  )}
                   <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button 
                       onClick={(e) => { e.stopPropagation(); handleEditProduct(product); }}
@@ -4052,7 +4424,14 @@ const AppCore = () => {
                         stock: product.stock,
                         cost: product.cost || 0,
                         image: product.image,
-                        addOns: product.addOns ? JSON.parse(JSON.stringify(product.addOns)) : []
+                        addOns: product.addOns ? JSON.parse(JSON.stringify(product.addOns)) : [],
+                        productType: getProductType(product),
+                        weightPricing: { baseWeight: product.weightPricing?.baseWeight ?? '', basePrice: product.weightPricing?.basePrice ?? '' },
+                        timePricing: {
+                          billingMinutes: product.timePricing?.billingMinutes ?? '',
+                          billingPrice: product.timePricing?.billingPrice ?? '',
+                          rounding: product.timePricing?.rounding || 'up',
+                        },
                       });
                       setProductIngredients(product.ingredients ? JSON.parse(JSON.stringify(product.ingredients)) : []);
                     }
@@ -4102,7 +4481,131 @@ const AppCore = () => {
                   ))}
                 </datalist>
               </div>
-              
+
+              <div>
+                <span className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
+                  نوع الصنف
+                </span>
+                <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-gray-100" role="radiogroup" aria-label="نوع الصنف">
+                  {PRODUCT_TYPES.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={productFormType === t.id}
+                      onClick={() => setProductForm((prev) => ({ ...prev, productType: t.id }))}
+                      className={`py-2 rounded-lg text-sm transition-all ${
+                        productFormType === t.id ? 'bg-white shadow-sm text-primary font-semibold' : 'text-gray-500'
+                      }`}
+                      style={{ fontFamily: FONT_UI }}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {productFormType === 'weight' && (
+                <div className="space-y-3 rounded-xl border border-gray-200 p-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block">
+                      <span className="block text-xs mb-1.5 text-gray-600" style={{ fontFamily: FONT_UI }}>الوزن الأساسي (غرام)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={productForm.weightPricing?.baseWeight ?? ''}
+                        onChange={(e) => updateProductPricing('weightPricing', 'baseWeight', e.target.value)}
+                        className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
+                        placeholder="2"
+                        dir="ltr"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="block text-xs mb-1.5 text-gray-600" style={{ fontFamily: FONT_UI }}>السعر لهذا الوزن (₪)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={productForm.weightPricing?.basePrice ?? ''}
+                        onChange={(e) => updateProductPricing('weightPricing', 'basePrice', e.target.value)}
+                        className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
+                        placeholder="1"
+                        dir="ltr"
+                      />
+                    </label>
+                  </div>
+                  <label className="block">
+                    <span className="block text-xs mb-1.5 text-gray-600" style={{ fontFamily: FONT_UI }}>التكلفة لنفس الوزن الأساسي (₪، اختياري)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={productForm.cost}
+                      onChange={(e) => setProductForm((prev) => ({ ...prev, cost: e.target.value }))}
+                      className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
+                      placeholder="0"
+                      dir="ltr"
+                    />
+                  </label>
+                  <p className={`text-xs ${productFormPricingError ? 'text-red-600' : 'text-gray-500'}`} style={{ fontFamily: FONT_UI }}>
+                    {productFormPricingError ||
+                      `سعر الغرام: ${fmtMoney(weightPricePerUnit(productForm))} · 10 غ = ${fmtMoney(weightPricePerUnit(productForm) * 10)}`}
+                  </p>
+                </div>
+              )}
+
+              {productFormType === 'time' && (
+                <div className="space-y-3 rounded-xl border border-gray-200 p-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block">
+                      <span className="block text-xs mb-1.5 text-gray-600" style={{ fontFamily: FONT_UI }}>وحدة الفوترة (دقيقة)</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={productForm.timePricing?.billingMinutes ?? ''}
+                        onChange={(e) => updateProductPricing('timePricing', 'billingMinutes', e.target.value)}
+                        className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
+                        placeholder="15"
+                        dir="ltr"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="block text-xs mb-1.5 text-gray-600" style={{ fontFamily: FONT_UI }}>سعر الوحدة (₪)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={productForm.timePricing?.billingPrice ?? ''}
+                        onChange={(e) => updateProductPricing('timePricing', 'billingPrice', e.target.value)}
+                        className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
+                        placeholder="3"
+                        dir="ltr"
+                      />
+                    </label>
+                  </div>
+                  <label className="block">
+                    <span className="block text-xs mb-1.5 text-gray-600" style={{ fontFamily: FONT_UI }}>طريقة احتساب الوقت</span>
+                    <select
+                      value={productForm.timePricing?.rounding || 'up'}
+                      onChange={(e) => updateProductPricing('timePricing', 'rounding', e.target.value)}
+                      className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm bg-white"
+                      style={{ fontFamily: FONT_UI }}
+                    >
+                      {TIME_ROUNDING_OPTIONS.map((o) => (
+                        <option key={o.id} value={o.id}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className={`text-xs ${productFormPricingError ? 'text-red-600' : 'text-gray-500'}`} style={{ fontFamily: FONT_UI }}>
+                    {productFormPricingError ||
+                      `الساعة = ${fmtMoney((60 / Number(productForm.timePricing.billingMinutes)) * Number(productForm.timePricing.billingPrice))} · لا يوجد مخزون لهذا النوع`}
+                  </p>
+                </div>
+              )}
+
+              {productFormType === 'standard' && (<>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
@@ -4160,10 +4663,12 @@ const AppCore = () => {
                   </div>
                 </div>
               </div>
+              </>)}
 
+              {productFormType !== 'time' && (
               <div>
                 <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
-                  الكمية في المخزون
+                  {productFormType === 'weight' ? 'الكمية في المخزون (غرام)' : 'الكمية في المخزون'}
                 </label>
                 <input
                   type="number"
@@ -4174,6 +4679,7 @@ const AppCore = () => {
                   placeholder="50"
                 />
               </div>
+              )}
               
               <div>
                 <label className="block text-xs mb-1.5" style={{ color: theme.textMuted, fontFamily: FONT_UI, fontWeight: 500 }}>
@@ -4202,6 +4708,7 @@ const AppCore = () => {
               </div>
 
               {/* Add-ons Section */}
+              {productFormType === 'standard' && (
               <div className="border-t pt-4 mt-4">
                 <div className="flex justify-between items-center mb-3">
                   <label className="block text-xs font-medium text-gray-600">إضافات / خيارات</label>
@@ -4278,6 +4785,7 @@ const AppCore = () => {
                   ))}
                 </div>
               </div>
+              )}
             </div>
 
             <div className="flex gap-2">
@@ -4305,6 +4813,15 @@ const AppCore = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {weightEntryProduct && (
+        <WeightEntryModal
+          product={weightEntryProduct}
+          fmtMoney={fmtMoney}
+          onConfirm={(value) => addWeightItemToCart(weightEntryProduct, value)}
+          onClose={() => setWeightEntryProduct(null)}
+        />
       )}
 
       {/* Ingredient Modal */}
@@ -4837,7 +5354,7 @@ const AppCore = () => {
       {/* Store Settings Modal */}
       {showSettingsModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
-          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200 max-h-[90dvh] overflow-y-auto">
             <h3 className="text-xl mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
               إعدادات المتجر
             </h3>
@@ -4892,6 +5409,61 @@ const AppCore = () => {
                   onChange={e => setAppSettings({...appSettings, rounding: e.target.checked})}
                   className="w-5 h-5 rounded border-gray-300 text-primary focus:ring-primary"
                 />
+              </div>
+              <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 space-y-3" style={{ fontFamily: FONT_UI }}>
+                <p className="text-sm font-semibold text-primary">أجهزة البلايستيشن</p>
+                <div className="space-y-2">
+                  {(appSettings.playstation?.stations || []).map((station, idx) => (
+                    <div key={station.id} className="flex items-center gap-2">
+                      <input
+                        value={station.name}
+                        onChange={(e) => {
+                          const stations = appSettings.playstation.stations.map((s, i) => (i === idx ? { ...s, name: e.target.value } : s));
+                          setAppSettings({ ...appSettings, playstation: { ...appSettings.playstation, stations } });
+                        }}
+                        className="flex-1 px-3 py-2 rounded-lg border border-gray-200 outline-none text-sm bg-white"
+                        placeholder="اسم الجهاز"
+                        aria-label={`اسم الجهاز ${idx + 1}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const stations = appSettings.playstation.stations.filter((_, i) => i !== idx);
+                          setAppSettings({ ...appSettings, playstation: { ...appSettings.playstation, stations } });
+                        }}
+                        disabled={(appSettings.playstation?.stations || []).length <= 1}
+                        className="p-2 rounded-lg text-red-500 hover:bg-red-50 disabled:opacity-30"
+                        aria-label="حذف الجهاز"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const current = appSettings.playstation?.stations || [];
+                    const stations = [...current, { id: `ps-${Date.now()}`, name: `جهاز ${current.length + 1}` }];
+                    setAppSettings({ ...appSettings, playstation: { ...appSettings.playstation, stations } });
+                  }}
+                  className="text-xs font-medium text-primary hover:underline"
+                >
+                  + إضافة جهاز
+                </button>
+                <div>
+                  <label className="block text-xs mb-1.5 font-medium text-gray-600">تكلفة الكهرباء لكل ساعة تشغيل (₪)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    inputMode="decimal"
+                    value={appSettings.playstation?.electricityCostPerHour ?? ''}
+                    onChange={(e) => setAppSettings({ ...appSettings, playstation: { ...appSettings.playstation, electricityCostPerHour: e.target.value } })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 outline-none text-sm bg-white"
+                  />
+                  <p className="text-[11px] text-gray-400 mt-1">تُحفظ مع كل جلسة عند إنهائها، فتغييرها لا يغيّر تقارير الجلسات السابقة.</p>
+                </div>
               </div>
               <div className="pt-2 border-t border-gray-100">
                 <button

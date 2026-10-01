@@ -1,5 +1,6 @@
 import { APP_NAME, resolveAppLogo } from '../branding';
 import { fmtMoneyPlain } from '../i18n';
+import { itemDetailLabel } from './productPricing';
 
 function logoSrc() {
   const url = resolveAppLogo();
@@ -25,9 +26,10 @@ export function printReceiptViaBrowser(order, { businessProfile, appSettings }) 
         item.selectedAddons && item.selectedAddons.length
           ? item.selectedAddons.map((a) => `<div class="addon">+ ${a.name}</div>`).join('')
           : '';
+      const detail = itemDetailLabel(item);
       return `
         <tr>
-          <td>${item.name}${addons ? `<div>${addons}</div>` : ''}</td>
+          <td>${item.name}${detail ? `<div class="addon">${detail}</div>` : ''}${addons ? `<div>${addons}</div>` : ''}</td>
           <td>${item.quantity}</td>
           <td>${fmtMoneyPlain(item.price)}</td>
           <td>${fmtMoneyPlain(item.price * item.quantity)}</td>

@@ -2,6 +2,7 @@ import React from 'react';
 import { Package } from 'lucide-react';
 import { fmtMoney } from '../i18n';
 import { FONT_UI } from '../branding';
+import { productPriceLabel } from '../utils/productPricing';
 
 /**
  * بطاقة منتج — ضغطة على البطاقة = إضافة للطلب
@@ -54,7 +55,7 @@ export default function PosProductCard({ product, onAdd }) {
         )}
 
         <div className="mt-auto pt-2.5 border-t border-[var(--color-border)]">
-          <span className="text-lg font-bold text-accent leading-none">{fmtMoney(product.price)}</span>
+          <span className="text-lg font-bold text-accent leading-none">{productPriceLabel(product, fmtMoney)}</span>
           {hasDiscount && (
             <span className="text-xs text-layali-muted line-through ms-2">
               {fmtMoney(product.compareAtPrice)}
