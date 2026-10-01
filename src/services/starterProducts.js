@@ -3,6 +3,8 @@ import { getProductType } from '../utils/productPricing';
 
 /** أصناف أساسية تُضاف مرة واحدة فقط لكل حساب، ولا تُعاد إذا حذفها المدير لاحقاً */
 const STARTER_FLAG = 'starterProductsV1';
+const TOBACCO_IMAGE = `${process.env.PUBLIC_URL || ''}/products/tobacco.webp`;
+const TOBACCO_IMAGE_FLAG = 'tobaccoImageV1';
 
 const STARTER_PRODUCTS = [
   {
@@ -17,7 +19,7 @@ const STARTER_PRODUCTS = [
       stock: 0,
       addOns: [],
       ingredients: [],
-      image: '',
+      image: TOBACCO_IMAGE,
     },
   },
   {
@@ -51,6 +53,20 @@ export async function ensureStarterProducts(uid, profile) {
     });
   }
   await updateDoc(doc(db, 'users', uid), { [STARTER_FLAG]: true });
+  return true;
+}
+
+/** صورة المعسل لأصناف الوزن الموجودة بدون صورة — مرة واحدة ولا تستبدل صورة اختارها المدير */
+export async function ensureTobaccoImage(uid, profile) {
+  if (!uid || !profile || profile[TOBACCO_IMAGE_FLAG]) return false;
+  const snap = await getDocs(query(collection(db, 'users', uid, 'products')));
+  for (const d of snap.docs) {
+    const p = d.data();
+    if (getProductType(p) === 'weight' && String(p.name || '').includes('معسل') && !p.image) {
+      await updateDoc(doc(db, 'users', uid, 'products', d.id), { image: TOBACCO_IMAGE, updatedAt: serverTimestamp() });
+    }
+  }
+  await updateDoc(doc(db, 'users', uid), { [TOBACCO_IMAGE_FLAG]: true });
   return true;
 }
 
