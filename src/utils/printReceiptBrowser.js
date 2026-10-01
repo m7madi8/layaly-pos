@@ -64,6 +64,10 @@ export function printReceiptViaBrowser(order, { businessProfile, appSettings }) 
       <thead><tr><th>الصنف</th><th>كم</th><th>سعر</th><th>مجموع</th></tr></thead>
       <tbody>${itemsHtml}</tbody>
     </table>
+    ${Number(order.discountAmount) > 0 && order.paymentMethod !== 'Compliment'
+      ? `<p style="margin-top:10px;display:flex;justify-content:space-between"><span>المجموع</span><span>${fmtMoneyPlain(order.subtotal || 0)}</span></p>
+    <p style="display:flex;justify-content:space-between"><span>الخصم</span><span>- ${fmtMoneyPlain(order.discountAmount)}</span></p>`
+      : ''}
     <p class="total">الإجمالي: ${fmtMoneyPlain(order.total || 0)}</p>
     <p class="footer">${order.status === 'paid' ? 'مدفوع' : 'غير مدفوع'}</p>
     ${appSettings?.receiptFooter ? `<p class="footer">${appSettings.receiptFooter}</p>` : ''}

@@ -169,7 +169,7 @@ const AppCore = () => {
   const [currentOrder, setCurrentOrder] = useState({ items: [], customer: '', customerId: '', notes: '' });
   const [customers, setCustomers] = useState([]);
   const [discount, setDiscount] = useState(0);
-  const [discountType, setDiscountType] = useState('percentage'); // 'percentage' or 'amount'
+  const [discountType, setDiscountType] = useState('amount'); // new invoices use ₪ only; 'percentage' kept for old orders
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [showProductModal, setShowProductModal] = useState(false);
@@ -1521,7 +1521,8 @@ const AppCore = () => {
       if (currentDiscountType === 'percentage') {
         discountAmount = (subtotal * finalDiscount) / 100;
       } else {
-        discountAmount = parseFloat(finalDiscount) || 0;
+        discountAmount = Math.min(subtotal, Math.max(0, parseFloat(finalDiscount) || 0));
+        finalDiscount = discountAmount;
       }
 
       const taxableAmount = subtotal - discountAmount;
@@ -1824,7 +1825,7 @@ const AppCore = () => {
 
       setCurrentOrder({ items: [], customer: '', customerId: '', notes: '' });
       setDiscount(0);
-      setDiscountType('percentage');
+      setDiscountType('amount');
       setEditingOrderId(null);
       setPaymentCustomPrice('');
       setMixedCashAmount('');
@@ -1855,8 +1856,12 @@ const AppCore = () => {
       notes: order.notes,
       assetMovementIds: order.assetMovementIds || [],
     });
-    setDiscount(order.discount || 0);
-    setDiscountType(order.discountType || 'percentage');
+    setDiscount(
+      order.discountType === 'percentage'
+        ? Number(order.discountAmount) || 0
+        : Number(order.discount) || 0
+    );
+    setDiscountType('amount');
     setEditingOrderId(order.id);
     setCurrentView('pos');
   };
@@ -2163,7 +2168,7 @@ const AppCore = () => {
   const cartSubtotal = currentOrder.items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
   const cartDiscountAmount = discountType === 'percentage' 
     ? (cartSubtotal * discount) / 100 
-    : discount;
+    : Math.min(cartSubtotal, Math.max(0, Number(discount) || 0));
   const taxableAmount = cartSubtotal - cartDiscountAmount;
   const cartTotal = taxableAmount;
   
@@ -4201,9 +4206,7 @@ const AppCore = () => {
                      className="text-xs text-accent font-medium hover:underline flex items-center gap-1"
                    >
                      <Percent size={12} />
-                     {discount > 0 
-                      ? `خصم (${discountType === 'percentage' ? `${discount}%` : fmtMoney(discount)})` 
-                      : 'إضافة خصم'}
+                     {discount > 0 ? 'تعديل الخصم' : 'إضافة خصم (₪)'}
                    </button>
                    {discount > 0 && (
                      <span className="text-sm text-red-500">- {fmtMoney(cartDiscountAmount)}</span>
@@ -5710,72 +5713,69 @@ const AppCore = () => {
       {showDiscountModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[80]">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-sm border border-gray-200">
-            <h3 className="text-lg font-bold text-primary mb-4" style={{ fontFamily: FONT_HEADING }}>تعيين الخصم</h3>
-            
-            <div className="flex gap-2 mb-4 bg-gray-100 p-1 rounded-xl">
-              <button 
-                onClick={() => { setDiscountType('percentage'); setDiscount(0); }}
-                className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${discountType === 'percentage' ? 'bg-white shadow text-primary' : 'text-gray-500'}`}
-              >
-                Percentage (%)
-              </button>
-              <button 
-                onClick={() => { setDiscountType('amount'); setDiscount(0); }}
-                className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${discountType === 'amount' ? 'bg-white shadow text-primary' : 'text-gray-500'}`}
-              >
-                Amount (Rp)
-              </button>
-            </div>
+            <h3 className="text-lg font-bold text-primary mb-1" style={{ fontFamily: FONT_HEADING }}>خصم على الفاتورة</h3>
+            <p className="text-xs text-gray-500 mb-4" style={{ fontFamily: FONT_UI }}>
+              مجموع الأصناف {fmtMoney(cartSubtotal)} — الخصم بالشيكل ولا يتجاوز المجموع.
+            </p>
 
             <div className="mb-4">
-              <label className="block text-xs mb-1.5 font-medium text-gray-600">{discountType === 'percentage' ? 'Discount Percentage (%)' : 'Discount Amount (Rp)'}</label>
+              <label className="block text-xs mb-1.5 font-medium text-gray-600" style={{ fontFamily: FONT_UI }}>مبلغ الخصم (₪)</label>
               <input
                 type="number"
-                value={discount}
+                min="0"
+                step="any"
+                inputMode="decimal"
+                value={discount || ''}
                 onChange={(e) => {
                   const val = parseFloat(e.target.value) || 0;
-                  setDiscount(discountType === 'percentage' ? Math.min(100, Math.max(0, val)) : Math.max(0, val));
+                  setDiscountType('amount');
+                  setDiscount(Math.min(cartSubtotal, Math.max(0, val)));
                 }}
                 className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-lg font-bold text-center"
                 placeholder="0"
+                dir="ltr"
                 autoFocus
               />
             </div>
-            
-            {discountType === 'percentage' && (
-              <div className="grid grid-cols-4 gap-2 mb-4">
-                {[0, 5, 10, 15, 20, 25, 50, 100].map(pct => (
-                  <button
-                    key={pct}
-                    onClick={() => setDiscount(pct)}
-                    className={`py-2 rounded-lg text-xs font-medium border ${discount === pct ? 'bg-primary text-white border-primary' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
-                  >
-                    {pct}%
-                  </button>
-                ))}
-              </div>
-            )}
-            
-            {discountType === 'amount' && (
-              <div className="grid grid-cols-3 gap-2 mb-4">
-                {[1000, 2000, 5000, 10000, 20000, 50000].map(amt => (
-                  <button
-                    key={amt}
-                    onClick={() => setDiscount(amt)}
-                    className={`py-2 rounded-lg text-xs font-medium border ${discount === amt ? 'bg-primary text-white border-primary' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
-                  >
-                    {amt / 1000}k
-                  </button>
-                ))}
-              </div>
+
+            <div className="grid grid-cols-5 gap-2 mb-4">
+              {[1, 2, 5, 10, 20].map((amt) => (
+                <button
+                  key={amt}
+                  type="button"
+                  disabled={amt > cartSubtotal}
+                  onClick={() => { setDiscountType('amount'); setDiscount(amt); }}
+                  className={`py-2 rounded-lg text-xs font-medium border disabled:opacity-30 ${discount === amt ? 'bg-primary text-white border-primary' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                >
+                  {amt} ₪
+                </button>
+              ))}
+            </div>
+
+            {discount > 0 && (
+              <p className="text-sm text-center mb-3" style={{ fontFamily: FONT_UI }}>
+                الإجمالي بعد الخصم: <strong className="text-primary">{fmtMoney(cartTotal)}</strong>
+              </p>
             )}
 
-            <button
-              onClick={() => setShowDiscountModal(false)}
-              className="w-full py-3 rounded-xl bg-primary text-white text-sm font-medium hover:opacity-90"
-            >
-              Apply Discount
-            </button>
+            <div className="flex gap-2">
+              {discount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => { setDiscount(0); setShowDiscountModal(false); }}
+                  className="px-4 py-3 rounded-xl bg-gray-100 text-gray-600 text-sm font-medium"
+                >
+                  إزالة
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowDiscountModal(false)}
+                className="flex-1 py-3 rounded-xl bg-primary text-white text-sm font-medium hover:opacity-90"
+              >
+                تطبيق الخصم
+              </button>
+            </div>
           </div>
         </div>
       )}

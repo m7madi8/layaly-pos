@@ -8,6 +8,8 @@ import {
   computeStatementTotals,
   computeLegacyDebtTotal,
   customerTransactionTypeLabel,
+  orderDiscountValue,
+  discountedOrders,
 } from './customerStatementData';
 
 function logoUrl() {
@@ -57,9 +59,21 @@ export function buildCustomerStatementHtml({ customer, orders, business, fmtMone
   const businessName = business?.businessName || APP_NAME;
   const issuedAt = formatStatementDateTime(new Date());
   const statementOrders = resolveCustomerStatementOrders(customer, orders);
-  const { orderCount, debtOrderCount, totalPurchases, totalCash, totalDebtOnOrders } =
+  const { orderCount, debtOrderCount, totalPurchases, totalCash, totalDebtOnOrders, totalDiscounts, discountOrderCount } =
     computeStatementTotals(statementOrders);
   const legacyDebtTotal = computeLegacyDebtTotal(customer);
+  const discountRows = discountedOrders(statementOrders)
+    .map(
+      (o) => `
+    <tr>
+      <td>#${escapeHtml(o.orderNumber || '—')}</td>
+      <td>${escapeHtml(formatOrderDateTime(o))}</td>
+      <td class="num">${fmtMoney(o.subtotal || 0)}</td>
+      <td class="num discount">- ${fmtMoney(orderDiscountValue(o))}</td>
+      <td class="num">${fmtMoney(o.total || 0)}</td>
+    </tr>`
+    )
+    .join('');
 
   const orderBlocks = statementOrders
     .map((order) => {
@@ -87,6 +101,7 @@ export function buildCustomerStatementHtml({ customer, orders, business, fmtMone
             : '<p class="muted small">لا تفاصيل أصناف — الطلب مسجّل كدين فقط.</p>'
         }
         <div class="order-foot">
+          ${orderDiscountValue(order) > 0 ? `<span>قبل الخصم: ${fmtMoney(order.subtotal || 0)}</span><span class="discount">خصم: - ${fmtMoney(orderDiscountValue(order))}</span>` : ''}
           <span>إجمالي الطلب: <strong>${fmtMoney(order.total || 0)}</strong></span>
           ${Number(order.cashPaid) > 0 ? `<span>مدفوع نقداً: ${fmtMoney(order.cashPaid)}</span>` : ''}
           ${Number(order.debtAmount) > 0 ? `<span class="debt">دين على الحساب: ${fmtMoney(order.debtAmount)}</span>` : ''}
@@ -196,6 +211,8 @@ export function buildCustomerStatementHtml({ customer, orders, business, fmtMone
     table.data td { padding: 8px; border-bottom: 1px solid #e8e2d6; text-align: right; }
     table.data .num { text-align: left; direction: ltr; font-weight: 600; unicode-bidi: isolate; }
     table.data .debt { color: #b84233; font-weight: 700; }
+    table.data .discount, .order-foot .discount { color: #c17f59; font-weight: 700; }
+    table.data tfoot td { padding: 10px 8px; border-top: 2px solid #1a3328; background: #faf6ee; }
     .order-block {
       border: 1px solid rgba(26,51,40,0.1);
       border-radius: 14px;
@@ -290,6 +307,7 @@ export function buildCustomerStatementHtml({ customer, orders, business, fmtMone
       <p>إجمالي المدفوع نقداً: <strong>${fmtMoney(totalCash)}</strong></p>
       <p>إجمالي الدين على الطلبات: <strong>${fmtMoney(totalDebtOnOrders)}</strong></p>
       ${legacyDebtTotal > 0 ? `<p>دين قديم (رصيد سابق): <strong>${fmtMoney(legacyDebtTotal)}</strong></p>` : ''}
+      <p>إجمالي الخصومات: <strong>${fmtMoney(totalDiscounts)}</strong>${discountOrderCount > 0 ? ` <span class="hint">(على ${discountOrderCount} طلب)</span>` : ''}</p>
       <p class="hint">يُحسب كل طلب مرتبط بالعميل — بما في ذلك الطلبات بالدين والدفع الجزئي. الدين القديم يُضاف للرصيد دون أن يُعدّ طلباً.</p>
     </div>
   </div>
@@ -318,6 +336,17 @@ export function buildCustomerStatementHtml({ customer, orders, business, fmtMone
   </table>
   <p class="hint" style="margin-bottom:16px;font-size:11px;color:#8a958e;">حركات «دين من طلب» مرتبطة برقم طلب وتظهر في تفاصيل الطلبات. «دين قديم» رصيد سابق على الحساب.</p>`
       : ''
+  }
+
+  <h4 class="section">الخصومات</h4>
+  ${
+    discountRows
+      ? `<table class="data">
+    <thead><tr><th>رقم الطلب</th><th>التاريخ</th><th>قبل الخصم</th><th>الخصم</th><th>بعد الخصم</th></tr></thead>
+    <tbody>${discountRows}</tbody>
+    <tfoot><tr><td colspan="3"><strong>إجمالي الخصومات</strong></td><td class="num discount">- ${fmtMoney(totalDiscounts)}</td><td></td></tr></tfoot>
+  </table>`
+      : '<p class="muted" style="margin-bottom:16px;">لا توجد خصومات على طلبات هذا العميل.</p>'
   }
 
   <h4 class="section">تفاصيل الطلبات (نقداً وديناً)</h4>

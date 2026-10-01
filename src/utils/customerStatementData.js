@@ -120,12 +120,24 @@ export function computeLegacyDebtTotal(customer) {
     .reduce((s, t) => s + Number(t.amount || 0), 0);
 }
 
+/** خصم الطلب بالشيكل — الطلبات المجانية القديمة لا تُعد خصماً */
+export function orderDiscountValue(order) {
+  if (!order || order.paymentMethod === 'Compliment' || order.paymentType === 'compliment') return 0;
+  return Math.max(0, Number(order.discountAmount) || 0);
+}
+
+export function discountedOrders(statementOrders) {
+  return statementOrders.filter((o) => orderDiscountValue(o) > 0);
+}
+
 export function computeStatementTotals(statementOrders) {
   const orderCount = statementOrders.length;
   const totalPurchases = statementOrders.reduce((s, o) => s + Number(o.total || 0), 0);
   const totalCash = statementOrders.reduce((s, o) => s + Number(o.cashPaid || 0), 0);
   const totalDebtOnOrders = statementOrders.reduce((s, o) => s + Number(o.debtAmount || 0), 0);
   const debtOrderCount = statementOrders.filter((o) => Number(o.debtAmount || 0) > 0).length;
+  const withDiscount = discountedOrders(statementOrders);
+  const totalDiscounts = withDiscount.reduce((s, o) => s + orderDiscountValue(o), 0);
 
   return {
     orderCount,
@@ -133,5 +145,7 @@ export function computeStatementTotals(statementOrders) {
     totalPurchases,
     totalCash,
     totalDebtOnOrders,
+    totalDiscounts,
+    discountOrderCount: withDiscount.length,
   };
 }

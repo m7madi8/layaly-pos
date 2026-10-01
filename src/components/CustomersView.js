@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { Plus, Pencil, Trash2, Download, Phone, User, FileText, Search, X, Eye, Calendar, Clock, Printer, FileDown } from 'lucide-react';
+import { Plus, Pencil, Trash2, Download, Phone, User, FileText, Search, X, Eye, Calendar, Clock, Printer, FileDown, Percent } from 'lucide-react';
+import { orderDiscountValue, discountedOrders } from '../utils/customerStatementData';
 import {
   printCustomerAccountStatement,
   downloadCustomerAccountStatementPdf,
@@ -75,6 +76,7 @@ export default function CustomersView({
   }, [orders, detailId, detailCustomer]);
 
   const statementTotals = useMemo(() => computeStatementTotals(customerOrders), [customerOrders]);
+  const customerDiscountOrders = useMemo(() => discountedOrders(customerOrders), [customerOrders]);
   const legacyDebtTotal = useMemo(
     () => (detailCustomer ? computeLegacyDebtTotal(detailCustomer) : 0),
     [detailCustomer]
@@ -361,7 +363,7 @@ export default function CustomersView({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 p-5 bg-gray-50/80 border-b border-gray-100">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-5 bg-gray-50/80 border-b border-gray-100">
                 <div className="bg-white rounded-xl p-3 border border-gray-100">
                   <p className="text-[10px] text-gray-400">إجمالي الدين</p>
                   <p className="text-lg font-bold text-red-600">{fmtMoney(detailCustomer.balance || 0)}</p>
@@ -376,7 +378,14 @@ export default function CustomersView({
                     <p className="text-[10px] text-gray-500">يشمل {statementTotals.debtOrderCount} بالدين</p>
                   )}
                 </div>
-                <div className="bg-white rounded-xl p-3 border border-gray-100 col-span-2 sm:col-span-1">
+                <div className="bg-white rounded-xl p-3 border border-gray-100">
+                  <p className="text-[10px] text-gray-400">إجمالي الخصومات</p>
+                  <p className="text-lg font-bold text-accent">{fmtMoney(statementTotals.totalDiscounts)}</p>
+                  {statementTotals.discountOrderCount > 0 && (
+                    <p className="text-[10px] text-gray-500">على {statementTotals.discountOrderCount} طلب</p>
+                  )}
+                </div>
+                <div className="bg-white rounded-xl p-3 border border-gray-100">
                   <p className="text-[10px] text-gray-400">آخر نشاط</p>
                   <p className="text-xs font-medium text-gray-700 truncate">
                     {customerOrders[0]?.orderNumber ? `#${customerOrders[0].orderNumber}` : '—'}
@@ -390,6 +399,42 @@ export default function CustomersView({
                   {detailCustomer.notes}
                 </div>
               ) : null}
+
+              <div className="px-5 pt-5">
+                <h4 className="text-sm font-bold text-primary mb-3 flex items-center gap-2" style={{ fontFamily: FONT_HEADING }}>
+                  <Percent size={16} />
+                  الخصومات
+                </h4>
+                {customerDiscountOrders.length === 0 ? (
+                  <p className="text-xs text-gray-400 pb-1" style={{ fontFamily: FONT_UI }}>لا توجد خصومات على طلبات هذا العميل.</p>
+                ) : (
+                  <div className="rounded-xl border border-gray-100 overflow-hidden" style={{ fontFamily: FONT_UI }}>
+                    <div className="max-h-56 overflow-y-auto divide-y divide-gray-100">
+                      {customerDiscountOrders.map((o) => (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => setSelectedOrder(o)}
+                          className="w-full flex items-center justify-between gap-2 text-xs px-3 py-2.5 hover:bg-gray-50 text-start"
+                        >
+                          <span className="min-w-0">
+                            <span className="font-semibold text-primary">#{o.orderNumber}</span>
+                            <span className="text-gray-400"> · {formatOrderDate(o)}</span>
+                            <span className="block text-[10px] text-gray-500 mt-0.5">
+                              {fmtMoney(o.subtotal || 0)} ← {fmtMoney(o.total || 0)}
+                            </span>
+                          </span>
+                          <span className="font-bold text-accent shrink-0">- {fmtMoney(orderDiscountValue(o))}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex justify-between items-center px-3 py-2.5 bg-gray-50 text-xs font-bold">
+                      <span className="text-gray-600">إجمالي الخصومات</span>
+                      <span className="text-accent">- {fmtMoney(statementTotals.totalDiscounts)}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               <div className="p-5">
                 <h4 className="text-sm font-bold text-primary mb-3 flex items-center gap-2" style={{ fontFamily: FONT_HEADING }}>
@@ -520,6 +565,13 @@ export default function CustomersView({
                     '—'}
                 </span>
               </p>
+              {orderDiscountValue(selectedOrder) > 0 && (
+                <p>
+                  <span className="text-gray-500">خصم: </span>
+                  <span className="text-accent font-medium">- {fmtMoney(orderDiscountValue(selectedOrder))}</span>
+                  <span className="text-gray-400 text-xs"> (قبل الخصم {fmtMoney(selectedOrder.subtotal || 0)})</span>
+                </p>
+              )}
               {Number(selectedOrder.cashPaid) > 0 && (
                 <p>
                   <span className="text-gray-500">كاش: </span>
