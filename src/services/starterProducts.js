@@ -53,3 +53,27 @@ export async function ensureStarterProducts(uid, profile) {
   await updateDoc(doc(db, 'users', uid), { [STARTER_FLAG]: true });
   return true;
 }
+
+const ASSETS_FLAG = 'starterAssetsV1';
+const STARTER_HOOKAH_COUNT = 5;
+
+/** خمس أراجيل متاحة للخروج — تُنشأ مرة واحدة فقط وإذا لم تكن هناك أراجيل مسجلة */
+export async function ensureStarterAssets(uid, profile) {
+  if (!uid || !profile || profile[ASSETS_FLAG]) return false;
+  const snap = await getDocs(query(collection(db, 'users', uid, 'externalAssets')));
+  if (snap.docs.length === 0) {
+    for (let n = 1; n <= STARTER_HOOKAH_COUNT; n += 1) {
+      await addDoc(collection(db, 'users', uid, 'externalAssets'), {
+        name: `أرجيلة #${n}`,
+        code: String(n),
+        type: 'shisha',
+        notes: '',
+        status: 'available',
+        currentMovementId: null,
+        createdAt: serverTimestamp(),
+      });
+    }
+  }
+  await updateDoc(doc(db, 'users', uid), { [ASSETS_FLAG]: true });
+  return true;
+}

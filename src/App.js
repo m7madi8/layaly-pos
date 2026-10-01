@@ -55,7 +55,7 @@ import {
   returnExternalAsset,
   assetMovementRef,
 } from './services/externalAssetsService';
-import { ensureStarterProducts } from './services/starterProducts';
+import { ensureStarterProducts, ensureStarterAssets } from './services/starterProducts';
 import {
   PRODUCT_TYPES,
   TIME_ROUNDING_OPTIONS,
@@ -441,9 +441,12 @@ const AppCore = () => {
 
   const starterSeededRef = useRef(false);
   useEffect(() => {
-    if (!user || !businessProfile || userRole !== 'admin' || starterSeededRef.current) return;
+    if (!user || !businessProfile || !userRole || starterSeededRef.current) return;
     starterSeededRef.current = true;
-    ensureStarterProducts(user.uid, businessProfile).catch((error) => {
+    Promise.all([
+      ensureStarterProducts(user.uid, businessProfile),
+      ensureStarterAssets(user.uid, businessProfile),
+    ]).catch((error) => {
       starterSeededRef.current = false;
       console.error('Error adding starter products:', error);
     });
@@ -1506,6 +1509,7 @@ const AppCore = () => {
         cashPaid = 0;
         debtAmount = 0;
       } else if (status === 'unpaid' && paymentType === 'pending') {
+        if (!customerId) throw new Error('الحفظ المؤجل للعملاء المسجلين فقط — اختر عميلاً من القائمة');
         finalStatus = 'unpaid';
       } else if (paymentType === 'cash') {
         cashPaid = total;
@@ -1807,6 +1811,10 @@ const AppCore = () => {
   };
 
   const toggleOrderStatus = async (orderId, currentStatus) => {
+    if (currentStatus === 'paid' && !orders.find((o) => o.id === orderId)?.customerId) {
+      alert('لا يمكن جعل طلب الضيف غير مدفوع — الدين والآجل للعملاء المسجلين فقط');
+      return;
+    }
     try {
       const orderRef = doc(db, 'users', user.uid, 'orders', orderId);
       await updateDoc(orderRef, {
@@ -4150,7 +4158,8 @@ const AppCore = () => {
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={() => completeOrder('unpaid', { paymentType: 'pending' })}
-                    disabled={currentOrder.items.length === 0 || uploadProgress}
+                    disabled={currentOrder.items.length === 0 || uploadProgress || !currentOrder.customerId}
+                    title={!currentOrder.customerId ? 'للعملاء المسجلين فقط — اختر عميلاً' : undefined}
                     className="py-2.5 rounded-xl text-white text-sm font-medium shadow-sm disabled:opacity-50"
                     style={{ backgroundColor: theme.accent, fontFamily: FONT_UI }}
                   >
@@ -5071,7 +5080,7 @@ const AppCore = () => {
               {currentOrder.customerId ? (
                 <p className="text-xs text-gray-600 mt-2">العميل: {currentOrder.customer}</p>
               ) : (
-                <p className="text-xs text-amber-700 mt-2">للدين أو الدفع الجزئي اختر عميلاً من القائمة</p>
+                <p className="text-xs text-amber-700 mt-2">ضيف — الدفع كاش فقط. الدين والدفع الجزئي للعملاء المسجلين.</p>
               )}
             </div>
 
@@ -5089,39 +5098,36 @@ const AppCore = () => {
               >
                 كاش — دفع كامل
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!currentOrder.customerId) {
-                    alert('اختر عميلاً من «الطلب الحالي» قبل تسجيل الدين');
-                    return;
-                  }
-                  completeOrder('unpaid', {
-                    paymentType: 'debt',
-                    customerId: currentOrder.customerId,
-                  });
-                }}
-                className="w-full py-3 rounded-xl border border-red-200 hover:bg-red-50 text-sm font-semibold text-red-700 transition-all"
-                style={{ fontFamily: FONT_UI }}
-              >
-                دين — كامل على حساب العميل
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!currentOrder.customerId) {
-                    alert('اختر عميلاً للدفع الجزئي');
-                    return;
-                  }
-                  setMixedCashAmount('');
-                  setShowPaymentModal(false);
-                  setShowMixedPaymentModal(true);
-                }}
-                className="w-full py-3 rounded-xl border border-amber-200 hover:bg-amber-50 text-sm font-semibold text-amber-900 transition-all"
-                style={{ fontFamily: FONT_UI }}
-              >
-                كاش + دين — جزء نقداً والباقي دين
-              </button>
+              {currentOrder.customerId && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      completeOrder('unpaid', {
+                        paymentType: 'debt',
+                        customerId: currentOrder.customerId,
+                      })
+                    }
+                    disabled={uploadProgress}
+                    className="w-full py-3 rounded-xl border border-red-200 hover:bg-red-50 text-sm font-semibold text-red-700 transition-all disabled:opacity-50"
+                    style={{ fontFamily: FONT_UI }}
+                  >
+                    دين — كامل على حساب العميل
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMixedCashAmount('');
+                      setShowPaymentModal(false);
+                      setShowMixedPaymentModal(true);
+                    }}
+                    className="w-full py-3 rounded-xl border border-amber-200 hover:bg-amber-50 text-sm font-semibold text-amber-900 transition-all"
+                    style={{ fontFamily: FONT_UI }}
+                  >
+                    كاش + دين — جزء نقداً والباقي دين
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
