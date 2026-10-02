@@ -55,7 +55,7 @@ import {
   returnExternalAsset,
   assetMovementRef,
 } from './services/externalAssetsService';
-import { ensureStarterProducts, ensureStarterAssets, ensureTobaccoImage } from './services/starterProducts';
+import { ensureStarterProducts, ensureStarterAssets, ensureTobaccoImage, ensurePlaystationPricing } from './services/starterProducts';
 import {
   PRODUCT_TYPES,
   TIME_ROUNDING_OPTIONS,
@@ -445,7 +445,9 @@ const AppCore = () => {
     if (!user || !businessProfile || !userRole || starterSeededRef.current) return;
     starterSeededRef.current = true;
     Promise.all([
-      ensureStarterProducts(user.uid, businessProfile).then(() => ensureTobaccoImage(user.uid, businessProfile)),
+      ensureStarterProducts(user.uid, businessProfile)
+        .then(() => ensureTobaccoImage(user.uid, businessProfile))
+        .then(() => ensurePlaystationPricing(user.uid, businessProfile)),
       ensureStarterAssets(user.uid, businessProfile),
     ]).catch((error) => {
       starterSeededRef.current = false;

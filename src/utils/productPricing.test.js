@@ -14,6 +14,17 @@ import {
   purchaseUnitCost,
 } from './productPricing';
 
+describe('playstation 1₪ per 5 min', () => {
+  const ps5 = { billingMinutes: 5, billingPrice: 1, rounding: 'up' };
+  test.each([
+    [5, 1],
+    [7, 2],
+    [15, 3],
+    [30, 6],
+    [60, 12],
+  ])('%i min → %i₪', (minutes, price) => expect(timePrice(ps5, minutes)).toBe(price));
+});
+
 describe('purchase unit cost', () => {
   test('tobacco: 1000g for 200₪ → 0.4₪ per 2g base', () =>
     expect(purchaseUnitCost({ productType: 'weight', weightPricing: { baseWeight: 2 } }, 200, 1000)).toBe(0.4));

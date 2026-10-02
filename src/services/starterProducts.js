@@ -28,8 +28,8 @@ const STARTER_PRODUCTS = [
       name: 'بلايستيشن',
       category: 'البلايستيشن',
       productType: 'time',
-      timePricing: { billingMinutes: 15, billingPrice: 3, rounding: 'up' },
-      price: 3,
+      timePricing: { billingMinutes: 5, billingPrice: 1, rounding: 'up' },
+      price: 1,
       cost: 0,
       stock: null,
       addOns: [],
@@ -67,6 +67,27 @@ export async function ensureTobaccoImage(uid, profile) {
     }
   }
   await updateDoc(doc(db, 'users', uid), { [TOBACCO_IMAGE_FLAG]: true });
+  return true;
+}
+
+const PS_PRICING_FLAG = 'playstationPricing5minV1';
+
+/** تسعير البلايستيشن: 1₪ لكل 5 دقائق — يحدّث صنف الوقت القديم (3₪/15د) مرة واحدة فقط */
+export async function ensurePlaystationPricing(uid, profile) {
+  if (!uid || !profile || profile[PS_PRICING_FLAG]) return false;
+  const snap = await getDocs(query(collection(db, 'users', uid, 'products')));
+  for (const d of snap.docs) {
+    const p = d.data();
+    const tp = p.timePricing || {};
+    if (getProductType(p) === 'time' && Number(tp.billingMinutes) === 15 && Number(tp.billingPrice) === 3) {
+      await updateDoc(doc(db, 'users', uid, 'products', d.id), {
+        timePricing: { ...tp, billingMinutes: 5, billingPrice: 1 },
+        price: 1,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  }
+  await updateDoc(doc(db, 'users', uid), { [PS_PRICING_FLAG]: true });
   return true;
 }
 
