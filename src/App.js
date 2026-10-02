@@ -1086,6 +1086,29 @@ const AppCore = () => {
     }
   };
 
+  const printDraftReceipt = () => {
+    if (currentOrder.items.length === 0) return;
+    const subtotal = cartSubtotal;
+    const discountAmount = cartDiscountAmount;
+    const total = appSettings.rounding ? Math.round(cartTotal) : cartTotal;
+    const editing = editingOrderId ? orders.find((o) => o.id === editingOrderId) : null;
+    printReceipt({
+      id: editingOrderId || 'draft',
+      isDraft: true,
+      orderNumber: editing?.orderNumber || '',
+      customer: currentOrder.customer || 'ضيف',
+      notes: currentOrder.notes || '',
+      items: currentOrder.items,
+      subtotal,
+      discount: discountAmount,
+      discountType: 'amount',
+      discountAmount,
+      total,
+      status: 'draft',
+      timestamp: new Date(),
+    });
+  };
+
   const handleCancelOrder = async (orderId) => {
     if (window.confirm('هل تريد إلغاء هذا الطلب؟')) {
       try {
@@ -2100,7 +2123,11 @@ const AppCore = () => {
       
       await sendData(`العميل: ${order.customer || 'ضيف'}\n`);
       await sendData(`${orderDate.toLocaleDateString('ar')} ${orderDate.toLocaleTimeString('ar')}\n`);
-      await sendData(`طلب: #${order.orderNumber || order.id.slice(-8).toUpperCase()}\n`);
+      if (order.isDraft) {
+        await sendData(`فاتورة مبدئية — قبل الدفع${order.orderNumber ? ` (#${order.orderNumber})` : ''}\n`);
+      } else {
+        await sendData(`طلب: #${order.orderNumber || order.id.slice(-8).toUpperCase()}\n`);
+      }
       await sendData('================================\n');
       
       // Items
@@ -2156,7 +2183,10 @@ const AppCore = () => {
       await sendData(new Uint8Array([0x1B, 0x45, 0x00]));
       await sendData(new Uint8Array([0x1D, 0x21, 0x00])); // Reset size
       
-      await sendData(`${order.status === 'paid' ? '[مدفوع]' : '[غير مدفوع]'}\n`);
+      if (order.notes) {
+        await sendData(`ملاحظات: ${order.notes}\n`);
+      }
+      await sendData(`${order.isDraft ? '[قبل الدفع]' : order.status === 'paid' ? '[مدفوع]' : '[غير مدفوع]'}\n`);
       if (order.paymentMethod) {
         await sendData(`طريقة الدفع: ${order.paymentMethod}\n`);
       }
@@ -2183,7 +2213,7 @@ const AppCore = () => {
       await new Promise(resolve => setTimeout(resolve, 500));
       await sendData(new Uint8Array([0x1D, 0x56, 0x41, 0x00]));
       
-      alert('✅ تمت طباعة الإيصال!');
+      if (!order.isDraft) alert('✅ تمت طباعة الإيصال!');
       
     } catch (error) {
       if (error.name !== 'NotFoundError' && !error.message?.includes('cancelled')) {
@@ -4306,6 +4336,16 @@ const AppCore = () => {
                     style={{ backgroundColor: '#10b981', fontFamily: FONT_UI }}
                   >
                     إتمام الدفع
+                  </button>
+                  <button
+                    onClick={printDraftReceipt}
+                    disabled={currentOrder.items.length === 0}
+                    className="col-span-2 py-2 rounded-xl text-sm font-medium border flex items-center justify-center gap-2 bg-white hover:bg-gray-50 disabled:opacity-50"
+                    style={{ borderColor: theme.border || '#e5e7eb', color: theme.text, fontFamily: FONT_UI }}
+                    title="طباعة فاتورة مصغّرة قبل الدفع"
+                  >
+                    <Printer size={15} />
+                    طباعة الفاتورة
                   </button>
                 </div>
               </div>

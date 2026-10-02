@@ -2,6 +2,9 @@ import { APP_NAME, resolveAppLogo } from '../branding';
 import { fmtMoneyPlain } from '../i18n';
 import { itemDetailLabel } from './productPricing';
 
+const esc = (value) =>
+  String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
 function logoSrc() {
   const url = resolveAppLogo();
   if (typeof window === 'undefined') return url;
@@ -24,12 +27,12 @@ export function printReceiptViaBrowser(order, { businessProfile, appSettings }) 
     .map((item) => {
       const addons =
         item.selectedAddons && item.selectedAddons.length
-          ? item.selectedAddons.map((a) => `<div class="addon">+ ${a.name}</div>`).join('')
+          ? item.selectedAddons.map((a) => `<div class="addon">+ ${esc(a.name)}</div>`).join('')
           : '';
       const detail = itemDetailLabel(item);
       return `
         <tr>
-          <td>${item.name}${detail ? `<div class="addon">${detail}</div>` : ''}${addons ? `<div>${addons}</div>` : ''}</td>
+          <td>${esc(item.name)}${detail ? `<div class="addon">${detail}</div>` : ''}${addons ? `<div>${addons}</div>` : ''}</td>
           <td>${item.quantity}</td>
           <td>${fmtMoneyPlain(item.price)}</td>
           <td>${fmtMoneyPlain(item.price * item.quantity)}</td>
@@ -38,40 +41,49 @@ export function printReceiptViaBrowser(order, { businessProfile, appSettings }) 
     .join('');
 
   const html = `<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8"/>
-    <title>إيصال #${order.orderNumber || ''}</title>
+    <title>${order.isDraft ? 'فاتورة مبدئية' : `إيصال #${order.orderNumber || ''}`}</title>
     <style>
-      body { font-family: Cairo, Tahoma, sans-serif; padding: 16px; max-width: 320px; margin: 0 auto; font-size: 13px; }
-      .logo { display: block; max-width: 120px; max-height: 72px; margin: 0 auto 10px; object-fit: contain; }
-      h1 { font-size: 16px; margin: 0 0 8px; text-align: center; }
-      .meta { margin-bottom: 12px; line-height: 1.5; }
-      table { width: 100%; border-collapse: collapse; }
-      td, th { padding: 4px 0; vertical-align: top; }
-      th { border-bottom: 1px solid #000; text-align: right; font-size: 11px; }
-      .addon { font-size: 11px; color: #444; }
-      .total { font-weight: bold; font-size: 15px; margin-top: 12px; text-align: center; }
-      .footer { text-align: center; margin-top: 16px; font-size: 11px; }
+      @page { size: 80mm auto; margin: 0; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body { font-family: Cairo, Tahoma, sans-serif; width: 80mm; max-width: 100%; padding: 4mm 4mm 6mm; margin: 0 auto; font-size: 12px; color: #000; }
+      .logo { display: block; max-width: 34mm; max-height: 20mm; margin: 0 auto 6px; object-fit: contain; }
+      h1 { font-size: 15px; margin: 0 0 6px; text-align: center; }
+      .badge { text-align: center; font-weight: bold; border: 1px dashed #000; padding: 3px; margin: 0 0 8px; font-size: 12px; }
+      .meta { margin-bottom: 8px; line-height: 1.5; font-size: 11px; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      td, th { padding: 3px 0; vertical-align: top; }
+      th { border-bottom: 1px solid #000; text-align: right; font-size: 10px; }
+      td:not(:first-child), th:not(:first-child) { text-align: left; white-space: nowrap; padding-inline-start: 4px; }
+      .addon { font-size: 10px; color: #333; }
+      .row { display: flex; justify-content: space-between; margin: 3px 0; }
+      .total { font-weight: bold; font-size: 15px; margin-top: 8px; padding-top: 6px; border-top: 1px dashed #000; text-align: center; }
+      .notes { margin-top: 8px; font-size: 11px; border-top: 1px dashed #000; padding-top: 6px; }
+      .footer { text-align: center; margin-top: 10px; font-size: 10px; }
     </style></head><body>
     <img class="logo" src="${logoSrc()}" alt="${APP_NAME}" />
-    ${appSettings?.receiptHeader ? `<p>${appSettings.receiptHeader}</p>` : ''}
-    <h1>${businessProfile?.businessName || APP_NAME}</h1>
+    ${appSettings?.receiptHeader ? `<p class="footer">${esc(appSettings.receiptHeader)}</p>` : ''}
+    <h1>${esc(businessProfile?.businessName || APP_NAME)}</h1>
+    ${order.isDraft ? '<p class="badge">فاتورة مبدئية — قبل الدفع</p>' : ''}
     <div class="meta">
-      العميل: ${order.customer || 'ضيف'}<br/>
+      العميل: ${esc(order.customer || 'ضيف')}<br/>
       ${orderDate.toLocaleDateString('ar')} ${orderDate.toLocaleTimeString('ar')}<br/>
-      طلب: #${order.orderNumber || '—'}<br/>
-      ${order.paymentMethod ? `الدفع: ${order.paymentMethod}` : ''}
+      ${order.orderNumber ? `طلب: #${esc(order.orderNumber)}<br/>` : ''}
+      ${!order.isDraft && order.paymentMethod ? `الدفع: ${esc(order.paymentMethod)}` : ''}
     </div>
     <table>
       <thead><tr><th>الصنف</th><th>كم</th><th>سعر</th><th>مجموع</th></tr></thead>
       <tbody>${itemsHtml}</tbody>
     </table>
     ${Number(order.discountAmount) > 0 && order.paymentMethod !== 'Compliment'
-      ? `<p style="margin-top:10px;display:flex;justify-content:space-between"><span>المجموع</span><span>${fmtMoneyPlain(order.subtotal || 0)}</span></p>
-    <p style="display:flex;justify-content:space-between"><span>الخصم</span><span>- ${fmtMoneyPlain(order.discountAmount)}</span></p>`
+      ? `<p class="row" style="margin-top:8px"><span>المجموع</span><span>${fmtMoneyPlain(order.subtotal || 0)}</span></p>
+    <p class="row"><span>الخصم</span><span>- ${fmtMoneyPlain(order.discountAmount)}</span></p>`
       : ''}
     <p class="total">الإجمالي: ${fmtMoneyPlain(order.total || 0)}</p>
-    <p class="footer">${order.status === 'paid' ? 'مدفوع' : 'غير مدفوع'}</p>
-    ${appSettings?.receiptFooter ? `<p class="footer">${appSettings.receiptFooter}</p>` : ''}
-    <script>window.onload=function(){window.print();}</script>
+    ${order.notes ? `<p class="notes">ملاحظات: ${esc(order.notes)}</p>` : ''}
+    <p class="footer">${order.isDraft ? 'قبل الدفع' : order.status === 'paid' ? 'مدفوع' : 'غير مدفوع'}</p>
+    ${appSettings?.receiptFooter ? `<p class="footer">${esc(appSettings.receiptFooter)}</p>` : ''}
+    <script>window.onafterprint=function(){window.close();};window.onload=function(){window.print();}</script>
     </body></html>`;
 
   const w = window.open('', '_blank', 'width=400,height=600');
