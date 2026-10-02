@@ -56,6 +56,7 @@ import {
   assetMovementRef,
 } from './services/externalAssetsService';
 import { ensureStarterProducts, ensureStarterAssets, ensureTobaccoImage, ensurePlaystationPricing } from './services/starterProducts';
+import { effectiveDebt, debtDeltasByCustomer, replaceOrderDebtEntry, diffOrders } from './utils/orderAccounting';
 import {
   PRODUCT_TYPES,
   TIME_ROUNDING_OPTIONS,
@@ -1112,6 +1113,21 @@ const AppCore = () => {
             }
           }
 
+          const reversedDebt = effectiveDebt(orderData);
+          let customerDoc = null;
+          if (reversedDebt > 0) {
+            const cRef = doc(db, 'users', user.uid, 'customers', orderData.customerId);
+            const cSnap = await transaction.get(cRef);
+            if (cSnap.exists()) customerDoc = { ref: cRef, data: cSnap.data() };
+          }
+          if (customerDoc) {
+            transaction.update(customerDoc.ref, {
+              balance: Math.round(((Number(customerDoc.data.balance) || 0) - reversedDebt) * 100) / 100,
+              transactions: replaceOrderDebtEntry(customerDoc.data.transactions, orderData.orderNumber, null),
+              updatedAt: serverTimestamp(),
+            });
+          }
+
           // Perform writes
           for (const update of productUpdates) {
             transaction.update(update.ref, { stock: update.newStock });
@@ -1122,7 +1138,12 @@ const AppCore = () => {
             }
           }
 
-          transaction.update(orderRef, { status: 'cancelled' });
+          transaction.update(orderRef, {
+            status: 'cancelled',
+            cancelledAt: serverTimestamp(),
+            cancelledBy: sessionActor(),
+            updatedAt: serverTimestamp(),
+          });
         });
       } catch (error) {
         console.error("Error cancelling order:", error);
@@ -1681,12 +1702,20 @@ const AppCore = () => {
           }
         }
 
-        let customerDoc = null;
-        if (customerId && debtAmount > 0) {
-          const cRef = doc(db, 'users', user.uid, 'customers', customerId);
+        const balanceDeltas = debtDeltasByCustomer(existingOrderData, {
+          customerId: customerId || null,
+          debtAmount,
+          status: finalStatus,
+        });
+        const affectedCustomerIds = new Set(Object.keys(balanceDeltas));
+        if (existingOrderData?.customerId) affectedCustomerIds.add(existingOrderData.customerId);
+        if (customerId && debtAmount > 0) affectedCustomerIds.add(customerId);
+        const customerDocs = {};
+        for (const cid of affectedCustomerIds) {
+          const cRef = doc(db, 'users', user.uid, 'customers', cid);
           const cSnap = await transaction.get(cRef);
-          if (!cSnap.exists()) throw new Error('العميل غير موجود');
-          customerDoc = { ref: cRef, data: cSnap.data() };
+          if (cSnap.exists()) customerDocs[cid] = { ref: cRef, data: cSnap.data() };
+          else if (cid === customerId && debtAmount > 0) throw new Error('العميل غير موجود');
         }
 
         // 2. LOGIC & WRITES
@@ -1752,7 +1781,8 @@ const AppCore = () => {
             transaction.set(counterRef, { count: newCount }, { merge: true });
         }
 
-        transaction.set(newOrderRef, {
+        const editedAtMs = Date.now();
+        const orderPayload = {
           orderNumber,
           customer: currentOrder.customer || 'ضيف',
           customerId: customerId || null,
@@ -1797,9 +1827,31 @@ const AppCore = () => {
           total,
           cost,
           profit: total - cost,
-          timestamp: serverTimestamp(),
-          userId: user.uid
-        }, { merge: true });
+          userId: user.uid,
+          ...(existingOrderData
+            ? {
+                timestamp: existingOrderData.timestamp || serverTimestamp(),
+                updatedAt: serverTimestamp(),
+                lastEditedAt: serverTimestamp(),
+                lastEditedAtMs: editedAtMs,
+                lastEditedBy: sessionActor(),
+                editCount: (Number(existingOrderData.editCount) || 0) + 1,
+              }
+            : { timestamp: serverTimestamp(), createdAt: serverTimestamp() }),
+        };
+        transaction.set(newOrderRef, orderPayload, { merge: true });
+
+        if (existingOrderData) {
+          transaction.set(doc(collection(db, 'users', user.uid, 'orderEdits')), {
+            orderId: newOrderRef.id,
+            orderNumber,
+            orderDate: existingOrderData.timestamp || null,
+            editedAt: serverTimestamp(),
+            editedAtMs,
+            editedBy: sessionActor(),
+            changes: diffOrders(existingOrderData, orderPayload),
+          });
+        }
 
         for (const sessionId of newSessionIds) {
           transaction.update(playstationSessionRef(user.uid, sessionId), {
@@ -1818,19 +1870,19 @@ const AppCore = () => {
           transaction.update(assetMovementRef(user.uid, movementId), { orderId: newOrderRef.id, orderNumber });
         }
 
-        if (customerDoc && debtAmount > 0) {
-          const entry = {
-            id: `tx_${Date.now()}`,
-            type: 'order_debt',
-            orderNumber,
-            amount: debtAmount,
-            cashPaid,
-            total,
-          };
-          const transactions = [...(customerDoc.data.transactions || []), entry].slice(-100);
+        for (const cid of affectedCustomerIds) {
+          const customerDoc = customerDocs[cid];
+          if (!customerDoc) continue;
+          const keepsDebt = cid === customerId && debtAmount > 0;
+          const hadEntry = existingOrderData?.customerId === cid;
+          const delta = balanceDeltas[cid] || 0;
+          if (!delta && !keepsDebt && !hadEntry) continue;
+          const entry = keepsDebt
+            ? { id: `tx_${editedAtMs}`, type: 'order_debt', orderNumber, amount: debtAmount, cashPaid, total }
+            : null;
           transaction.update(customerDoc.ref, {
-            balance: (customerDoc.data.balance || 0) + debtAmount,
-            transactions,
+            balance: Math.round(((Number(customerDoc.data.balance) || 0) + delta) * 100) / 100,
+            transactions: replaceOrderDebtEntry(customerDoc.data.transactions, orderNumber, entry),
             updatedAt: serverTimestamp(),
           });
         }
@@ -4367,6 +4419,14 @@ const AppCore = () => {
                             <Clock size={12} />
                             {orderDate.toLocaleTimeString()}
                           </span>
+                          {order.lastEditedAtMs ? (
+                            <span
+                              className="rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-medium text-amber-800"
+                              title="تاريخ الفاتورة الأصلي لا يتغير بالتعديل"
+                            >
+                              معدّل {order.editCount > 1 ? `${order.editCount} مرات` : ''} · آخر تعديل {new Date(order.lastEditedAtMs).toLocaleString('ar-EG', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          ) : null}
                         </div>
                         <p className="text-xs mt-1" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>
                           الدفع:{' '}
