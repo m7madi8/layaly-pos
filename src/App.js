@@ -173,6 +173,7 @@ const AppCore = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [showProductModal, setShowProductModal] = useState(false);
+  const [productModalFromPurchase, setProductModalFromPurchase] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
   const [userRole, setUserRole] = useState(readSessionRole);
   const [loginType, setLoginType] = useState('employee');
@@ -800,6 +801,12 @@ const AppCore = () => {
     setShowProductModal(true);
   };
 
+  const openProductModalFromPurchase = () => {
+    openAddProductModal();
+    setProductForm((prev) => ({ ...prev, stock: '0' }));
+    setProductModalFromPurchase(true);
+  };
+
   const productFormType = getProductType(productForm);
   const productFormPricingError =
     productFormType === 'weight'
@@ -951,9 +958,13 @@ const AppCore = () => {
         await updateDoc(doc(db, 'users', user.uid, 'products', editingProductId), productData);
       } else {
         productData.createdAt = serverTimestamp();
-        await addDoc(collection(db, 'users', user.uid, 'products'), productData);
+        const newRef = await addDoc(collection(db, 'users', user.uid, 'products'), productData);
+        if (productModalFromPurchase && type !== 'time') {
+          setExpenseForm((prev) => ({ ...prev, linkedProductId: newRef.id, quantityBought: '' }));
+        }
       }
       
+      setProductModalFromPurchase(false);
       setShowProductModal(false);
       setProductForm({ name: '', category: '', price: '', stock: '', cost: '', addOns: [] });
       setProductIngredients([]);
@@ -4587,11 +4598,16 @@ const AppCore = () => {
 
       {/* Add Product Modal */}
       {showProductModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
+        <div className={`fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 ${productModalFromPurchase ? 'z-[70]' : 'z-50'}`}>
           <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-2xl border border-gray-200 max-h-[90dvh] flex flex-col">
             <h3 className="text-xl mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
               {editingProductId ? 'تعديل الصنف' : 'صنف جديد'}
             </h3>
+            {productModalFromPurchase && (
+              <p className="-mt-2 mb-4 text-xs text-gray-500" style={{ fontFamily: FONT_UI }}>
+                يظهر الصنف فوراً في المخزون ونقطة البيع والمشتريات، ويُختار تلقائياً في فاتورة المشتريات لتضيف كميته للمخزون.
+              </p>
+            )}
             
             {!editingProductId && (
               <div className="mb-4 p-3 rounded-xl border border-accent/30 bg-orange-50">
@@ -4977,6 +4993,7 @@ const AppCore = () => {
               <button
                 onClick={() => {
                   setShowProductModal(false);
+                  setProductModalFromPurchase(false);
                   setProductForm({ name: '', category: '', price: '', stock: '', cost: '', addOns: [] });
                   setProductIngredients([]);
                   setImageFile(null);
@@ -5327,7 +5344,18 @@ const AppCore = () => {
                 const locked = Boolean(editingExpenseId);
                 return (
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 space-y-2">
-                    <label className="block text-xs font-medium text-gray-600">الصنف المشترى (يُضاف للمخزون)</label>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="block text-xs font-medium text-gray-600">الصنف المشترى (يُضاف للمخزون)</label>
+                      {!locked && (
+                        <button
+                          type="button"
+                          onClick={openProductModalFromPurchase}
+                          className="text-xs font-medium text-primary hover:underline shrink-0"
+                        >
+                          + تعريف صنف جديد
+                        </button>
+                      )}
+                    </div>
                     <select
                       value={expenseForm.linkedProductId || ''}
                       onChange={(e) => setExpenseForm({ ...expenseForm, linkedProductId: e.target.value, quantityBought: '' })}
