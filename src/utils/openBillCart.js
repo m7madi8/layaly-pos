@@ -57,3 +57,56 @@ export function formatOpenBillAge(updatedAtMs) {
   const days = Math.floor(hours / 24);
   return `منذ ${days} يوم`;
 }
+
+/** مفتاح دمج بند: جلسة PS فريدة، وزن فريد، وإلا cartItemId/id */
+function mergeLineKey(item) {
+  if (item?.sessionId) return `session:${item.sessionId}`;
+  const type = item?.productType || getProductType(item);
+  if (type === 'weight') return `weight:${item.cartItemId || item.lineId || `${item.id}-${item.weightGrams}`}`;
+  return String(item?.cartItemId || item?.lineId || item?.id || '');
+}
+
+/**
+ * دمج أصناف طلب جديد على فاتورة معلقة لنفس العميل:
+ * نفس الصنف → جمع الكمية، غير ذلك → إلحاق.
+ */
+export function mergeOpenBillItems(prevItems = [], incomingItems = []) {
+  const result = (Array.isArray(prevItems) ? prevItems : []).map((i) => ({ ...i }));
+  const indexByKey = new Map();
+  result.forEach((item, idx) => {
+    const key = mergeLineKey(item);
+    if (key) indexByKey.set(key, idx);
+  });
+
+  for (const raw of Array.isArray(incomingItems) ? incomingItems : []) {
+    const inc = { ...raw };
+    const key = mergeLineKey(inc);
+    const type = inc.productType || getProductType(inc);
+
+    if (inc.sessionId && indexByKey.has(key)) {
+      continue; // نفس جلسة البلايستيشن موجودة مسبقاً
+    }
+
+    if (type === 'weight' || type === 'time') {
+      result.push(inc);
+      if (key) indexByKey.set(key, result.length - 1);
+      continue;
+    }
+
+    if (key && indexByKey.has(key)) {
+      const idx = indexByKey.get(key);
+      const prev = result[idx];
+      result[idx] = {
+        ...prev,
+        ...inc,
+        quantity: (Number(prev.quantity) || 0) + (Number(inc.quantity) || 0),
+        selectedAddons: Array.isArray(prev.selectedAddons) ? prev.selectedAddons : inc.selectedAddons,
+        price: Number(prev.price) || Number(inc.price) || 0,
+      };
+    } else {
+      result.push(inc);
+      if (key) indexByKey.set(key, result.length - 1);
+    }
+  }
+  return result;
+}

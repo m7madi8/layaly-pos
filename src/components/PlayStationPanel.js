@@ -84,7 +84,7 @@ export default function PlayStationPanel({
                   <span className="text-[10px] font-bold text-white bg-accent rounded-full px-2 py-0.5 shrink-0">يعمل</span>
                 </div>
                 <div className="flex items-end justify-between mt-2">
-                  <span className="text-xl font-bold tabular-nums text-primary" dir="ltr">{formatClock(elapsedMs)}</span>
+                  <span className="text-3xl font-bold tabular-nums text-primary" dir="ltr">{formatClock(elapsedMs)}</span>
                   <span className="text-sm font-semibold text-accent">{fmtMoney(estimate)}</span>
                 </div>
                 <div className="flex gap-2 mt-2">
@@ -92,7 +92,7 @@ export default function PlayStationPanel({
                     type="button"
                     disabled={busy}
                     onClick={() => onEnd(session)}
-                    className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-primary text-white text-xs font-medium disabled:opacity-50"
+                    className="flex-1 flex items-center justify-center gap-1.5 min-h-[48px] rounded-xl bg-primary text-white text-sm font-medium disabled:opacity-50"
                   >
                     <Square size={13} />
                     إنهاء وإضافة للطلب
@@ -101,7 +101,7 @@ export default function PlayStationPanel({
                     type="button"
                     disabled={busy}
                     onClick={() => onCancel(session)}
-                    className="px-2.5 rounded-lg border border-gray-200 text-gray-500 hover:text-red-600 hover:border-red-200 disabled:opacity-50"
+                    className="w-12 rounded-xl grid place-items-center border border-gray-200 text-gray-500 hover:text-red-600 hover:border-red-200 disabled:opacity-50"
                     title="إلغاء جلسة بدأت بالخطأ"
                     aria-label="إلغاء الجلسة"
                   >
@@ -127,7 +127,7 @@ export default function PlayStationPanel({
                       type="button"
                       disabled={busy}
                       onClick={() => start(station, p)}
-                      className="w-full text-start text-xs px-2.5 py-2 rounded-lg border border-gray-200 hover:border-accent hover:bg-accent-soft/30 disabled:opacity-50"
+                      className="w-full text-start text-sm px-3 min-h-[48px] rounded-lg border border-gray-200 hover:border-accent hover:bg-accent-soft/30 disabled:opacity-50"
                     >
                       {p.name} — {fmtMoney(p.timePricing?.billingPrice || 0)} / {p.timePricing?.billingMinutes} د
                     </button>
@@ -141,7 +141,7 @@ export default function PlayStationPanel({
                   type="button"
                   disabled={busy}
                   onClick={() => (timeProducts.length === 1 ? start(station, timeProducts[0]) : setPickingStationId(station.id))}
-                  className="mt-2 w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-primary/20 text-primary text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
+                  className="mt-2 w-full flex items-center justify-center gap-1.5 min-h-[48px] rounded-xl border border-primary/20 text-primary text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
                 >
                   <Play size={13} />
                   بدء جلسة

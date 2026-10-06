@@ -22,26 +22,14 @@ body {
 
   .layali-product-card {
     background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-card);
-    box-shadow: var(--shadow-card);
-    transition:
-      box-shadow 0.35s ease,
-      border-color 0.35s ease,
-      transform 0.2s ease;
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+    transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
   }
-
-  .layali-product-card:hover {
-    box-shadow: var(--shadow-card-hover);
-    border-color: rgba(193, 127, 89, 0.22);
-  }
-
-  .layali-product-card:active {
-    transform: scale(0.985);
-  }
-
+  .layali-product-card:active:not(:disabled) { transform: scale(0.97); }
   .layali-product-card__media {
-    border-radius: calc(var(--radius-card) - 6px);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
     background: #ffffff;
   }
 
@@ -81,4 +69,41 @@ body {
     box-shadow: 0 0 0 3px var(--color-focus-ring);
     outline: none;
   }
+
+  .layali-cart-line-flash {
+    animation: layaliCartFlash 0.6s ease;
+  }
+
+  .layali-mobile-cart-pulse {
+    animation: layaliCartPulse 0.55s ease;
+  }
+
+  @keyframes layaliCartFlash {
+    0%   { background-color: var(--color-accent-soft); }
+    100% { background-color: var(--color-bg-warm); }
+  }
+
+  @keyframes layaliCartPulse {
+    0% {
+      transform: scale(1);
+    }
+    40% {
+      transform: scale(1.03);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+}
+
+/* iPad Safari يكبّر الصفحة عند التركيز على حقل خطه أقل من 16px */
+@media (pointer: coarse) {
+  input, select, textarea { font-size: 16px !important; }
+}
+button, [role='button'] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }

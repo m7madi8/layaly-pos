@@ -1,5 +1,5 @@
 import { computeExpectedCash, summarizeMovements } from './cashShiftMath';
-import { serializeCartItem } from './openBillCart';
+import { serializeCartItem, mergeOpenBillItems } from './openBillCart';
 
 describe('cashShiftMath', () => {
   test('expected cash formula', () => {
@@ -70,5 +70,25 @@ describe('openBillCart serializeCartItem', () => {
     });
     expect(line.sessionId).toBe('s1');
     expect(line.durationMinutes).toBe(30);
+  });
+});
+
+describe('mergeOpenBillItems', () => {
+  test('sums quantity for same product instead of dropping', () => {
+    const merged = mergeOpenBillItems(
+      [{ id: 'a', cartItemId: 'a', name: 'قهوة', price: 5, quantity: 2, productType: 'standard' }],
+      [{ id: 'a', cartItemId: 'a', name: 'قهوة', price: 5, quantity: 3, productType: 'standard' }]
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].quantity).toBe(5);
+  });
+
+  test('appends different products onto same bill', () => {
+    const merged = mergeOpenBillItems(
+      [{ id: 'a', cartItemId: 'a', name: 'قهوة', price: 5, quantity: 1, productType: 'standard' }],
+      [{ id: 'b', cartItemId: 'b', name: 'شاي', price: 3, quantity: 2, productType: 'standard' }]
+    );
+    expect(merged).toHaveLength(2);
+    expect(merged.map((i) => i.id)).toEqual(['a', 'b']);
   });
 });

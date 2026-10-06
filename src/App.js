@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { APP_NAME, APP_TAGLINE, APP_LOGO, resolveAppLogo, FONT_UI, FONT_HEADING, theme } from './branding';
 import { fmtMoney, fmtMoneyPlain, orderFilterLabel, orderStatusLabel, categoryLabel, paymentMethodLabel, paymentTypeLabel, expenseCategoryLabel, expenseFilterLabel, reportFilterLabel } from './i18n';
@@ -9,11 +9,14 @@ import {
   defaultExpenseForm,
 } from './expenseConfig';
 import PosProductCard from './components/PosProductCard';
+import PosCart from './components/PosCart';
+import { PaymentChooserSheet, CashSheet, MixedSheet } from './components/PosPaymentSheets';
 import CustomersView from './components/CustomersView';
 import OpenBillsPanel from './components/OpenBillsPanel';
 import CashShiftView from './components/CashShiftView';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs } from './productAssets';
-import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, Percent, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, PauseCircle } from 'lucide-react';
+import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, PauseCircle, Check } from 'lucide-react';
+import { friendlyError } from './utils/friendlyError';
 
 import {
   auth,
@@ -93,6 +96,7 @@ import {
 import {
   suspendOpenBill,
   closeOpenBill,
+  cancelOpenBill,
   restoreCartItem,
 } from './services/openBillsService';
 import {
@@ -187,6 +191,14 @@ const AppCore = () => {
   const [openBills, setOpenBills] = useState([]);
   const [showOpenBillsPanel, setShowOpenBillsPanel] = useState(false);
   const [openBillBusy, setOpenBillBusy] = useState(false);
+  const [showCancelOpenBillConfirm, setShowCancelOpenBillConfirm] = useState(false);
+  const [pendingOpenBill, setPendingOpenBill] = useState(null);
+  const [suspendFeedback, setSuspendFeedback] = useState('');
+  const [posSection, setPosSection] = useState('menu'); // menu | playstation | hookah
+  const [lastAddedCartId, setLastAddedCartId] = useState(null);
+  const [mobileCartPulse, setMobileCartPulse] = useState(false);
+  const cartFlashTimerRef = useRef(null);
+  const addToOrderRef = useRef(null);
   const [cashShifts, setCashShifts] = useState([]);
   const [cashMovements, setCashMovements] = useState([]);
   const [cashBusy, setCashBusy] = useState(false);
@@ -1172,7 +1184,7 @@ const AppCore = () => {
     setEditingOrderId(null);
   };
 
-  const suspendCurrentBill = async () => {
+  const requestSuspendBill = () => {
     if (!user || openBillBusy || uploadProgress) return;
     if (!currentOrder.customerId) {
       alert('الفواتير المعلقة للعملاء المسجلين فقط — اختر عميلاً من القائمة');
@@ -1186,11 +1198,22 @@ const AppCore = () => {
       alert('أنت تعدّل طلباً محفوظاً — أنهِ التعديل أو ألغِه قبل تعليق فاتورة');
       return;
     }
+    confirmSuspendBill();
+  };
+
+  const confirmSuspendBill = async () => {
+    if (!user || openBillBusy || uploadProgress) return;
     setOpenBillBusy(true);
     try {
-      const wasUpdate = !!activeOpenBillId;
+      const existingForCustomer =
+        !activeOpenBillId &&
+        openBills.find(
+          (b) => b.status === 'open' && b.customerId === currentOrder.customerId
+        );
+      const wasUpdate = !!activeOpenBillId || !!existingForCustomer;
       await suspendOpenBill(user.uid, {
         billId: activeOpenBillId || null,
+        knownOpenBillId: existingForCustomer?.id || null,
         currentOrder,
         discountAmount: cartDiscountAmount,
         subtotal: cartSubtotal,
@@ -1200,23 +1223,45 @@ const AppCore = () => {
       clearPosCart();
       setShowOpenBillsPanel(false);
       setIsMobileCartOpen(false);
-      alert(wasUpdate ? 'تم تحديث الفاتورة المعلقة' : 'تم تعليق الفاتورة');
+      setSuspendFeedback(
+        existingForCustomer && !activeOpenBillId
+          ? 'تم إضافة الطلب إلى نفس فاتورة العميل المعلقة'
+          : wasUpdate
+            ? 'تم تحديث الفاتورة المعلقة'
+            : 'تم تعليق الفاتورة'
+      );
     } catch (error) {
-      alert(error.message);
+      alert(friendlyError(error, 'تعذّر حفظ الفاتورة المعلقة. لم يضِع الطلب — السلة ما زالت كما هي.'));
     } finally {
       setOpenBillBusy(false);
     }
   };
 
-  const loadOpenBillIntoCart = (bill) => {
+  const exitOpenBillToList = () => {
+    clearPosCart();
+    setIsMobileCartOpen(false);
+    setShowOpenBillsPanel(false);
+  };
+
+  const confirmCancelOpenBill = async () => {
+    if (!user || !activeOpenBillId || openBillBusy) return;
+    setOpenBillBusy(true);
+    try {
+      await cancelOpenBill(user.uid, activeOpenBillId, { actor: sessionActor() });
+      clearPosCart();
+      setShowCancelOpenBillConfirm(false);
+      setIsMobileCartOpen(false);
+      setSuspendFeedback('تم إلغاء الفاتورة المعلقة');
+    } catch (error) {
+      alert(friendlyError(error, 'تعذّر إلغاء الفاتورة المعلقة. لم يتغيّر شيء، حاول مرة أخرى.'));
+    } finally {
+      setOpenBillBusy(false);
+    }
+  };
+
+  const applyOpenBillToCart = (bill) => {
     if (!bill || bill.status !== 'open') {
       alert('هذه الفاتورة لم تعد مفتوحة');
-      return;
-    }
-    if (
-      currentOrder.items.length > 0 &&
-      !window.confirm('السلة الحالية ليست فارغة. استبدالها بالفاتورة المعلقة؟')
-    ) {
       return;
     }
     const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
@@ -1231,9 +1276,30 @@ const AppCore = () => {
     setDiscountType('amount');
     setActiveOpenBillId(bill.id);
     setEditingOrderId(null);
+    setPendingOpenBill(null);
     setShowOpenBillsPanel(false);
     setCurrentView('pos');
     setIsMobileCartOpen(true);
+  };
+
+  const loadOpenBillIntoCart = (bill) => {
+    if (!bill || bill.status !== 'open') {
+      alert('هذه الفاتورة لم تعد مفتوحة');
+      return;
+    }
+    if (activeOpenBillId === bill.id) {
+      setShowOpenBillsPanel(false);
+      setIsMobileCartOpen(true);
+      return;
+    }
+    const cartBusy =
+      currentOrder.items.length > 0 &&
+      (activeOpenBillId !== bill.id);
+    if (cartBusy) {
+      setPendingOpenBill(bill);
+      return;
+    }
+    applyOpenBillToCart(bill);
   };
 
   const handleCancelOrder = async (orderId) => {
@@ -1310,7 +1376,8 @@ const AppCore = () => {
       return;
     }
     if (type === 'time') {
-      playstationPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setPosSection('playstation');
+      setTimeout(() => playstationPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
       return;
     }
     if (product.addOns && product.addOns.length > 0) {
@@ -1329,6 +1396,17 @@ const AppCore = () => {
     } else {
       addItemToCart(product, []);
     }
+  };
+  addToOrderRef.current = addToOrder;
+
+  const pingCartFeedback = (cartItemId) => {
+    setLastAddedCartId(cartItemId);
+    setMobileCartPulse(true);
+    if (cartFlashTimerRef.current) clearTimeout(cartFlashTimerRef.current);
+    cartFlashTimerRef.current = setTimeout(() => {
+      setLastAddedCartId(null);
+      setMobileCartPulse(false);
+    }, 1100);
   };
 
   const addItemToCart = (product, selectedAddons) => {
@@ -1365,12 +1443,13 @@ const AppCore = () => {
         }]
       }));
     }
-    
+    pingCartFeedback(cartItemId);
     setShowAddonModal(false);
     setPendingAddonProduct(null);
   };
 
   const addWeightItemToCart = (product, { weightGrams, amount }) => {
+    const cartItemId = `w-${product.id}-${Date.now()}`;
     setCurrentOrder((prev) => ({
       ...prev,
       items: [
@@ -1378,7 +1457,7 @@ const AppCore = () => {
         {
           ...product,
           productType: 'weight',
-          cartItemId: `w-${product.id}-${Date.now()}`,
+          cartItemId,
           quantity: 1,
           selectedAddons: [],
           weightGrams,
@@ -1389,6 +1468,7 @@ const AppCore = () => {
         },
       ],
     }));
+    pingCartFeedback(cartItemId);
     setWeightEntryProduct(null);
   };
 
@@ -1398,11 +1478,13 @@ const AppCore = () => {
   const sessionActor = () => ({ role: userRole || 'admin' });
 
   const addSessionToCart = (session) => {
+    const line = sessionCartItem(session);
     setCurrentOrder((prev) =>
       prev.items.some((i) => i.sessionId === session.id)
         ? prev
-        : { ...prev, items: [...prev.items, sessionCartItem(session)] }
+        : { ...prev, items: [...prev.items, line] }
     );
+    if (line?.cartItemId) pingCartFeedback(line.cartItemId);
   };
 
   const runPlaystationAction = async (action) => {
@@ -1496,6 +1578,38 @@ const AppCore = () => {
         i.cartItemId === cartItemId ? { ...i, quantity: Math.max(0, i.quantity + delta) } : i
       ).filter(i => i.quantity > 0)
     }));
+  };
+
+
+  const removeCartLine = (lineKey) =>
+    setCurrentOrder((prev) => ({
+      ...prev,
+      items: prev.items.filter((i) => (i.cartItemId || i.id) !== lineKey),
+    }));
+
+  const openQuickCustomer = (prefill = '') => {
+    const p = String(prefill).trim();
+    const isPhone = /^[\d+\s-]+$/.test(p);
+    setQuickCustomerForm({
+      name: p && !isPhone ? p : '',
+      phone: p && isPhone ? p : '',
+      address: '',
+      notes: '',
+    });
+    setShowQuickCustomerModal(true);
+  };
+
+  const startPayment = () => {
+    if (currentOrder.items.length === 0 || uploadProgress) return;
+    setPaymentCustomPrice('');
+    setMixedCashAmount('');
+    if (!currentOrder.customerId) {
+      setCashGiven('');
+      setFinalTotalForPayment(cartTotal);
+      setShowCashModal(true);
+    } else {
+      setShowPaymentModal(true);
+    }
   };
 
   const handleSaveCustomer = async (formData, editingId) => {
@@ -1670,14 +1784,41 @@ const AppCore = () => {
   };
 
   const selectOrderCustomer = (customerId) => {
-    if (activeOpenBillId) {
-      setActiveOpenBillId(null);
-    }
     if (!customerId) {
+      if (activeOpenBillId) setActiveOpenBillId(null);
       setCurrentOrder((prev) => ({ ...prev, customerId: '', customer: '' }));
       return;
     }
     const c = customers.find((x) => x.id === customerId);
+    const existingBill = openBills.find(
+      (b) => b.status === 'open' && b.customerId === customerId
+    );
+
+    // نفس العميل له فاتورة معلقة: افتحها في الطلب الحالي (أو اربطها إن كانت السلة لنفس الفاتورة)
+    if (existingBill) {
+      if (activeOpenBillId === existingBill.id) {
+        setCurrentOrder((prev) => ({
+          ...prev,
+          customerId,
+          customer: c?.name || existingBill.customerName || prev.customer,
+        }));
+        return;
+      }
+      if (currentOrder.items.length === 0) {
+        applyOpenBillToCart(existingBill);
+        return;
+      }
+      // سلة فيها أصناف جديدة → تُدمج لاحقاً عند التعليق في نفس فاتورة العميل
+      setActiveOpenBillId(null);
+      setCurrentOrder((prev) => ({
+        ...prev,
+        customerId,
+        customer: c?.name || prev.customer,
+      }));
+      return;
+    }
+
+    if (activeOpenBillId) setActiveOpenBillId(null);
     setCurrentOrder((prev) => ({
       ...prev,
       customerId,
@@ -2070,6 +2211,9 @@ const AppCore = () => {
       setShowPaymentModal(false);
       setShowMixedPaymentModal(false);
       setShowCashModal(false);
+      if (!editingOrderId) {
+        setSuspendFeedback(`✓ تم الدفع${createdOrderNumber ? ` · #${createdOrderNumber}` : ''}`);
+      }
 
       if (billIdToClose) {
         try {
@@ -2101,7 +2245,7 @@ const AppCore = () => {
         alert('تم تحديث الطلب بنجاح');
       }
     } catch (error) {
-      alert(error.message);
+      alert(friendlyError(error, 'تعذّر إتمام الدفع. لم يُحفظ الطلب ولم يُخصم شيء من المخزون. حاول مرة أخرى.'));
     } finally {
       setUploadProgress(false);
     }
@@ -2506,15 +2650,38 @@ const AppCore = () => {
   }, [currentView]);
 
   useEffect(() => {
+    if (!suspendFeedback) return undefined;
+    const t = setTimeout(() => setSuspendFeedback(''), 2600);
+    return () => clearTimeout(t);
+  }, [suspendFeedback]);
+
+  useEffect(() => {
     if (selectedCategory !== 'all' && !posCategoryList.includes(selectedCategory)) {
       setSelectedCategory('all');
     }
   }, [posCategoryList, selectedCategory]);
 
-  const filteredProducts = posProducts.filter(p => 
-    (selectedCategory === 'all' || p.category === selectedCategory) &&
-    p.name.toLowerCase().includes(searchTerm.toLowerCase())
-  ).sort((a, b) => a.name.localeCompare(b.name));
+  const filteredProducts = useMemo(
+    () =>
+      posProducts
+        .filter(
+          (p) =>
+            (selectedCategory === 'all' || p.category === selectedCategory) &&
+            p.name.toLowerCase().includes(searchTerm.toLowerCase())
+        )
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [posProducts, selectedCategory, searchTerm]
+  );
+
+  const stableAdd = useCallback((p) => addToOrderRef.current?.(p), []);
+
+  const cartQtyByProduct = useMemo(() => {
+    const m = {};
+    currentOrder.items.forEach((i) => {
+      m[i.id] = (m[i.id] || 0) + (i.quantity || 0);
+    });
+    return m;
+  }, [currentOrder.items]);
 
   const categories = ['all', ...menuCategoryList];
   
@@ -2933,7 +3100,7 @@ const AppCore = () => {
       <div className={`
         fixed top-0 right-0 h-full text-white flex flex-col border-l border-sidebar-border bg-sidebar transition-all duration-300 z-30 overflow-hidden shadow-layali-lg
         lg:relative
-        ${isSidebarOpen ? 'w-64 translate-x-0' : 'w-0 translate-x-full lg:w-20 lg:translate-x-0'}
+        ${isSidebarOpen ? 'w-64 translate-x-0' : 'w-0 translate-x-full lg:w-24 lg:translate-x-0'}
       `}>
         <div className="p-5 border-b border-white/10">
           <div className={`flex items-center gap-3 duration-300 ${!isSidebarOpen && 'lg:justify-center'}`}>
@@ -2955,14 +3122,14 @@ const AppCore = () => {
                   setIsSidebarOpen(false);
                 }
               }}
-              className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-all duration-200 text-sm ${isSidebarOpen ? 'justify-start' : 'lg:justify-center'} ${
-                activeView === item.id ? 'bg-accent text-white shadow-md' : 'hover:bg-white/10 text-white/60 hover:text-white'
-              }`}
+              className={`w-full flex items-center gap-3 px-3 py-3 min-h-[56px] rounded-xl transition-colors duration-150 ${
+                isSidebarOpen ? 'justify-start text-sm' : 'lg:flex-col lg:justify-center lg:gap-1 lg:py-2.5'
+              } ${activeView === item.id ? 'bg-accent text-white shadow-md' : 'active:bg-white/10 text-white/70 hover:text-white'}`}
               title={item.label}
-              style={{ fontFamily: FONT_UI, fontWeight: 400 }}
+              style={{ fontFamily: FONT_UI, fontWeight: 500 }}
             >
-              <item.icon size={20} strokeWidth={1.5} className="flex-shrink-0" />
-              <span className={`${isSidebarOpen ? 'block' : 'hidden'} whitespace-nowrap`}>{item.label}</span>
+              <item.icon size={22} strokeWidth={1.5} className="flex-shrink-0" />
+              <span className={`${isSidebarOpen ? 'block' : 'hidden lg:block lg:text-[11px] lg:leading-tight'} whitespace-nowrap`}>{item.label}</span>
             </button>
           ))}
         </nav>
@@ -2988,7 +3155,7 @@ const AppCore = () => {
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <header className="flex items-center justify-between gap-3 px-3 py-3 sm:px-6 sm:py-4 bg-white border-b border-gray-100 sticky top-0 z-10 shadow-sm">
-            <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="shrink-0 p-1 rounded-md hover:bg-gray-200/50">
+            <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="shrink-0 w-11 h-11 grid place-items-center rounded-md hover:bg-gray-200/50">
                 <Menu size={24} />
             </button>
             <div className="flex min-w-0 items-center gap-2 sm:gap-4">
@@ -3168,7 +3335,7 @@ const AppCore = () => {
                 />
             </div>
         </header>
-        <main className="flex-1 overflow-auto p-4 md:p-8 bg-gray-100">
+        <main className={`flex-1 bg-gray-100 ${activeView === 'pos' ? 'overflow-hidden p-3' : 'overflow-auto p-4 md:p-8'}`}>
           {activeView === 'dashboard' && (
           <div className="max-w-7xl mx-auto space-y-8">
             <div>
@@ -4358,328 +4525,251 @@ const AppCore = () => {
         )}
 
         {activeView === 'pos' && (
-          <div className="max-w-7xl mx-auto h-full">
-            <div className="flex h-full flex-col lg:flex-row gap-6">
-              <div className="flex-1 min-w-0 pb-20 lg:pb-0">
-              <div className="mb-6">
-                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                  <h2 className="text-2xl md:text-3xl text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>القائمة</h2>
-                  <button
-                    type="button"
-                    onClick={() => setShowOpenBillsPanel(true)}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border bg-white hover:bg-gray-50"
-                    style={{ borderColor: theme.border || '#e5e7eb', color: theme.text, fontFamily: FONT_UI }}
-                  >
-                    <PauseCircle size={16} />
-                    الفواتير المعلقة
-                    {openBillsCount > 0 && (
-                      <span className="text-white text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: theme.accent }}>
-                        {openBillsCount}
-                      </span>
-                    )}
-                  </button>
-                </div>
-                
-                <div className="flex flex-col sm:flex-row gap-3 mb-4">
-                  <div className="flex-1 relative">
-                    <Search className="absolute end-4 top-1/2 -translate-y-1/2 pointer-events-none" size={18} style={{ color: 'var(--color-text-muted)' }} />
-                    <input
-                      type="text"
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      placeholder="بحث في المنتجات..."
-                      className="layali-input w-full pe-11 ps-4 py-3 text-sm shadow-sm border-none"
-                      style={{ fontFamily: FONT_UI }}
-                    />
-                  </div>
-                </div>
+          <div className="max-w-[1600px] mx-auto h-full">
+            <div className="h-full flex flex-col lg:flex-row gap-3">
+              <PosCart
+                mobileOpen={isMobileCartOpen}
+                onCloseMobile={() => setIsMobileCartOpen(false)}
+                activeOpenBillId={activeOpenBillId}
+                editingOrderId={editingOrderId}
+                currentOrder={currentOrder}
+                customers={customers}
+                canCreateCustomers={employeeCanCreateCustomers}
+                onSelectCustomer={selectOrderCustomer}
+                onAddCustomer={openQuickCustomer}
+                onNotesChange={(notes) => setCurrentOrder((p) => ({ ...p, notes }))}
+                onGuestNameChange={(customer) => setCurrentOrder((p) => ({ ...p, customer }))}
+                onQty={updateQuantity}
+                onRemove={removeCartLine}
+                lastAddedId={lastAddedCartId}
+                subtotal={cartSubtotal}
+                discount={discount}
+                discountAmount={cartDiscountAmount}
+                total={cartTotal}
+                onDiscount={() => setShowDiscountModal(true)}
+                onPay={startPayment}
+                onSuspend={requestSuspendBill}
+                onPrint={printDraftReceipt}
+                onCancelBill={() => setShowCancelOpenBillConfirm(true)}
+                onExitBill={exitOpenBillToList}
+                busy={uploadProgress || openBillBusy}
+              />
 
-                <div className="flex gap-2 mb-5 overflow-x-auto pb-2 scrollbar-thin">
-                  {posMenuTabs.map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setSelectedCategory(tab.id)}
-                      className={`px-5 py-2.5 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
-                        selectedCategory === tab.id ? 'text-white shadow-sm bg-primary' : 'bg-white border border-[var(--color-border)] text-layali-muted hover:border-accent'
-                      }`}
-                      style={{ fontFamily: FONT_UI }}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div ref={playstationPanelRef}>
-                <PlayStationPanel
-                  stations={playstationSettings.stations}
-                  sessions={playstationSessions}
-                  timeProducts={timeProducts}
+              <div className="flex-1 min-w-0 h-full flex flex-col">
+                <OpenBillsPanel
+                  variant="strip"
+                  openBills={openBills}
                   fmtMoney={fmtMoney}
-                  busy={playstationBusy}
-                  onStart={handleStartPlaystation}
-                  onEnd={handleEndPlaystation}
-                  onCancel={handleCancelPlaystation}
-                  onAddEndedToCart={addSessionToCart}
-                  cartSessionIds={cartSessionIds}
+                  theme={theme}
+                  FONT_UI={FONT_UI}
+                  FONT_HEADING={FONT_HEADING}
+                  busy={openBillBusy || uploadProgress}
+                  onOpenBill={loadOpenBillIntoCart}
+                  activeBillId={activeOpenBillId}
                 />
-              </div>
 
-              <ExternalAssetsPanel
-                assets={externalAssets}
-                movements={assetMovements}
-                busy={assetsBusy}
-                canManage={!isEmployee}
-                defaultPerson={currentOrder.customerId ? currentOrder.customer : ''}
-                linkedMovementIds={cartMovementIds}
-                saleProducts={hookahSaleProducts}
-                fmtMoney={fmtMoney}
-                onCheckout={handleCheckoutAsset}
-                onReturn={handleReturnAsset}
-                onAddAsset={handleAddAsset}
-              />
+                <div className="shrink-0 mb-3 space-y-2.5">
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 flex gap-1.5 p-1 rounded-2xl bg-white border border-[var(--color-border)] shadow-sm">
+                      {[
+                        { id: 'menu', label: 'القائمة' },
+                        { id: 'playstation', label: 'بلايستيشن' },
+                        { id: 'hookah', label: 'أراجيل' },
+                      ].map((tab) => (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() => setPosSection(tab.id)}
+                          className={`flex-1 h-11 rounded-xl text-sm font-bold transition-colors ${
+                            posSection === tab.id
+                              ? 'bg-primary text-white shadow-sm'
+                              : 'text-[var(--color-text-muted)] active:bg-[var(--color-surface-muted)]'
+                          }`}
+                          style={{ fontFamily: FONT_UI }}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowOpenBillsPanel(true)}
+                      className="lg:hidden h-[3.25rem] px-3.5 inline-flex items-center gap-2 rounded-2xl text-sm font-semibold border bg-white"
+                      style={{ borderColor: 'var(--color-border)', color: theme.text, fontFamily: FONT_UI }}
+                    >
+                      <PauseCircle size={18} />
+                      معلّقة
+                      {openBillsCount > 0 && (
+                        <span className="text-white text-[11px] min-w-[1.25rem] h-5 px-1 rounded-full inline-flex items-center justify-center" style={{ backgroundColor: theme.accent }}>
+                          {openBillsCount}
+                        </span>
+                      )}
+                    </button>
+                  </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 sm:gap-5">
-                {filteredProducts.map((product) => (
-                  <PosProductCard key={product.id} product={product} onAdd={addToOrder} />
-                ))}
-              </div>
-              {filteredProducts.length === 0 && (
-                <div className="text-center py-16 space-y-4">
-                  <p className="text-layali-muted text-sm" style={{ fontFamily: FONT_UI }}>
-                    لا توجد منتجات في القائمة بعد.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={openAddProductModal}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-sm font-medium hover:opacity-90"
-                    style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
-                  >
-                    <Plus size={16} />
-                    إضافة صنف مع صورة
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Cart Section - Desktop: Sidebar, Mobile: Full Screen Overlay */}
-            <div className={`
-              lg:w-96 bg-white shadow-xl border border-gray-200 p-4 md:p-5 flex flex-col rounded-2xl lg:h-[calc(100vh-100px)]
-              ${isMobileCartOpen ? 'fixed inset-0 z-50 rounded-none h-[100dvh]' : 'hidden lg:flex'}
-            `}>
-              <div className="flex justify-between items-center mb-3">
-                <h3 className="text-lg md:text-xl" style={{ color: theme.text, fontFamily: FONT_HEADING, fontWeight: 600 }}>الطلب الحالي</h3>
-                {/* Mobile Close Button */}
-                <button 
-                  onClick={() => setIsMobileCartOpen(false)}
-                  className="lg:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-full"
-                >
-                  <X size={24} />
-                </button>
-              </div>
-              
-              <label className="block text-[10px] text-gray-500 mb-1" style={{ fontFamily: FONT_UI }}>العميل</label>
-              <div className="flex gap-2 mb-2">
-                <select
-                  value={currentOrder.customerId || ''}
-                  onChange={(e) => selectOrderCustomer(e.target.value)}
-                  className="flex-1 px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm bg-white"
-                  style={{ fontFamily: FONT_UI }}
-                >
-                  <option value="">ضيف (بدون ملف)</option>
-                  {customers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-                {employeeCanCreateCustomers && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setQuickCustomerForm({ name: '', phone: '', address: '', notes: '' });
-                      setShowQuickCustomerModal(true);
-                    }}
-                    className="px-3 py-2.5 rounded-xl border border-gray-200 text-xs font-medium whitespace-nowrap hover:bg-gray-50"
-                    style={{ fontFamily: FONT_UI }}
-                    title="إضافة عميل جديد"
-                  >
-                    + عميل
-                  </button>
-                )}
-              </div>
-              {activeOpenBillId && (
-                <p className="text-[11px] text-amber-700 mb-2 px-2 py-1 rounded-lg bg-amber-50" style={{ fontFamily: FONT_UI }}>
-                  فاتورة معلقة مفتوحة — التعديلات تُحفظ على نفس الحساب
-                </p>
-              )}
-              {!currentOrder.customerId && (
-                <input
-                  type="text"
-                  value={currentOrder.customer}
-                  onChange={(e) => setCurrentOrder((prev) => ({ ...prev, customer: e.target.value }))}
-                  placeholder="اسم الضيف (اختياري)"
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 mb-2 outline-none text-sm"
-                  style={{ fontFamily: FONT_UI }}
-                />
-              )}
-
-              <input
-                type="text"
-                value={currentOrder.notes}
-                onChange={(e) => setCurrentOrder(prev => ({ ...prev, notes: e.target.value }))}
-                placeholder="ملاحظات (اختياري)"
-                className="w-full px-3 py-2.5 rounded-xl border border-gray-200 mb-3 outline-none text-sm"
-                style={{ fontFamily: FONT_UI }}
-              />
-
-              <div className="flex-1 overflow-auto mb-3 space-y-2">
-                {currentOrder.items.map(item => (
-                  <div key={item.cartItemId || item.id} className="rounded-xl p-3" style={{ backgroundColor: '#f3f4f6' }}>
-                    <div className="flex justify-between items-start mb-2">
-                      <div className="flex-1">
-                        <p className="text-sm" style={{ fontFamily: FONT_UI, fontWeight: 600, color: theme.text }}>
-                          {item.name}
-                        </p>
-                        {item.selectedAddons && item.selectedAddons.length > 0 && (
-                          <p className="text-xs text-gray-500 mt-0.5">{item.selectedAddons.map(a => a.name).join(', ')}</p>
+                  {posSection === 'menu' && (
+                    <>
+                      <div className="relative">
+                        <Search className="absolute end-3.5 top-1/2 -translate-y-1/2 pointer-events-none" size={18} style={{ color: 'var(--color-text-muted)' }} />
+                        <input
+                          type="search"
+                          enterKeyHint="search"
+                          value={searchTerm}
+                          onChange={(e) => setSearchTerm(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') e.currentTarget.blur();
+                            if (e.key === 'Escape') setSearchTerm('');
+                          }}
+                          placeholder="بحث سريع بالاسم…"
+                          className="layali-input w-full h-12 pe-11 ps-11 text-base shadow-sm"
+                          style={{ fontFamily: FONT_UI }}
+                        />
+                        {searchTerm && (
+                          <button
+                            type="button"
+                            onClick={() => setSearchTerm('')}
+                            className="absolute start-1 top-1/2 -translate-y-1/2 w-10 h-10 grid place-items-center rounded-lg text-[var(--color-text-muted)] active:bg-[var(--color-surface-muted)]"
+                            aria-label="مسح البحث"
+                          >
+                            <X size={16} />
+                          </button>
                         )}
                       </div>
-                      <button
-                        onClick={() => setCurrentOrder(prev => ({ ...prev, items: prev.items.filter(i => (i.cartItemId || i.id) !== (item.cartItemId || item.id)) }))}
-                        className="text-red-500 ml-2"
-                      >
-                        <X size={16} />
-                      </button>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      {getProductType(item) === 'weight' ? (
-                        <span className="text-xs text-gray-600" style={{ fontFamily: FONT_UI }}>
-                          {item.weightGrams} غ
-                        </span>
-                      ) : getProductType(item) === 'time' ? (
-                        <span className="text-xs text-gray-600" style={{ fontFamily: FONT_UI }}>
-                          {formatDuration(item.durationMinutes)}
-                          {item.billableMinutes && Math.round(item.billableMinutes) !== Math.round(item.durationMinutes)
-                            ? ` · يُحتسب ${formatDuration(item.billableMinutes)}`
-                            : ''}
-                        </span>
-                      ) : (
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => updateQuantity(item.cartItemId || item.id, -1)}
-                          className="w-7 h-7 rounded-lg bg-white flex items-center justify-center text-sm font-medium"
-                          style={{ color: theme.text }}
-                        >
-                          -
-                        </button>
-                        <button className="w-6 text-center text-sm" style={{ fontFamily: FONT_UI, fontWeight: 600, color: theme.text }}>
-                          {item.quantity}
-                        </button>
-                        <button
-                          onClick={() => updateQuantity(item.cartItemId || item.id, 1)}
-                          className="w-7 h-7 rounded-lg text-white flex items-center justify-center text-sm font-medium"
-                          style={{ backgroundColor: theme.primary }}
-                        >
-                          +
-                        </button>
+                      <div className="flex gap-2 overflow-x-auto pb-0.5 scrollbar-thin">
+                        {posMenuTabs.map((tab) => (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setSelectedCategory(tab.id)}
+                            className={`h-11 px-4 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${
+                              selectedCategory === tab.id
+                                ? 'text-white shadow-sm'
+                                : 'bg-white border border-[var(--color-border-strong)] text-[var(--color-text-secondary)]'
+                            }`}
+                            style={selectedCategory === tab.id ? { backgroundColor: 'var(--color-accent)', fontFamily: FONT_UI } : { fontFamily: FONT_UI }}
+                          >
+                            {tab.label}
+                          </button>
+                        ))}
                       </div>
-                      )}
-                      <p className="text-sm" style={{ fontFamily: FONT_UI, fontWeight: 600, color: theme.text }}>
-                        {fmtMoney((item.price * item.quantity))}
-                      </p>
+                    </>
+                  )}
+                </div>
+
+                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pb-24 lg:pb-2">
+                  {posSection === 'playstation' && (
+                    <div ref={playstationPanelRef}>
+                      <PlayStationPanel
+                        stations={playstationSettings.stations}
+                        sessions={playstationSessions}
+                        timeProducts={timeProducts}
+                        fmtMoney={fmtMoney}
+                        busy={playstationBusy}
+                        onStart={handleStartPlaystation}
+                        onEnd={handleEndPlaystation}
+                        onCancel={handleCancelPlaystation}
+                        onAddEndedToCart={addSessionToCart}
+                        cartSessionIds={cartSessionIds}
+                      />
                     </div>
-                  </div>
-                ))}
-              </div>
+                  )}
 
-              <div className="border-t pt-3 mb-3">
-                <div className="flex justify-between items-center mb-2">
-                   <button 
-                     onClick={() => setShowDiscountModal(true)}
-                     className="text-xs text-accent font-medium hover:underline flex items-center gap-1"
-                   >
-                     <Percent size={12} />
-                     {discount > 0 ? 'تعديل الخصم' : 'إضافة خصم (₪)'}
-                   </button>
-                   {discount > 0 && (
-                     <span className="text-sm text-red-500">- {fmtMoney(cartDiscountAmount)}</span>
-                   )}
-                </div>
-                <div className="flex justify-between items-center mb-3">
-                  <span className="text-base" style={{ fontFamily: FONT_UI, fontWeight: 500, color: theme.textMuted }}>الإجمالي</span>
-                  <span className="text-2xl md:text-3xl" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 600 }}
-                  >
-                    {fmtMoney(cartTotal)}
-                  </span>
-                </div>
+                  {posSection === 'hookah' && (
+                    <ExternalAssetsPanel
+                      assets={externalAssets}
+                      movements={assetMovements}
+                      busy={assetsBusy}
+                      canManage={!isEmployee}
+                      defaultPerson={currentOrder.customerId ? currentOrder.customer : ''}
+                      linkedMovementIds={cartMovementIds}
+                      saleProducts={hookahSaleProducts}
+                      fmtMoney={fmtMoney}
+                      onCheckout={handleCheckoutAsset}
+                      onReturn={handleReturnAsset}
+                      onAddAsset={handleAddAsset}
+                    />
+                  )}
 
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={suspendCurrentBill}
-                    disabled={currentOrder.items.length === 0 || uploadProgress || openBillBusy || !currentOrder.customerId || !!editingOrderId}
-                    title={
-                      editingOrderId
-                        ? 'غير متاح أثناء تعديل طلب محفوظ'
-                        : !currentOrder.customerId
-                          ? 'للعملاء المسجلين فقط'
-                          : 'تعليق الفاتورة بدون دفع'
-                    }
-                    className="py-2.5 rounded-xl text-white text-sm font-medium shadow-sm disabled:opacity-50"
-                    style={{ backgroundColor: '#f59e0b', fontFamily: FONT_UI }}
-                  >
-                    تعليق الفاتورة
-                  </button>
-                  <button
-                    onClick={() => completeOrder('unpaid', { paymentType: 'pending' })}
-                    disabled={currentOrder.items.length === 0 || uploadProgress || !currentOrder.customerId}
-                    title={!currentOrder.customerId ? 'للعملاء المسجلين فقط — اختر عميلاً' : undefined}
-                    className="py-2.5 rounded-xl text-white text-sm font-medium shadow-sm disabled:opacity-50"
-                    style={{ backgroundColor: theme.accent, fontFamily: FONT_UI }}
-                  >
-                    حفظ مؤجل
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowPaymentModal(true);
-                      setPaymentCustomPrice('');
-                      setMixedCashAmount('');
-                    }}
-                    disabled={currentOrder.items.length === 0 || uploadProgress}
-                    className="col-span-2 py-2.5 rounded-xl text-white text-sm font-medium shadow-sm disabled:opacity-50"
-                    style={{ backgroundColor: '#10b981', fontFamily: FONT_UI }}
-                  >
-                    إتمام الدفع
-                  </button>
-                  <button
-                    onClick={printDraftReceipt}
-                    disabled={currentOrder.items.length === 0}
-                    className="col-span-2 py-2 rounded-xl text-sm font-medium border flex items-center justify-center gap-2 bg-white hover:bg-gray-50 disabled:opacity-50"
-                    style={{ borderColor: theme.border || '#e5e7eb', color: theme.text, fontFamily: FONT_UI }}
-                    title="طباعة فاتورة مصغّرة قبل الدفع"
-                  >
-                    <Printer size={15} />
-                    طباعة الفاتورة
-                  </button>
+                  {posSection === 'menu' && (
+                    <>
+                      <div className="grid grid-cols-[repeat(auto-fill,minmax(11.5rem,1fr))] gap-3">
+                        {filteredProducts.map((product) => (
+                          <PosProductCard
+                            key={product.id}
+                            product={product}
+                            qty={cartQtyByProduct[product.id] || 0}
+                            onAdd={stableAdd}
+                          />
+                        ))}
+                      </div>
+                      {filteredProducts.length === 0 && (
+                        <div className="text-center py-14 space-y-3 rounded-2xl border border-dashed border-[var(--color-border-strong)] bg-white/60 mt-2">
+                          <p className="text-[var(--color-text-muted)] text-sm" style={{ fontFamily: FONT_UI }}>
+                            {searchTerm.trim()
+                              ? `لا نتائج لـ «${searchTerm.trim()}»`
+                              : posProducts.length === 0
+                                ? 'لا توجد منتجات في القائمة بعد.'
+                                : 'لا أصناف في هذا التصنيف.'}
+                          </p>
+                          {searchTerm.trim() ? (
+                            <button
+                              type="button"
+                              onClick={() => setSearchTerm('')}
+                              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium border bg-white"
+                              style={{ fontFamily: FONT_UI }}
+                            >
+                              مسح البحث
+                            </button>
+                          ) : posProducts.length === 0 && !isEmployee ? (
+                            <button
+                              type="button"
+                              onClick={openAddProductModal}
+                              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-sm font-medium"
+                              style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
+                            >
+                              <Plus size={16} />
+                              إضافة صنف
+                            </button>
+                          ) : null}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
             </div>
-          </div>
-          
+
           {/* Mobile Cart Toggle Bar */}
           {!isMobileCartOpen && !isSidebarOpen && (
-            <div className="fixed bottom-4 left-4 right-4 lg:hidden z-40">
-              <button
-                onClick={() => setIsMobileCartOpen(true)}
-                className="w-full bg-primary text-white p-4 rounded-xl shadow-xl flex justify-between items-center"
-              >
-                <div className="flex items-center gap-2">
-                  <div className="bg-white/20 px-2 py-1 rounded text-xs font-bold">{currentOrder.items.reduce((acc, item) => acc + item.quantity, 0)} أصناف</div>
-                </div>
-                <div className="font-bold">{fmtMoney(cartTotal)}</div>
-                <span className="text-xs font-medium">عرض الطلب ←</span>
-              </button>
+            <div className="fixed bottom-3 left-3 right-3 lg:hidden z-40">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowOpenBillsPanel(true)}
+                  className="shrink-0 bg-white text-primary border border-[var(--color-border)] w-14 rounded-2xl shadow-xl flex flex-col items-center justify-center gap-0.5"
+                >
+                  <PauseCircle size={18} />
+                  {openBillsCount > 0 && (
+                    <span className="text-white text-[10px] min-w-[1.1rem] h-4 px-1 rounded-full inline-flex items-center justify-center" style={{ backgroundColor: theme.accent }}>
+                      {openBillsCount}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsMobileCartOpen(true)}
+                  className={`flex-1 bg-primary text-white px-4 py-3.5 rounded-2xl shadow-xl flex items-center justify-between gap-3 ${mobileCartPulse ? 'layali-mobile-cart-pulse' : ''}`}
+                >
+                  <div className="bg-white/20 px-2.5 py-1 rounded-lg text-xs font-bold tabular-nums">
+                    {currentOrder.items.reduce((acc, item) => acc + item.quantity, 0)}
+                  </div>
+                  <div className="flex-1 text-start">
+                    <div className="text-[11px] opacity-80 font-medium">الطلب الحالي</div>
+                    <div className="font-bold text-base tabular-nums leading-tight">{fmtMoney(cartTotal)}</div>
+                  </div>
+                  <span className="text-xs font-semibold bg-white/15 px-2.5 py-1.5 rounded-lg">فتح</span>
+                </button>
+              </div>
             </div>
           )}
           </div>
@@ -5584,6 +5674,7 @@ const AppCore = () => {
 
       {/* Payment Method Modal */}
       <OpenBillsPanel
+        variant="drawer"
         open={showOpenBillsPanel}
         onClose={() => setShowOpenBillsPanel(false)}
         openBills={openBills}
@@ -5593,8 +5684,88 @@ const AppCore = () => {
         FONT_HEADING={FONT_HEADING}
         busy={openBillBusy || uploadProgress}
         onOpenBill={loadOpenBillIntoCart}
-        onRequestBill={loadOpenBillIntoCart}
+        activeBillId={activeOpenBillId}
       />
+
+      {showCancelOpenBillConfirm && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[65]">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold text-red-700" style={{ fontFamily: FONT_HEADING }}>إلغاء الفاتورة المعلقة</h3>
+              <button type="button" onClick={() => setShowCancelOpenBillConfirm(false)} className="text-gray-400"><X size={22} /></button>
+            </div>
+            <p className="text-sm text-gray-600 mb-4" style={{ fontFamily: FONT_UI }}>
+              تم حذف كل الأصناف. هل تريد إلغاء فاتورة{' '}
+              <strong>{currentOrder.customer || 'العميل'}</strong> المعلقة؟
+              لن تُحسب كبيع ولن يظهر دين.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setShowCancelOpenBillConfirm(false)}
+                className="py-2.5 rounded-xl border border-gray-200 text-sm font-medium"
+                style={{ fontFamily: FONT_UI }}
+              >
+                تراجع
+              </button>
+              <button
+                type="button"
+                disabled={openBillBusy}
+                onClick={confirmCancelOpenBill}
+                className="py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50"
+                style={{ backgroundColor: '#dc2626', fontFamily: FONT_UI }}
+              >
+                {openBillBusy ? 'جاري الإلغاء…' : 'تأكيد الإلغاء'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingOpenBill && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[65]">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>فتح فاتورة معلقة</h3>
+              <button type="button" onClick={() => setPendingOpenBill(null)} className="text-gray-400"><X size={22} /></button>
+            </div>
+            <p className="text-sm text-gray-600 mb-4" style={{ fontFamily: FONT_UI }}>
+              السلة الحالية ليست فارغة. هل تريد استبدالها بفاتورة{' '}
+              <strong>{pendingOpenBill.customerName}</strong> ({fmtMoney(pendingOpenBill.total || 0)})؟
+              ستظهر في نافذة الطلب الحالي.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingOpenBill(null)}
+                className="py-2.5 rounded-xl border border-gray-200 text-sm font-medium"
+                style={{ fontFamily: FONT_UI }}
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={() => applyOpenBillToCart(pendingOpenBill)}
+                className="py-2.5 rounded-xl text-white text-sm font-medium"
+                style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
+              >
+                فتح في الطلب الحالي
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {suspendFeedback && (
+        <div
+          role="status"
+          className="fixed bottom-24 lg:bottom-6 left-1/2 -translate-x-1/2 z-[90] px-5 py-3 rounded-xl bg-primary text-white text-sm font-semibold shadow-xl flex items-center gap-2"
+          style={{ fontFamily: FONT_UI }}
+        >
+          <Check size={16} />
+          {suspendFeedback}
+        </div>
+      )}
 
       {showQuickCustomerModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[65]">
@@ -5653,120 +5824,52 @@ const AppCore = () => {
         </div>
       )}
 
-      {showPaymentModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[60]">
-          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>طريقة الدفع</h3>
-              <button type="button" onClick={() => setShowPaymentModal(false)} className="text-gray-400 hover:text-gray-600"><X size={24} /></button>
-            </div>
+      <PaymentChooserSheet
+        open={showPaymentModal}
+        total={cartTotal}
+        customerName={currentOrder.customer}
+        busy={uploadProgress}
+        onClose={() => setShowPaymentModal(false)}
+        onCash={() => {
+          setCashGiven('');
+          setFinalTotalForPayment(cartTotal);
+          setShowPaymentModal(false);
+          setShowCashModal(true);
+        }}
+        onMixed={() => {
+          setMixedCashAmount('');
+          setShowPaymentModal(false);
+          setShowMixedPaymentModal(true);
+        }}
+        onDebt={() => completeOrder('unpaid', { paymentType: 'debt', customerId: currentOrder.customerId })}
+      />
 
-            <div className="text-center mb-5 p-4 rounded-xl bg-gray-50">
-              <p className="text-xs text-gray-500 mb-1">المبلغ المستحق</p>
-              <p className="text-2xl font-bold text-primary">{fmtMoney(cartTotal)}</p>
-              {currentOrder.customerId ? (
-                <p className="text-xs text-gray-600 mt-2">العميل: {currentOrder.customer}</p>
-              ) : (
-                <p className="text-xs text-amber-700 mt-2">ضيف — الدفع كاش فقط. الدين والدفع الجزئي للعملاء المسجلين.</p>
-              )}
-            </div>
+      <CashSheet
+        open={showCashModal}
+        total={finalTotalForPayment}
+        given={cashGiven}
+        onGivenChange={setCashGiven}
+        busy={uploadProgress}
+        onClose={() => setShowCashModal(false)}
+        onConfirm={() => completeOrder('paid', { paymentType: 'cash', method: 'Cash' })}
+      />
 
-            <div className="space-y-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setCashGiven('');
-                  setFinalTotalForPayment(cartTotal);
-                  setShowPaymentModal(false);
-                  setShowCashModal(true);
-                }}
-                className="w-full py-3 rounded-xl border border-gray-200 hover:border-primary hover:bg-accent-soft text-sm font-semibold text-primary transition-all"
-                style={{ fontFamily: FONT_UI }}
-              >
-                كاش — دفع كامل
-              </button>
-              {currentOrder.customerId && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      completeOrder('unpaid', {
-                        paymentType: 'debt',
-                        customerId: currentOrder.customerId,
-                      })
-                    }
-                    disabled={uploadProgress}
-                    className="w-full py-3 rounded-xl border border-red-200 hover:bg-red-50 text-sm font-semibold text-red-700 transition-all disabled:opacity-50"
-                    style={{ fontFamily: FONT_UI }}
-                  >
-                    دين — كامل على حساب العميل
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMixedCashAmount('');
-                      setShowPaymentModal(false);
-                      setShowMixedPaymentModal(true);
-                    }}
-                    className="w-full py-3 rounded-xl border border-amber-200 hover:bg-amber-50 text-sm font-semibold text-amber-900 transition-all"
-                    style={{ fontFamily: FONT_UI }}
-                  >
-                    كاش + دين — جزء نقداً والباقي دين
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showMixedPaymentModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[70]">
-          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>دفع جزئي — كاش + دين</h3>
-              <button type="button" onClick={() => setShowMixedPaymentModal(false)} className="text-gray-400"><X size={22} /></button>
-            </div>
-            <p className="text-sm text-gray-600 mb-3" style={{ fontFamily: FONT_UI }}>
-              الإجمالي: <strong>{fmtMoney(cartTotal)}</strong> — العميل: {currentOrder.customer}
-            </p>
-            <label className="block text-xs mb-1 text-gray-600">المبلغ الكاش (₪)</label>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={mixedCashAmount}
-              onChange={(e) => setMixedCashAmount(e.target.value)}
-              className="w-full px-3 py-3 rounded-xl border border-gray-200 text-lg font-bold text-center mb-3 outline-none"
-              placeholder="0"
-              autoFocus
-            />
-            <p className="text-sm mb-4 text-red-600 font-medium" style={{ fontFamily: FONT_UI }}>
-              يُسجَّل دين: {fmtMoney(Math.max(0, cartTotal - (parseFloat(mixedCashAmount) || 0)))}
-            </p>
-            <button
-              type="button"
-              onClick={() =>
-                completeOrder('paid', {
-                  paymentType: 'mixed',
-                  cashPaid: mixedCashAmount,
-                  customerId: currentOrder.customerId,
-                })
-              }
-              disabled={
-                uploadProgress ||
-                mixedCashAmount === '' ||
-                parseFloat(mixedCashAmount) < 0 ||
-                parseFloat(mixedCashAmount) >= cartTotal
-              }
-              className="w-full py-3 rounded-xl text-white text-sm font-medium disabled:opacity-50"
-              style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
-            >
-              تأكيد الدفع الجزئي
-            </button>
-          </div>
-        </div>
-      )}
+      <MixedSheet
+        open={showMixedPaymentModal}
+        total={cartTotal}
+        customerName={currentOrder.customer}
+        cash={mixedCashAmount}
+        onCashChange={setMixedCashAmount}
+        busy={uploadProgress}
+        onClose={() => setShowMixedPaymentModal(false)}
+        onConfirm={() =>
+          completeOrder('paid', {
+            paymentType: 'mixed',
+            cashPaid: mixedCashAmount,
+            customerId: currentOrder.customerId,
+          })
+        }
+      />
 
       {/* Expense Modal */}
       {showExpenseModal && (
@@ -6313,74 +6416,6 @@ const AppCore = () => {
         </div>
       )}
 
-      {/* Cash Payment Modal */}
-      {showCashModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[80]">
-          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>دفع نقدي</h3>
-              <button onClick={() => setShowCashModal(false)} className="text-gray-400 hover:text-gray-600"><X size={24} /></button>
-            </div>
-            
-            <div className="text-center mb-6">
-              <p className="text-sm text-gray-500 mb-1">المبلغ المطلوب</p>
-              <p className="text-3xl font-bold text-primary">{fmtMoney(finalTotalForPayment)}</p>
-            </div>
-
-            <div className="mb-4">
-              <label className="block text-xs mb-1.5 font-medium text-gray-600">المبلغ المُسلّم (₪)</label>
-              <input
-                type="number"
-                value={cashGiven}
-                onChange={(e) => setCashGiven(e.target.value)}
-                className="w-full px-3 py-3 rounded-xl border border-gray-200 outline-none text-xl font-bold"
-                placeholder="0"
-                autoFocus
-              />
-            </div>
-
-            <div className="grid grid-cols-4 gap-2 mb-4">
-              {[10, 20, 50, 100, 200].map((amount) => (
-                <button
-                  key={amount}
-                  type="button"
-                  onClick={() => setCashGiven(String(amount))}
-                  className="py-2 rounded-lg border border-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:border-primary"
-                >
-                  {amount}
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => setCashGiven(String(finalTotalForPayment))}
-                className="py-2 rounded-lg border border-accent text-accent text-sm font-medium hover:bg-orange-50 col-span-3"
-              >
-                المبلغ بالضبط
-              </button>
-            </div>
-
-            <div className="bg-gray-50 p-4 rounded-xl mb-6 flex justify-between items-center">
-              <span className="text-sm font-medium text-gray-600">الباقي للزبون</span>
-              <span className={`text-xl font-bold ${(parseFloat(cashGiven) || 0) >= finalTotalForPayment ? 'text-green-600' : 'text-red-500'}`}>
-                {fmtMoney(Math.max(0, (parseFloat(cashGiven) || 0) - finalTotalForPayment))}
-              </span>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                completeOrder('paid', { paymentType: 'cash', method: 'Cash' });
-                setShowCashModal(false);
-              }}
-              disabled={uploadProgress || (parseFloat(cashGiven) || 0) < finalTotalForPayment}
-              className="w-full py-3 rounded-xl text-white text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
-            >
-              تأكيد الدفع كاش
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
