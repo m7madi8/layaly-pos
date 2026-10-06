@@ -66,7 +66,7 @@ export function printReceiptViaBrowser(order, { businessProfile, appSettings }) 
     <img class="logo" src="${logoSrc()}" alt="${APP_NAME}" />
     ${appSettings?.receiptHeader ? `<p class="footer">${esc(appSettings.receiptHeader)}</p>` : ''}
     <h1>${esc(businessProfile?.businessName || APP_NAME)}</h1>
-    ${order.isDraft ? '<p class="badge">فاتورة مبدئية — قبل الدفع</p>' : ''}
+    ${order.isDraft ? `<p class="badge">${order.isOpenBill ? 'حساب مفتوح — غير مدفوع' : 'فاتورة مبدئية — قبل الدفع'}</p>` : ''}
     <div class="meta">
       العميل: ${esc(order.customer || 'ضيف')}<br/>
       التاريخ: <bdi>${orderDate.toLocaleDateString('ar')}</bdi> — <bdi>${orderDate.toLocaleTimeString('ar', { hour: '2-digit', minute: '2-digit' })}</bdi><br/>
@@ -83,7 +83,7 @@ export function printReceiptViaBrowser(order, { businessProfile, appSettings }) 
       : ''}
     <p class="total">الإجمالي: ${money(order.total || 0)}</p>
     ${order.notes ? `<p class="notes">ملاحظات: ${esc(order.notes)}</p>` : ''}
-    <p class="footer">${order.isDraft ? 'قبل الدفع' : order.status === 'paid' ? 'مدفوع' : 'غير مدفوع'}</p>
+    <p class="footer">${order.isDraft ? (order.isOpenBill ? 'حساب مفتوح — غير مدفوع' : 'قبل الدفع') : order.status === 'paid' ? 'مدفوع' : 'غير مدفوع'}</p>
     ${appSettings?.receiptFooter ? `<p class="footer">${esc(appSettings.receiptFooter)}</p>` : ''}
     <script>window.onafterprint=function(){window.close();};window.onload=function(){window.print();}</script>
     </body></html>`;

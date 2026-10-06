@@ -10,8 +10,10 @@ import {
 } from './expenseConfig';
 import PosProductCard from './components/PosProductCard';
 import CustomersView from './components/CustomersView';
+import OpenBillsPanel from './components/OpenBillsPanel';
+import CashShiftView from './components/CashShiftView';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs } from './productAssets';
-import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, Percent, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck } from 'lucide-react';
+import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, Percent, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, PauseCircle } from 'lucide-react';
 
 import {
   auth,
@@ -83,10 +85,23 @@ import {
 import {
   EMPLOYEE_LOGIN_PASSWORD,
   EMPLOYEE_VIEWS,
+  canCreateCustomers,
   normalizeLoginPassword,
   readSessionRole,
   saveSessionRole,
 } from './adminAuth';
+import {
+  suspendOpenBill,
+  closeOpenBill,
+  restoreCartItem,
+} from './services/openBillsService';
+import {
+  openCashShift,
+  recordCashSale,
+  recordCashWithdrawal,
+  recordCashDeposit,
+  closeCashShift,
+} from './services/cashShiftService';
 import { printReceiptViaBrowser } from './utils/printReceiptBrowser';
 import { downloadBusinessReportPdf } from './utils/businessReportPdf';
 import { downloadCustomersLedgerPdf } from './utils/customersLedgerPdf';
@@ -167,7 +182,16 @@ const AppCore = () => {
   const [products, setProducts] = useState([]);
   const [orders, setOrders] = useState([]);
   const [, setIngredients] = useState([]);
-  const [currentOrder, setCurrentOrder] = useState({ items: [], customer: '', customerId: '', notes: '' });
+  const [currentOrder, setCurrentOrder] = useState({ items: [], customer: '', customerId: '', notes: '', assetMovementIds: [] });
+  const [activeOpenBillId, setActiveOpenBillId] = useState(null);
+  const [openBills, setOpenBills] = useState([]);
+  const [showOpenBillsPanel, setShowOpenBillsPanel] = useState(false);
+  const [openBillBusy, setOpenBillBusy] = useState(false);
+  const [cashShifts, setCashShifts] = useState([]);
+  const [cashMovements, setCashMovements] = useState([]);
+  const [cashBusy, setCashBusy] = useState(false);
+  const [showQuickCustomerModal, setShowQuickCustomerModal] = useState(false);
+  const [quickCustomerForm, setQuickCustomerForm] = useState({ name: '', phone: '', address: '', notes: '' });
   const [customers, setCustomers] = useState([]);
   const [discount, setDiscount] = useState(0);
   const [discountType, setDiscountType] = useState('amount'); // new invoices use ₪ only; 'percentage' kept for old orders
@@ -469,6 +493,36 @@ const AppCore = () => {
       (error) => console.error('Error loading customers:', error)
     );
     return () => unsubscribe();
+  }, [user]);
+
+  // Open bills (parked tabs — not orders)
+  useEffect(() => {
+    if (!user) return;
+    const unsubscribe = onSnapshot(
+      query(collection(db, 'users', user.uid, 'openBills'), orderBy('updatedAtMs', 'desc')),
+      (snapshot) => setOpenBills(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (error) => console.error('Error loading open bills:', error)
+    );
+    return () => unsubscribe();
+  }, [user]);
+
+  // Cash shifts + movements
+  useEffect(() => {
+    if (!user) return;
+    const unsubShifts = onSnapshot(
+      query(collection(db, 'users', user.uid, 'cashShifts'), orderBy('openedAtMs', 'desc')),
+      (snapshot) => setCashShifts(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (error) => console.error('Error loading cash shifts:', error)
+    );
+    const unsubMovements = onSnapshot(
+      query(collection(db, 'users', user.uid, 'cashMovements'), orderBy('createdAtMs', 'desc')),
+      (snapshot) => setCashMovements(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (error) => console.error('Error loading cash movements:', error)
+    );
+    return () => {
+      unsubShifts();
+      unsubMovements();
+    };
   }, [user]);
 
   const startRoleSession = (role) => {
@@ -1093,8 +1147,9 @@ const AppCore = () => {
     const total = appSettings.rounding ? Math.round(cartTotal) : cartTotal;
     const editing = editingOrderId ? orders.find((o) => o.id === editingOrderId) : null;
     printReceipt({
-      id: editingOrderId || 'draft',
+      id: editingOrderId || activeOpenBillId || 'draft',
       isDraft: true,
+      isOpenBill: !!activeOpenBillId,
       orderNumber: editing?.orderNumber || '',
       customer: currentOrder.customer || 'ضيف',
       notes: currentOrder.notes || '',
@@ -1107,6 +1162,78 @@ const AppCore = () => {
       status: 'draft',
       timestamp: new Date(),
     });
+  };
+
+  const clearPosCart = () => {
+    setCurrentOrder({ items: [], customer: '', customerId: '', notes: '', assetMovementIds: [] });
+    setDiscount(0);
+    setDiscountType('amount');
+    setActiveOpenBillId(null);
+    setEditingOrderId(null);
+  };
+
+  const suspendCurrentBill = async () => {
+    if (!user || openBillBusy || uploadProgress) return;
+    if (!currentOrder.customerId) {
+      alert('الفواتير المعلقة للعملاء المسجلين فقط — اختر عميلاً من القائمة');
+      return;
+    }
+    if (currentOrder.items.length === 0) {
+      alert('لا يمكن تعليق فاتورة فارغة');
+      return;
+    }
+    if (editingOrderId) {
+      alert('أنت تعدّل طلباً محفوظاً — أنهِ التعديل أو ألغِه قبل تعليق فاتورة');
+      return;
+    }
+    setOpenBillBusy(true);
+    try {
+      const wasUpdate = !!activeOpenBillId;
+      await suspendOpenBill(user.uid, {
+        billId: activeOpenBillId || null,
+        currentOrder,
+        discountAmount: cartDiscountAmount,
+        subtotal: cartSubtotal,
+        total: appSettings.rounding ? Math.round(cartTotal) : cartTotal,
+        actor: sessionActor(),
+      });
+      clearPosCart();
+      setShowOpenBillsPanel(false);
+      setIsMobileCartOpen(false);
+      alert(wasUpdate ? 'تم تحديث الفاتورة المعلقة' : 'تم تعليق الفاتورة');
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setOpenBillBusy(false);
+    }
+  };
+
+  const loadOpenBillIntoCart = (bill) => {
+    if (!bill || bill.status !== 'open') {
+      alert('هذه الفاتورة لم تعد مفتوحة');
+      return;
+    }
+    if (
+      currentOrder.items.length > 0 &&
+      !window.confirm('السلة الحالية ليست فارغة. استبدالها بالفاتورة المعلقة؟')
+    ) {
+      return;
+    }
+    const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
+    setCurrentOrder({
+      items: (bill.items || []).map((item) => restoreCartItem(item, productsById)),
+      customer: bill.customerName || '',
+      customerId: bill.customerId || '',
+      notes: bill.notes || '',
+      assetMovementIds: bill.assetMovementIds || [],
+    });
+    setDiscount(Number(bill.discountAmount ?? bill.discount) || 0);
+    setDiscountType('amount');
+    setActiveOpenBillId(bill.id);
+    setEditingOrderId(null);
+    setShowOpenBillsPanel(false);
+    setCurrentView('pos');
+    setIsMobileCartOpen(true);
   };
 
   const handleCancelOrder = async (orderId) => {
@@ -1387,30 +1514,32 @@ const AppCore = () => {
           balance: existing?.balance ?? 0,
           transactions: existing?.transactions ?? [],
         });
-      } else {
-        const openingDebt = Math.max(0, Number(formData.openingDebt) || 0);
-        const transactions = [];
-        let balance = 0;
-        if (openingDebt > 0) {
-          const entry = {
-            id: `legacy_${Date.now()}`,
-            type: 'legacy_debt',
-            amount: openingDebt,
-            description: (formData.openingDebtNote || '').trim() || 'دين قديم',
-            date: new Date().toISOString(),
-          };
-          transactions.push(entry);
-          balance = openingDebt;
-        }
-        await addDoc(collection(db, 'users', user.uid, 'customers'), {
-          ...payload,
-          balance,
-          transactions,
-          createdAt: serverTimestamp(),
-        });
+        return editingId;
       }
+      const openingDebt = Math.max(0, Number(formData.openingDebt) || 0);
+      const transactions = [];
+      let balance = 0;
+      if (openingDebt > 0) {
+        const entry = {
+          id: `legacy_${Date.now()}`,
+          type: 'legacy_debt',
+          amount: openingDebt,
+          description: (formData.openingDebtNote || '').trim() || 'دين قديم',
+          date: new Date().toISOString(),
+        };
+        transactions.push(entry);
+        balance = openingDebt;
+      }
+      const ref = await addDoc(collection(db, 'users', user.uid, 'customers'), {
+        ...payload,
+        balance,
+        transactions,
+        createdAt: serverTimestamp(),
+      });
+      return ref.id;
     } catch (error) {
       alert(error.message);
+      return null;
     }
   };
 
@@ -1541,6 +1670,9 @@ const AppCore = () => {
   };
 
   const selectOrderCustomer = (customerId) => {
+    if (activeOpenBillId) {
+      setActiveOpenBillId(null);
+    }
     if (!customerId) {
       setCurrentOrder((prev) => ({ ...prev, customerId: '', customer: '' }));
       return;
@@ -1561,12 +1693,25 @@ const AppCore = () => {
     }
     if (uploadProgress) return;
 
+    if (activeOpenBillId) {
+      const openBill = openBills.find((b) => b.id === activeOpenBillId);
+      if (openBill && openBill.status !== 'open') {
+        alert('هذه الفاتورة المعلقة لم تعد مفتوحة — لا يمكن الدفع مرة ثانية');
+        return;
+      }
+    }
+
     const payment =
       typeof paymentOrMethod === 'object' && paymentOrMethod !== null
         ? paymentOrMethod
         : { method: paymentOrMethod, customPrice: customPriceLegacy };
 
     setUploadProgress(true);
+
+    let createdOrderId = editingOrderId || null;
+    let createdOrderNumber = null;
+    let recordedCashPaid = 0;
+    const billIdToClose = activeOpenBillId;
 
     try {
       let finalDiscount = discount;
@@ -1909,17 +2054,48 @@ const AppCore = () => {
             updatedAt: serverTimestamp(),
           });
         }
+
+        createdOrderId = newOrderRef.id;
+        createdOrderNumber = orderNumber;
+        recordedCashPaid = cashPaid;
       });
 
-      setCurrentOrder({ items: [], customer: '', customerId: '', notes: '' });
+      setCurrentOrder({ items: [], customer: '', customerId: '', notes: '', assetMovementIds: [] });
       setDiscount(0);
       setDiscountType('amount');
       setEditingOrderId(null);
+      setActiveOpenBillId(null);
       setPaymentCustomPrice('');
       setMixedCashAmount('');
       setShowPaymentModal(false);
       setShowMixedPaymentModal(false);
       setShowCashModal(false);
+
+      if (billIdToClose) {
+        try {
+          await closeOpenBill(user.uid, billIdToClose, {
+            orderId: createdOrderId,
+            orderNumber: createdOrderNumber,
+            actor: sessionActor(),
+          });
+        } catch (closeError) {
+          alert(`تم حفظ الطلب لكن تعذّر إغلاق الفاتورة المعلقة: ${closeError.message}`);
+        }
+      }
+
+      if (!editingOrderId && recordedCashPaid > 0) {
+        try {
+          await recordCashSale(user.uid, {
+            amount: recordedCashPaid,
+            orderId: createdOrderId,
+            orderNumber: createdOrderNumber,
+            actor: sessionActor(),
+          });
+        } catch (cashError) {
+          console.error('Cash sale recording failed:', cashError);
+        }
+      }
+
       if (editingOrderId) {
         setCurrentView('orders');
         alert('تم تحديث الطلب بنجاح');
@@ -1951,7 +2127,89 @@ const AppCore = () => {
     );
     setDiscountType('amount');
     setEditingOrderId(order.id);
+    setActiveOpenBillId(null);
     setCurrentView('pos');
+  };
+
+  const openCashShiftBusy = async (openingBalance) => {
+    if (cashBusy) return;
+    setCashBusy(true);
+    try {
+      await openCashShift(user.uid, {
+        openingBalance,
+        actor: sessionActor(),
+      });
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setCashBusy(false);
+    }
+  };
+
+  const withdrawCashBusy = async (amount, reason) => {
+    const openShift = cashShifts.find((s) => s.status === 'open');
+    if (!openShift) {
+      alert('لا توجد وردية كاش مفتوحة');
+      return;
+    }
+    if (cashBusy) return;
+    setCashBusy(true);
+    try {
+      await recordCashWithdrawal(user.uid, {
+        shiftId: openShift.id,
+        amount,
+        reason,
+        actor: sessionActor(),
+      });
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setCashBusy(false);
+    }
+  };
+
+  const depositCashBusy = async (amount) => {
+    const openShift = cashShifts.find((s) => s.status === 'open');
+    if (!openShift) {
+      alert('لا توجد وردية كاش مفتوحة');
+      return;
+    }
+    if (cashBusy) return;
+    setCashBusy(true);
+    try {
+      await recordCashDeposit(user.uid, {
+        shiftId: openShift.id,
+        amount,
+        actor: sessionActor(),
+      });
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setCashBusy(false);
+    }
+  };
+
+  const closeCashShiftBusy = async (actualClosingBalance, notes) => {
+    const openShift = cashShifts.find((s) => s.status === 'open');
+    if (!openShift) {
+      alert('لا توجد وردية كاش مفتوحة');
+      return;
+    }
+    if (cashBusy) return;
+    setCashBusy(true);
+    try {
+      await closeCashShift(user.uid, {
+        shiftId: openShift.id,
+        actualClosingBalance,
+        notes,
+        actor: sessionActor(),
+      });
+      alert('تم إغلاق الصندوق');
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setCashBusy(false);
+    }
   };
 
   const toggleOrderStatus = async (orderId, currentStatus) => {
@@ -2547,11 +2805,16 @@ const AppCore = () => {
   }
 
   const isEmployee = userRole === 'employee';
+  const employeeCanCreateCustomers = canCreateCustomers(userRole);
+  const openCashShiftDoc = cashShifts.find((s) => s.status === 'open') || null;
+  const lastClosedCashShift = cashShifts.find((s) => s.status === 'closed') || null;
+  const openBillsCount = openBills.filter((b) => b.status === 'open').length;
   const allNavItems = [
     { id: 'dashboard', icon: BarChart3, label: 'لوحة التحكم' },
     { id: 'pos', icon: ShoppingCart, label: 'نقطة البيع' },
     { id: 'orders', icon: FileText, label: 'الطلبات' },
     { id: 'customers', icon: Users, label: 'العملاء' },
+    { id: 'cash', icon: Wallet, label: 'الصندوق' },
     { id: 'inventory', icon: Package, label: 'المخزون' },
     { id: 'expenses', icon: TrendingDown, label: 'المصروفات' },
     { id: 'purchases', icon: ShoppingBag, label: 'المشتريات' },
@@ -2709,7 +2972,7 @@ const AppCore = () => {
             <p className="text-sm font-medium truncate">
               {isEmployee ? 'الموظف' : businessProfile?.ownerName || 'المدير'}
             </p>
-            <p className="text-xs opacity-60 truncate">{isEmployee ? 'نقطة البيع فقط' : user.email}</p>
+            <p className="text-xs opacity-60 truncate">{isEmployee ? 'بيع · عملاء · صندوق' : user.email}</p>
           </div>
           <button
             onClick={handleLogout}
@@ -4099,7 +4362,23 @@ const AppCore = () => {
             <div className="flex h-full flex-col lg:flex-row gap-6">
               <div className="flex-1 min-w-0 pb-20 lg:pb-0">
               <div className="mb-6">
-                <h2 className="text-2xl md:text-3xl mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>القائمة</h2>
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                  <h2 className="text-2xl md:text-3xl text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>القائمة</h2>
+                  <button
+                    type="button"
+                    onClick={() => setShowOpenBillsPanel(true)}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border bg-white hover:bg-gray-50"
+                    style={{ borderColor: theme.border || '#e5e7eb', color: theme.text, fontFamily: FONT_UI }}
+                  >
+                    <PauseCircle size={16} />
+                    الفواتير المعلقة
+                    {openBillsCount > 0 && (
+                      <span className="text-white text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: theme.accent }}>
+                        {openBillsCount}
+                      </span>
+                    )}
+                  </button>
+                </div>
                 
                 <div className="flex flex-col sm:flex-row gap-3 mb-4">
                   <div className="flex-1 relative">
@@ -4201,19 +4480,40 @@ const AppCore = () => {
               </div>
               
               <label className="block text-[10px] text-gray-500 mb-1" style={{ fontFamily: FONT_UI }}>العميل</label>
-              <select
-                value={currentOrder.customerId || ''}
-                onChange={(e) => selectOrderCustomer(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-xl border border-gray-200 mb-2 outline-none text-sm bg-white"
-                style={{ fontFamily: FONT_UI }}
-              >
-                <option value="">ضيف (بدون ملف)</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+              <div className="flex gap-2 mb-2">
+                <select
+                  value={currentOrder.customerId || ''}
+                  onChange={(e) => selectOrderCustomer(e.target.value)}
+                  className="flex-1 px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm bg-white"
+                  style={{ fontFamily: FONT_UI }}
+                >
+                  <option value="">ضيف (بدون ملف)</option>
+                  {customers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                {employeeCanCreateCustomers && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuickCustomerForm({ name: '', phone: '', address: '', notes: '' });
+                      setShowQuickCustomerModal(true);
+                    }}
+                    className="px-3 py-2.5 rounded-xl border border-gray-200 text-xs font-medium whitespace-nowrap hover:bg-gray-50"
+                    style={{ fontFamily: FONT_UI }}
+                    title="إضافة عميل جديد"
+                  >
+                    + عميل
+                  </button>
+                )}
+              </div>
+              {activeOpenBillId && (
+                <p className="text-[11px] text-amber-700 mb-2 px-2 py-1 rounded-lg bg-amber-50" style={{ fontFamily: FONT_UI }}>
+                  فاتورة معلقة مفتوحة — التعديلات تُحفظ على نفس الحساب
+                </p>
+              )}
               {!currentOrder.customerId && (
                 <input
                   type="text"
@@ -4317,6 +4617,21 @@ const AppCore = () => {
 
                 <div className="grid grid-cols-2 gap-2">
                   <button
+                    onClick={suspendCurrentBill}
+                    disabled={currentOrder.items.length === 0 || uploadProgress || openBillBusy || !currentOrder.customerId || !!editingOrderId}
+                    title={
+                      editingOrderId
+                        ? 'غير متاح أثناء تعديل طلب محفوظ'
+                        : !currentOrder.customerId
+                          ? 'للعملاء المسجلين فقط'
+                          : 'تعليق الفاتورة بدون دفع'
+                    }
+                    className="py-2.5 rounded-xl text-white text-sm font-medium shadow-sm disabled:opacity-50"
+                    style={{ backgroundColor: '#f59e0b', fontFamily: FONT_UI }}
+                  >
+                    تعليق الفاتورة
+                  </button>
+                  <button
                     onClick={() => completeOrder('unpaid', { paymentType: 'pending' })}
                     disabled={currentOrder.items.length === 0 || uploadProgress || !currentOrder.customerId}
                     title={!currentOrder.customerId ? 'للعملاء المسجلين فقط — اختر عميلاً' : undefined}
@@ -4332,7 +4647,7 @@ const AppCore = () => {
                       setMixedCashAmount('');
                     }}
                     disabled={currentOrder.items.length === 0 || uploadProgress}
-                    className="py-2.5 rounded-xl text-white text-sm font-medium shadow-sm disabled:opacity-50"
+                    className="col-span-2 py-2.5 rounded-xl text-white text-sm font-medium shadow-sm disabled:opacity-50"
                     style={{ backgroundColor: '#10b981', fontFamily: FONT_UI }}
                   >
                     إتمام الدفع
@@ -4590,14 +4905,32 @@ const AppCore = () => {
             theme={theme}
             FONT_UI={FONT_UI}
             FONT_HEADING={FONT_HEADING}
-            onSaveCustomer={handleSaveCustomer}
-            onAddLegacyDebt={handleAddLegacyDebt}
+            onSaveCustomer={employeeCanCreateCustomers ? handleSaveCustomer : undefined}
+            onAddLegacyDebt={isEmployee ? undefined : handleAddLegacyDebt}
             onDeleteCustomer={isEmployee ? undefined : handleDeleteCustomer}
             onExportCustomerFile={exportCustomerFile}
             onClearAllCustomers={isEmployee ? undefined : handleClearAllCustomers}
             businessProfile={businessProfile}
-            onExportCustomersLedgerPdf={exportCustomersLedgerPdf}
+            onExportCustomersLedgerPdf={isEmployee ? undefined : exportCustomersLedgerPdf}
             customersLedgerPdfLoading={customersLedgerPdfLoading}
+            allowOpeningDebt={!isEmployee}
+          />
+        )}
+
+        {activeView === 'cash' && (
+          <CashShiftView
+            openShift={openCashShiftDoc}
+            lastClosedShift={lastClosedCashShift}
+            movements={cashMovements}
+            fmtMoney={fmtMoney}
+            theme={theme}
+            FONT_UI={FONT_UI}
+            FONT_HEADING={FONT_HEADING}
+            busy={cashBusy}
+            onOpenShift={openCashShiftBusy}
+            onWithdraw={withdrawCashBusy}
+            onDeposit={depositCashBusy}
+            onCloseShift={closeCashShiftBusy}
           />
         )}
 
@@ -5250,6 +5583,76 @@ const AppCore = () => {
       )}
 
       {/* Payment Method Modal */}
+      <OpenBillsPanel
+        open={showOpenBillsPanel}
+        onClose={() => setShowOpenBillsPanel(false)}
+        openBills={openBills}
+        fmtMoney={fmtMoney}
+        theme={theme}
+        FONT_UI={FONT_UI}
+        FONT_HEADING={FONT_HEADING}
+        busy={openBillBusy || uploadProgress}
+        onOpenBill={loadOpenBillIntoCart}
+        onRequestBill={loadOpenBillIntoCart}
+      />
+
+      {showQuickCustomerModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[65]">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>إضافة عميل جديد</h3>
+              <button type="button" onClick={() => setShowQuickCustomerModal(false)} className="text-gray-400"><X size={22} /></button>
+            </div>
+            <label className="block text-xs text-gray-500 mb-1">الاسم *</label>
+            <input
+              value={quickCustomerForm.name}
+              onChange={(e) => setQuickCustomerForm((f) => ({ ...f, name: e.target.value }))}
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm mb-3 outline-none"
+              autoFocus
+            />
+            <label className="block text-xs text-gray-500 mb-1">رقم الهاتف</label>
+            <input
+              value={quickCustomerForm.phone}
+              onChange={(e) => setQuickCustomerForm((f) => ({ ...f, phone: e.target.value }))}
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm mb-3 outline-none"
+            />
+            <label className="block text-xs text-gray-500 mb-1">العنوان</label>
+            <input
+              value={quickCustomerForm.address}
+              onChange={(e) => setQuickCustomerForm((f) => ({ ...f, address: e.target.value }))}
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm mb-3 outline-none"
+            />
+            <label className="block text-xs text-gray-500 mb-1">ملاحظات</label>
+            <input
+              value={quickCustomerForm.notes}
+              onChange={(e) => setQuickCustomerForm((f) => ({ ...f, notes: e.target.value }))}
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm mb-4 outline-none"
+            />
+            <button
+              type="button"
+              disabled={!quickCustomerForm.name.trim() || uploadProgress}
+              onClick={async () => {
+                const id = await handleSaveCustomer(
+                  { ...quickCustomerForm, name: quickCustomerForm.name.trim(), openingDebt: 0 },
+                  null
+                );
+                if (!id) return;
+                setCurrentOrder((prev) => ({
+                  ...prev,
+                  customerId: id,
+                  customer: quickCustomerForm.name.trim(),
+                }));
+                setShowQuickCustomerModal(false);
+              }}
+              className="w-full py-3 rounded-xl text-white text-sm font-medium disabled:opacity-50"
+              style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
+            >
+              حفظ واختيار العميل
+            </button>
+          </div>
+        </div>
+      )}
+
       {showPaymentModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[60]">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">

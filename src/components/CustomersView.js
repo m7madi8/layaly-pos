@@ -26,6 +26,7 @@ export default function CustomersView({
   businessProfile,
   onExportCustomersLedgerPdf,
   customersLedgerPdfLoading,
+  allowOpeningDebt = true,
 }) {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -181,6 +182,7 @@ export default function CustomersView({
           العملاء
         </h2>
         <div className="flex flex-wrap gap-2">
+          {onSaveCustomer && (
           <button
             type="button"
             onClick={openNew}
@@ -190,6 +192,7 @@ export default function CustomersView({
             <Plus size={16} />
             إضافة عميل
           </button>
+          )}
           {customers.length > 0 && onExportCustomersLedgerPdf && (
             <button
               type="button"
@@ -676,7 +679,7 @@ export default function CustomersView({
                   style={{ fontFamily: FONT_UI }}
                 />
               </div>
-              {!editingId && (
+              {!editingId && allowOpeningDebt && (
                 <>
                   <div>
                     <label className="block text-xs mb-1 text-gray-600">دين قديم (اختياري)</label>

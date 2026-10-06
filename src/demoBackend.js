@@ -346,7 +346,7 @@ export function onSnapshot(refOrQuery, onNext, onError) {
 
 export async function addDoc(collectionRef, data) {
   const id = generateId();
-  const ref = { type: 'doc', path: [...collectionRef.path, id] };
+  const ref = { type: 'doc', path: [...collectionRef.path, id], id };
   const store = loadStore();
   setDocData(store, ref, data, false);
   saveStore(store);

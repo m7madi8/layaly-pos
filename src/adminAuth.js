@@ -7,7 +7,12 @@ export const EMPLOYEE_LOGIN_PASSWORD =
   (process.env.REACT_APP_EMPLOYEE_PASSWORD || 'admin123').trim();
 
 /** الصفحات المسموحة للموظف */
-export const EMPLOYEE_VIEWS = ['pos'];
+export const EMPLOYEE_VIEWS = ['pos', 'customers', 'cash'];
+
+/** إضافة عميل — مسموح للمدير والموظف */
+export function canCreateCustomers(role) {
+  return role === 'admin' || role === 'employee';
+}
 
 const ROLE_KEY = 'layali-user-role';
 
