@@ -23,6 +23,7 @@ export default function CustomersView({
   onDeleteCustomer,
   onExportCustomerFile,
   onClearAllCustomers,
+  onResetSalesAndCustomerLedgers,
   businessProfile,
   onExportCustomersLedgerPdf,
   customersLedgerPdfLoading,
@@ -203,6 +204,20 @@ export default function CustomersView({
             >
               <FileDown size={16} />
               {customersLedgerPdfLoading ? 'جاري PDF…' : 'ملخص الديون PDF'}
+            </button>
+          )}
+          {onResetSalesAndCustomerLedgers && (
+            <button
+              type="button"
+              onClick={() => {
+                onResetSalesAndCustomerLedgers();
+                setDetailId(null);
+              }}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-amber-300 text-amber-900 text-sm font-medium hover:bg-amber-50"
+              style={{ fontFamily: FONT_UI }}
+            >
+              <Trash2 size={16} />
+              تصفير المبيعات وسجل العملاء
             </button>
           )}
           {customers.length > 0 && onClearAllCustomers && (

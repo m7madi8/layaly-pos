@@ -3,6 +3,7 @@ import { Package, Scale, Plus } from 'lucide-react';
 import { fmtMoney } from '../i18n';
 import { FONT_UI } from '../branding';
 import { getProductType, productPriceLabel } from '../utils/productPricing';
+import { isBoostedProductImage } from '../productAssets';
 
 const chip =
   'inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-white/95 border border-[var(--color-border-strong)] text-[var(--color-text-secondary)] shadow-sm';
@@ -26,6 +27,7 @@ function PosProductCard({ product, qty = 0, onAdd }) {
   const hasDiscount =
     product.compareAtPrice != null && Number(product.compareAtPrice) > Number(product.price);
   const priceLabel = productPriceLabel(product, fmtMoney);
+  const boostedImage = isBoostedProductImage(product.name);
 
   return (
     <button
@@ -38,14 +40,20 @@ function PosProductCard({ product, qty = 0, onAdd }) {
       } ${out ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
       style={{ fontFamily: FONT_UI }}
     >
-      <div className="layali-product-card__media relative aspect-[5/4] w-full overflow-hidden bg-white">
+      <div
+        className={`layali-product-card__media relative w-full overflow-hidden bg-white ${
+          boostedImage ? 'layali-product-card__media--boost aspect-[4/3]' : 'aspect-[5/4]'
+        }`}
+      >
         {product.image ? (
           <img
             src={product.image}
             alt=""
             loading="lazy"
             decoding="async"
-            className={`absolute inset-0 w-full h-full object-cover object-center ${out ? 'grayscale' : ''}`}
+            className={`absolute inset-0 w-full h-full object-center ${out ? 'grayscale' : ''} ${
+              boostedImage ? 'object-contain scale-[1.18] p-0.5' : 'object-cover'
+            }`}
           />
         ) : (
           <div className="absolute inset-0 grid place-items-center bg-[var(--color-bg-warm)]">

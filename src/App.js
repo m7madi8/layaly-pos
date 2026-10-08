@@ -14,8 +14,12 @@ import { PaymentChooserSheet, CashSheet, MixedSheet } from './components/PosPaym
 import CustomersView from './components/CustomersView';
 import OpenBillsPanel from './components/OpenBillsPanel';
 import CashShiftView from './components/CashShiftView';
-import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs } from './productAssets';
-import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, PauseCircle, Check } from 'lucide-react';
+import VaultView from './components/VaultView';
+import VaultPinScreen from './components/VaultPinScreen';
+import DailyCashOpenModal from './components/DailyCashOpenModal';
+import { resolveDailyCashGate } from './utils/cashDayGate';
+import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory } from './productAssets';
+import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, Landmark, PauseCircle, Check } from 'lucide-react';
 import { friendlyError } from './utils/friendlyError';
 
 import {
@@ -61,6 +65,7 @@ import {
   assetMovementRef,
 } from './services/externalAssetsService';
 import { ensureStarterProducts, ensureStarterAssets, ensureTobaccoImage, ensurePlaystationPricing } from './services/starterProducts';
+import { ensureDrinkCategoriesSplit } from './services/drinkCategoriesMigration';
 import { effectiveDebt, debtDeltasByCustomer, replaceOrderDebtEntry, diffOrders } from './utils/orderAccounting';
 import {
   PRODUCT_TYPES,
@@ -106,8 +111,10 @@ import {
   recordCashDeposit,
   closeCashShift,
 } from './services/cashShiftService';
+import { addVaultCapital, depositVaultManual, vaultDocRef } from './services/vaultService';
 import { printReceiptViaBrowser } from './utils/printReceiptBrowser';
 import { downloadBusinessReportPdf } from './utils/businessReportPdf';
+import { resetSalesAndCustomerLedgers } from './services/resetSalesAndLedgers';
 import { downloadCustomersLedgerPdf } from './utils/customersLedgerPdf';
 
 const LOW_STOCK_THRESHOLD = 10;
@@ -202,6 +209,10 @@ const AppCore = () => {
   const [cashShifts, setCashShifts] = useState([]);
   const [cashMovements, setCashMovements] = useState([]);
   const [cashBusy, setCashBusy] = useState(false);
+  const [vaultSummary, setVaultSummary] = useState(null);
+  const [vaultMovements, setVaultMovements] = useState([]);
+  const [vaultBusy, setVaultBusy] = useState(false);
+  const [vaultPinUnlocked, setVaultPinUnlocked] = useState(false);
   const [showQuickCustomerModal, setShowQuickCustomerModal] = useState(false);
   const [quickCustomerForm, setQuickCustomerForm] = useState({ name: '', phone: '', address: '', notes: '' });
   const [customers, setCustomers] = useState([]);
@@ -485,7 +496,8 @@ const AppCore = () => {
     Promise.all([
       ensureStarterProducts(user.uid, businessProfile)
         .then(() => ensureTobaccoImage(user.uid, businessProfile))
-        .then(() => ensurePlaystationPricing(user.uid, businessProfile)),
+        .then(() => ensurePlaystationPricing(user.uid, businessProfile))
+        .then(() => ensureDrinkCategoriesSplit(user.uid, businessProfile)),
       ensureStarterAssets(user.uid, businessProfile),
     ]).catch((error) => {
       starterSeededRef.current = false;
@@ -536,6 +548,30 @@ const AppCore = () => {
       unsubMovements();
     };
   }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsubVault = onSnapshot(
+      vaultDocRef(user.uid),
+      (snap) => setVaultSummary(snap.exists() ? { id: snap.id, ...snap.data() } : { balance: 0, totalCapitalIn: 0 }),
+      (error) => console.error('Error loading vault:', error)
+    );
+    const unsubVaultMoves = onSnapshot(
+      query(collection(db, 'users', user.uid, 'vaultMovements'), orderBy('createdAtMs', 'desc')),
+      (snapshot) => setVaultMovements(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (error) => console.error('Error loading vault movements:', error)
+    );
+    return () => {
+      unsubVault();
+      unsubVaultMoves();
+    };
+  }, [user]);
+
+  useEffect(() => {
+    if (currentView !== 'vault') {
+      setVaultPinUnlocked(false);
+    }
+  }, [currentView]);
 
   const startRoleSession = (role) => {
     saveSessionRole(role);
@@ -1736,6 +1772,38 @@ const AppCore = () => {
     }
   };
 
+  const handleResetSalesAndCustomerLedgers = async () => {
+    if (
+      !window.confirm(
+        'بدء من الصفر:\n• حذف كل الطلبات والمبيعات السابقة\n• تصفير ديون وسجل حركات كل عميل\n• الإبقاء على ملفات العملاء (الاسم والجوال…) والمنتجات\n\nلا يمكن التراجع. هل تتابع؟'
+      )
+    ) {
+      return;
+    }
+    setUploadProgress(true);
+    try {
+      const result = await resetSalesAndCustomerLedgers(user.uid, {
+        db,
+        collection,
+        doc,
+        getDocs,
+        writeBatch,
+        setDoc,
+        serverTimestamp,
+      });
+      setCurrentOrder({ items: [], customerId: '', customer: '' });
+      setEditingOrderId(null);
+      setActiveOpenBillId(null);
+      alert(
+        `تم التصفير.\nطلبات محذوفة: ${result.ordersDeleted}\nعملاء مُصفَّر سجلهم: ${result.customersReset}\nفواتير معلقة محذوفة: ${result.openBillsDeleted}`
+      );
+    } catch (error) {
+      alert(error.message || 'تعذّر التصفير');
+    } finally {
+      setUploadProgress(false);
+    }
+  };
+
   const exportCustomersLedgerPdf = async () => {
     if (customersLedgerPdfLoading) return;
     setCustomersLedgerPdfLoading(true);
@@ -2275,12 +2343,17 @@ const AppCore = () => {
     setCurrentView('pos');
   };
 
-  const openCashShiftBusy = async (openingBalance) => {
-    if (cashBusy) return;
+  const confirmDailyCashOpenBusy = async (countedAmount, gate) => {
+    if (cashBusy || !gate?.show) return;
     setCashBusy(true);
     try {
+      const expected = Number(gate.expected) || 0;
+      const note = gate.firstTime
+        ? 'افتتاح أول للصندوق'
+        : `تأكيد يومي بعد 12 ظهراً — متوقع ${expected}`;
       await openCashShift(user.uid, {
-        openingBalance,
+        openingBalance: countedAmount,
+        notes: note,
         actor: sessionActor(),
       });
     } catch (error) {
@@ -2348,11 +2421,35 @@ const AppCore = () => {
         notes,
         actor: sessionActor(),
       });
-      alert('تم إغلاق الصندوق');
+      alert('تم إغلاق الصندوق بنجاح');
     } catch (error) {
       alert(error.message);
     } finally {
       setCashBusy(false);
+    }
+  };
+
+  const addVaultCapitalBusy = async (amount, note) => {
+    if (vaultBusy) return;
+    setVaultBusy(true);
+    try {
+      await addVaultCapital(user.uid, { amount, note, actor: sessionActor() });
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setVaultBusy(false);
+    }
+  };
+
+  const depositVaultManualBusy = async (amount, note) => {
+    if (vaultBusy) return;
+    setVaultBusy(true);
+    try {
+      await depositVaultManual(user.uid, { amount, note, actor: sessionActor() });
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setVaultBusy(false);
     }
   };
 
@@ -2664,11 +2761,12 @@ const AppCore = () => {
   const filteredProducts = useMemo(
     () =>
       posProducts
-        .filter(
-          (p) =>
-            (selectedCategory === 'all' || p.category === selectedCategory) &&
-            p.name.toLowerCase().includes(searchTerm.toLowerCase())
-        )
+        .filter((p) => {
+          const cat = String(p.category || '').trim();
+          const effectiveCat = cat === 'المشروبات' ? classifyDrinkCategory(p.name, cat) : cat;
+          const inCategory = selectedCategory === 'all' || effectiveCat === selectedCategory;
+          return inCategory && p.name.toLowerCase().includes(searchTerm.toLowerCase());
+        })
         .sort((a, b) => a.name.localeCompare(b.name)),
     [posProducts, selectedCategory, searchTerm]
   );
@@ -2856,6 +2954,24 @@ const AppCore = () => {
     });
   };
 
+  const openCashShiftDoc = useMemo(
+    () => cashShifts.find((s) => s.status === 'open') || null,
+    [cashShifts]
+  );
+
+  const lastClosedCashShift = useMemo(
+    () =>
+      cashShifts
+        .filter((s) => s.status === 'closed')
+        .sort((a, b) => (Number(b.closedAtMs) || 0) - (Number(a.closedAtMs) || 0))[0] || null,
+    [cashShifts]
+  );
+
+  const dailyCashGate = useMemo(
+    () => resolveDailyCashGate({ cashShifts, openShift: openCashShiftDoc }),
+    [cashShifts, openCashShiftDoc]
+  );
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: theme.bgWarm }}>
@@ -2973,8 +3089,6 @@ const AppCore = () => {
 
   const isEmployee = userRole === 'employee';
   const employeeCanCreateCustomers = canCreateCustomers(userRole);
-  const openCashShiftDoc = cashShifts.find((s) => s.status === 'open') || null;
-  const lastClosedCashShift = cashShifts.find((s) => s.status === 'closed') || null;
   const openBillsCount = openBills.filter((b) => b.status === 'open').length;
   const allNavItems = [
     { id: 'dashboard', icon: BarChart3, label: 'لوحة التحكم' },
@@ -2982,6 +3096,7 @@ const AppCore = () => {
     { id: 'orders', icon: FileText, label: 'الطلبات' },
     { id: 'customers', icon: Users, label: 'العملاء' },
     { id: 'cash', icon: Wallet, label: 'الصندوق' },
+    { id: 'vault', icon: Landmark, label: 'الخزنة' },
     { id: 'inventory', icon: Package, label: 'المخزون' },
     { id: 'expenses', icon: TrendingDown, label: 'المصروفات' },
     { id: 'purchases', icon: ShoppingBag, label: 'المشتريات' },
@@ -3112,7 +3227,7 @@ const AppCore = () => {
           </div>
         </div>
 
-        <nav className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5">
+        <nav className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5 layali-scrollbar-none">
           {navItems.map(item => (
             <button
               key={item.id}
@@ -4635,7 +4750,7 @@ const AppCore = () => {
                           </button>
                         )}
                       </div>
-                      <div className="flex gap-2 overflow-x-auto pb-0.5 scrollbar-thin">
+                      <div className="flex gap-2 overflow-x-auto pb-0.5 layali-scrollbar-none">
                         {posMenuTabs.map((tab) => (
                           <button
                             key={tab.id}
@@ -4656,7 +4771,7 @@ const AppCore = () => {
                   )}
                 </div>
 
-                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pb-24 lg:pb-2">
+                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pb-24 lg:pb-2 layali-scrollbar-none">
                   {posSection === 'playstation' && (
                     <div ref={playstationPanelRef}>
                       <PlayStationPanel
@@ -5000,6 +5115,7 @@ const AppCore = () => {
             onDeleteCustomer={isEmployee ? undefined : handleDeleteCustomer}
             onExportCustomerFile={exportCustomerFile}
             onClearAllCustomers={isEmployee ? undefined : handleClearAllCustomers}
+            onResetSalesAndCustomerLedgers={isEmployee ? undefined : handleResetSalesAndCustomerLedgers}
             businessProfile={businessProfile}
             onExportCustomersLedgerPdf={isEmployee ? undefined : exportCustomersLedgerPdf}
             customersLedgerPdfLoading={customersLedgerPdfLoading}
@@ -5011,17 +5127,35 @@ const AppCore = () => {
           <CashShiftView
             openShift={openCashShiftDoc}
             lastClosedShift={lastClosedCashShift}
+            shiftHistory={cashShifts}
             movements={cashMovements}
             fmtMoney={fmtMoney}
             theme={theme}
             FONT_UI={FONT_UI}
             FONT_HEADING={FONT_HEADING}
             busy={cashBusy}
-            onOpenShift={openCashShiftBusy}
             onWithdraw={withdrawCashBusy}
             onDeposit={depositCashBusy}
             onCloseShift={closeCashShiftBusy}
           />
+        )}
+
+        {activeView === 'vault' && !isEmployee && (
+          vaultPinUnlocked ? (
+            <VaultView
+              vault={vaultSummary}
+              movements={vaultMovements}
+              fmtMoney={fmtMoney}
+              theme={theme}
+              FONT_UI={FONT_UI}
+              FONT_HEADING={FONT_HEADING}
+              busy={vaultBusy}
+              onAddCapital={addVaultCapitalBusy}
+              onManualDeposit={depositVaultManualBusy}
+            />
+          ) : (
+            <VaultPinScreen theme={theme} onUnlocked={() => setVaultPinUnlocked(true)} />
+          )
         )}
 
         {activeView === 'inventory' && (
@@ -5197,7 +5331,7 @@ const AppCore = () => {
                   onChange={(e) => setProductForm(prev => ({ ...prev, category: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm bg-white"
                   style={{ fontFamily: FONT_UI }}
-                  placeholder="المشروبات، الأرجيل، …"
+                  placeholder="مشروبات باردة، مشروبات ساخنة، …"
                 />
                 <datalist id="layali-product-categories">
                   {menuCategoryList.map((c) => (
@@ -6326,7 +6460,15 @@ const AppCore = () => {
                   <p className="text-[11px] text-gray-400 mt-1">تُحفظ مع كل جلسة عند إنهائها، فتغييرها لا يغيّر تقارير الجلسات السابقة.</p>
                 </div>
               </div>
-              <div className="pt-2 border-t border-gray-100">
+              <div className="pt-2 border-t border-gray-100 space-y-2">
+                <button
+                  type="button"
+                  onClick={handleResetSalesAndCustomerLedgers}
+                  disabled={uploadProgress || isEmployee}
+                  className="w-full py-2.5 rounded-xl text-sm font-medium text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition-colors disabled:opacity-50"
+                >
+                  تصفير المبيعات وسجل العملاء (بدء من الصفر)
+                </button>
                 <button
                   onClick={handleReindexOrders}
                   className="w-full py-2.5 rounded-xl text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 transition-colors"
@@ -6414,6 +6556,17 @@ const AppCore = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {dailyCashGate.show && user && userRole && !showProfileSetup && (
+        <DailyCashOpenModal
+          expected={dailyCashGate.expected}
+          firstTime={dailyCashGate.firstTime}
+          fmtMoney={fmtMoney}
+          theme={theme}
+          busy={cashBusy}
+          onContinue={(amount) => confirmDailyCashOpenBusy(amount, dailyCashGate)}
+        />
       )}
 
     </div>

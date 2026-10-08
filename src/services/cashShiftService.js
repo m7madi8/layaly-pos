@@ -1,5 +1,6 @@
 import { db, doc, collection, addDoc, getDocs, query, orderBy, runTransaction, serverTimestamp } from '../firebaseClient';
 import { computeExpectedCash } from '../utils/cashShiftMath';
+import { vaultDocRef, applyVaultCredit } from './vaultService';
 
 export { computeExpectedCash, summarizeMovements } from '../utils/cashShiftMath';
 
@@ -124,7 +125,7 @@ export async function recordCashWithdrawal(uid, { shiftId, amount, reason, actor
     await appendMovementInTx(tx, uid, shiftId, snap, {
       type: 'withdrawal',
       amount,
-      reason: reason || 'سحب من الصندوق (safe drop)',
+      reason: reason || 'سحب من الصندوق',
       actor,
     });
   });
@@ -185,12 +186,23 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
         shiftId,
         type: 'withdrawal',
         amount: closingWithdrawal,
-        reason: 'سحب عند إغلاق الصندوق',
+        reason: 'نقل إلى الخزنة عند إغلاق الكاش',
         employeeId: actor?.role || null,
         createdBy: actor || null,
         createdAt: serverTimestamp(),
         createdAtMs: Date.now(),
         isClosingWithdrawal: true,
+        toVault: true,
+      });
+
+      const vRef = vaultDocRef(uid);
+      const vSnap = await tx.get(vRef);
+      applyVaultCredit(tx, uid, vSnap, {
+        amount: closingWithdrawal,
+        type: 'from_cash_close',
+        reason: 'إغلاق كاش — الفائض إلى الخزنة',
+        actor,
+        shiftId,
       });
     }
 
@@ -204,6 +216,7 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
       cashWithdrawals: finalWithdrawals,
       expectedClosingBalance: finalExpected,
       actualClosingBalance: actual,
+      vaultTransferOnClose: closingWithdrawal,
       difference,
       closingNotes: String(notes || '').trim(),
       closedAt: serverTimestamp(),

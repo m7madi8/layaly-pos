@@ -1,22 +1,47 @@
 import React, { useMemo, useState } from 'react';
-import { Wallet, Plus, Minus, Lock, Unlock } from 'lucide-react';
+import { Wallet, Plus, Minus, Lock, Unlock, CalendarDays } from 'lucide-react';
 import { computeExpectedCash } from '../utils/cashShiftMath';
+
+function shiftDayLabel(shift) {
+  const ms = Number(shift.closedAtMs) || Number(shift.openedAtMs) || 0;
+  if (!ms) return '—';
+  return new Date(ms).toLocaleDateString('ar-EG', {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+function shiftTimeLabel(ms) {
+  if (!ms) return '—';
+  return new Date(ms).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+}
+
+function vaultTransferForShift(shift, movements) {
+  if (shift.vaultTransferOnClose != null && shift.status === 'closed') {
+    return Number(shift.vaultTransferOnClose) || 0;
+  }
+  if (shift.status !== 'closed') return 0;
+  return (movements || [])
+    .filter((m) => m.shiftId === shift.id && m.isClosingWithdrawal)
+    .reduce((sum, m) => sum + (Number(m.amount) || 0), 0);
+}
 
 export default function CashShiftView({
   openShift,
   lastClosedShift,
+  shiftHistory = [],
   movements = [],
   fmtMoney,
   theme,
   FONT_UI,
   FONT_HEADING,
   busy,
-  onOpenShift,
   onWithdraw,
   onDeposit,
   onCloseShift,
 }) {
-  const [openingInput, setOpeningInput] = useState('');
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [withdrawReason, setWithdrawReason] = useState('');
   const [depositAmount, setDepositAmount] = useState('');
@@ -35,9 +60,7 @@ export default function CashShiftView({
     };
   }, [openShift]);
 
-  const expected = totals
-    ? computeExpectedCash(totals)
-    : 0;
+  const expected = totals ? computeExpectedCash(totals) : 0;
 
   const suggestedOpening =
     lastClosedShift?.actualClosingBalance != null
@@ -58,51 +81,53 @@ export default function CashShiftView({
     [movements, openShift]
   );
 
+  const dailyRows = useMemo(() => {
+    const list = (shiftHistory || [])
+      .slice()
+      .sort((a, b) => (Number(b.openedAtMs) || 0) - (Number(a.openedAtMs) || 0));
+    return list.map((shift) => ({
+      id: shift.id,
+      day: shiftDayLabel(shift),
+      openedAt: shiftTimeLabel(shift.openedAtMs),
+      closedAt: shift.status === 'closed' ? shiftTimeLabel(shift.closedAtMs) : null,
+      opening: Number(shift.openingBalance) || 0,
+      closingInDrawer:
+        shift.status === 'closed' && shift.actualClosingBalance != null
+          ? Number(shift.actualClosingBalance)
+          : null,
+      toVault: vaultTransferForShift(shift, movements),
+      status: shift.status,
+    }));
+  }, [shiftHistory, movements]);
+
   return (
-    <div className="max-w-3xl mx-auto" dir="rtl">
-      <h2 className="text-2xl md:text-3xl text-primary mb-6" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
+    <div className="max-w-4xl mx-auto" dir="rtl">
+      <h2 className="text-2xl md:text-3xl text-primary mb-2" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
         الصندوق / إغلاق الكاش
       </h2>
+      <p className="text-sm text-gray-600 mb-6" style={{ fontFamily: FONT_UI }}>
+        عند الإغلاق: أدخل ما يبقى في الصندوق فقط — الباقي يُنقل تلقائياً إلى الخزنة.
+      </p>
 
       {!openShift ? (
-        <div className="bg-white rounded-2xl border border-gray-200 p-6 space-y-4">
+        <div className="bg-white rounded-2xl border border-gray-200 p-6 space-y-3 mb-8">
           <div className="flex items-center gap-2 text-primary">
             <Unlock size={20} />
-            <p className="font-semibold" style={{ fontFamily: FONT_UI }}>فتح وردية كاش جديدة</p>
+            <p className="font-semibold" style={{ fontFamily: FONT_UI }}>لا توجد وردية مفتوحة</p>
           </div>
-          {suggestedOpening !== '' && (
-            <p className="text-sm text-gray-600" style={{ fontFamily: FONT_UI }}>
-              رصيد إغلاق الوردية السابقة: <strong>{fmtMoney(suggestedOpening)}</strong>
-            </p>
-          )}
-          <label className="block text-xs text-gray-500 mb-1">الرصيد الافتتاحي (₪)</label>
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={openingInput === '' ? (suggestedOpening !== '' ? String(suggestedOpening) : '') : openingInput}
-            onChange={(e) => setOpeningInput(e.target.value)}
-            className="w-full px-3 py-3 rounded-xl border border-gray-200 text-lg font-bold text-center outline-none"
-            placeholder="0"
-          />
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              const value =
-                openingInput !== ''
-                  ? openingInput
-                  : suggestedOpening !== ''
-                    ? suggestedOpening
-                    : 0;
-              onOpenShift(value);
-              setOpeningInput('');
-            }}
-            className="w-full py-3 rounded-xl text-white text-sm font-medium disabled:opacity-50"
-            style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
-          >
-            فتح الصندوق
-          </button>
+          <p className="text-sm text-gray-600 leading-relaxed" style={{ fontFamily: FONT_UI }}>
+            يُفتح الصندوق تلقائياً من نافذة التأكيد عند فتح التطبيق
+            {suggestedOpening !== '' ? (
+              <>
+                {' '}
+                (المتوقع من آخر إغلاق: <strong>{fmtMoney(suggestedOpening)}</strong>)
+              </>
+            ) : null}
+            . بعد الساعة 12 ظهراً تظهر النافذة يومياً — عدّ النقد واضغط «استمرار».
+          </p>
+          <p className="text-[11px] text-gray-400" style={{ fontFamily: FONT_UI }}>
+            الافتتاح الأول يظهر فور تسجيل الدخول. لا حاجة لفتح الكاش يدوياً كل يوم.
+          </p>
         </div>
       ) : (
         <>
@@ -159,7 +184,7 @@ export default function CashShiftView({
                 تسجيل سحب
               </button>
               <p className="text-[11px] text-gray-500" style={{ fontFamily: FONT_UI }}>
-                السحب ليس مصروفاً — هو نقل نقد من الصندوق (safe drop).
+                سحب داخلي من الصندوق (لا يُحسب مصروفاً). التحويل للخزنة يتم فقط عند إغلاق الكاش.
               </p>
             </div>
 
@@ -195,7 +220,7 @@ export default function CashShiftView({
             type="button"
             disabled={busy}
             onClick={() => {
-              setActualCash(String(expected));
+              setActualCash(String(suggestedOpening !== '' ? suggestedOpening : expected));
               setCloseNotes('');
               setShowCloseModal(true);
             }}
@@ -206,11 +231,11 @@ export default function CashShiftView({
             إغلاق الكاش
           </button>
 
-          <div className="bg-white rounded-2xl border border-gray-200 p-4">
+          <div className="bg-white rounded-2xl border border-gray-200 p-4 mb-8">
             <p className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ fontFamily: FONT_UI }}>
-              <Wallet size={16} /> حركة الصندوق
+              <Wallet size={16} /> حركة الصندوق (اليوم الحالي)
             </p>
-            <div className="space-y-2 max-h-72 overflow-y-auto">
+            <div className="space-y-2 max-h-72 overflow-y-auto layali-scrollbar-none">
               {shiftMovements.length === 0 && (
                 <p className="text-sm text-gray-500 py-6 text-center">لا حركات بعد</p>
               )}
@@ -221,7 +246,9 @@ export default function CashShiftView({
                       {m.type === 'sale'
                         ? 'بيع كاش'
                         : m.type === 'withdrawal'
-                          ? 'سحب'
+                          ? m.isClosingWithdrawal
+                            ? 'نقل للخزنة (إغلاق)'
+                            : 'سحب'
                           : m.type === 'deposit'
                             ? 'إيداع'
                             : m.type === 'refund'
@@ -241,6 +268,56 @@ export default function CashShiftView({
         </>
       )}
 
+      <div className="bg-white rounded-2xl border border-gray-200 p-4">
+        <p className="text-sm font-semibold mb-4 flex items-center gap-2" style={{ fontFamily: FONT_UI }}>
+          <CalendarDays size={16} /> سجل الورديات (يومياً)
+        </p>
+        {dailyRows.length === 0 ? (
+          <p className="text-sm text-gray-500 py-8 text-center" style={{ fontFamily: FONT_UI }}>
+            لا ورديات مسجّلة بعد
+          </p>
+        ) : (
+          <div className="overflow-x-auto layali-scrollbar-none">
+            <table className="w-full text-sm" style={{ fontFamily: FONT_UI }}>
+              <thead>
+                <tr className="text-xs text-gray-500 border-b border-gray-100">
+                  <th className="text-start py-2 pe-2 font-medium">اليوم</th>
+                  <th className="text-start py-2 px-2 font-medium">الافتتاح</th>
+                  <th className="text-start py-2 px-2 font-medium">التسكير (في الصندوق)</th>
+                  <th className="text-start py-2 ps-2 font-medium">للخزنة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dailyRows.map((row) => (
+                  <tr key={row.id} className="border-b border-gray-50 last:border-0">
+                    <td className="py-3 pe-2 align-top">
+                      <p className="font-medium text-primary">{row.day}</p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">
+                        {row.status === 'open' ? (
+                          <span className="text-amber-700">مفتوحة · من {row.openedAt}</span>
+                        ) : (
+                          <span>فتح {row.openedAt} · إغلاق {row.closedAt}</span>
+                        )}
+                      </p>
+                    </td>
+                    <td className="py-3 px-2 tabular-nums whitespace-nowrap">{fmtMoney(row.opening)}</td>
+                    <td className="py-3 px-2 tabular-nums whitespace-nowrap">
+                      {row.closingInDrawer != null ? fmtMoney(row.closingInDrawer) : '—'}
+                    </td>
+                    <td className="py-3 ps-2 tabular-nums whitespace-nowrap font-semibold text-green-700">
+                      {row.status === 'closed' ? fmtMoney(row.toVault) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-[11px] text-gray-400 mt-3" style={{ fontFamily: FONT_UI }}>
+          التسكير = المبلغ المتبقي في الصندوق. للخزنة = الفرق الذي يُنقل تلقائياً عند الإغلاق.
+        </p>
+      </div>
+
       {showCloseModal && openShift && (
         <div className="fixed inset-0 z-[60] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
@@ -248,9 +325,9 @@ export default function CashShiftView({
               إغلاق الكاش
             </h3>
             <p className="text-sm text-gray-600 mb-2" style={{ fontFamily: FONT_UI }}>
-              الرصيد المتوقع: <strong>{fmtMoney(expected)}</strong>
+              الرصيد المتوقع في الصندوق: <strong>{fmtMoney(expected)}</strong>
             </p>
-            <label className="block text-xs text-gray-500 mb-1">المبلغ الفعلي المتبقي في الصندوق (₪)</label>
+            <label className="block text-xs text-gray-500 mb-1">كم تريد أن يبقى في الصندوق؟ (₪)</label>
             <input
               type="number"
               min="0"
@@ -260,12 +337,19 @@ export default function CashShiftView({
               className="w-full px-3 py-3 rounded-xl border border-gray-200 text-lg font-bold text-center mb-3 outline-none"
               autoFocus
             />
-            <p className="text-sm mb-1" style={{ fontFamily: FONT_UI }}>
-              السحب عند الإغلاق: <strong>{fmtMoney(closingWithdrawal)}</strong>
-            </p>
-            <p className="text-sm mb-3" style={{ fontFamily: FONT_UI }}>
-              الفرق: <strong>{fmtMoney(closeDifference)}</strong>
-            </p>
+            <div className="rounded-xl bg-[var(--color-accent-soft)]/50 border border-[var(--color-border)] px-3 py-2.5 mb-3">
+              <p className="text-sm" style={{ fontFamily: FONT_UI }}>
+                يُنقل تلقائياً إلى الخزنة: <strong className="text-primary">{fmtMoney(closingWithdrawal)}</strong>
+              </p>
+              <p className="text-[11px] text-gray-600 mt-1" style={{ fontFamily: FONT_UI }}>
+                لا حاجة لإدخال مبلغ الخزنة — يُحسب من الفرق تلقائياً.
+              </p>
+            </div>
+            {Math.abs(closeDifference) > 0.009 && (
+              <p className="text-sm mb-3 text-amber-800" style={{ fontFamily: FONT_UI }}>
+                فرق عدّ (فائض/نقص): <strong>{fmtMoney(closeDifference)}</strong>
+              </p>
+            )}
             <textarea
               value={closeNotes}
               onChange={(e) => setCloseNotes(e.target.value)}
@@ -291,7 +375,7 @@ export default function CashShiftView({
                 className="py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50"
                 style={{ backgroundColor: theme.primary }}
               >
-                تأكيد الإغلاق
+                تأكيد الإغلاق والنقل للخزنة
               </button>
             </div>
           </div>

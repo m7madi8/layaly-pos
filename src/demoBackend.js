@@ -446,12 +446,17 @@ export function writeBatch(_db) {
     update(ref, data) {
       ops.push({ ref, data: resolveValue(data), merge: true });
     },
+    delete(ref) {
+      ops.push({ ref, deleted: true });
+    },
     async commit() {
       const store = loadStore();
       for (const op of ops) {
-        setDocData(store, op.ref, op.data, op.merge);
+        if (op.deleted) deleteDocData(store, op.ref);
+        else setDocData(store, op.ref, op.data, op.merge);
       }
       saveStore(store);
+      notifyAll();
     },
   };
 }
