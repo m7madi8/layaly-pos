@@ -9,8 +9,17 @@ export const EMPLOYEE_LOGIN_PASSWORD =
 /** الصفحات المسموحة للموظف */
 export const EMPLOYEE_VIEWS = ['pos', 'customers', 'cash'];
 
-/** إضافة عميل — مسموح للمدير والموظف */
+/** إضافة وتعديل عميل — مسموح للمدير والموظف */
 export function canCreateCustomers(role) {
+  return role === 'admin' || role === 'employee';
+}
+
+export function canEditCustomers(role) {
+  return canCreateCustomers(role);
+}
+
+/** فتح وتعديل الفواتير المعلقة — مسموح للمدير والموظف */
+export function canManageOpenBills(role) {
   return role === 'admin' || role === 'employee';
 }
 

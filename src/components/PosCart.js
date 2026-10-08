@@ -400,7 +400,7 @@ export default function PosCart({
                     disabled={!hasItems || busy}
                     className="h-12 rounded-xl text-base font-bold border bg-[var(--color-warning-soft)] text-amber-900 border-amber-200 disabled:opacity-40"
                   >
-                    تعليق
+                    {activeOpenBillId ? 'حفظ الفاتورة' : 'تعليق'}
                   </button>
                 )}
                 <button

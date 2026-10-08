@@ -107,6 +107,7 @@ export default function CustomersView({
   };
 
   const openEdit = (c) => {
+    if (!onSaveCustomer) return;
     setForm({
       name: c.name || '',
       phone: c.phone || '',
@@ -170,7 +171,7 @@ export default function CustomersView({
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.name.trim()) return;
+    if (!onSaveCustomer || !form.name.trim()) return;
     await onSaveCustomer({ ...form, name: form.name.trim() }, editingId);
     setShowForm(false);
     setEditingId(null);
@@ -325,18 +326,20 @@ export default function CustomersView({
                     <FileDown size={14} />
                     {pdfLoading ? 'جاري التحميل…' : 'كشف حساب PDF'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setLegacyForm({ amount: '', note: '' });
-                      setLegacyModalOpen(true);
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-amber-200 bg-amber-50/80 text-xs font-medium text-amber-900 hover:bg-amber-100"
-                    style={{ fontFamily: FONT_UI }}
-                  >
-                    <Plus size={14} />
-                    دين قديم
-                  </button>
+                  {onAddLegacyDebt && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLegacyForm({ amount: '', note: '' });
+                        setLegacyModalOpen(true);
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-amber-200 bg-amber-50/80 text-xs font-medium text-amber-900 hover:bg-amber-100"
+                      style={{ fontFamily: FONT_UI }}
+                    >
+                      <Plus size={14} />
+                      دين قديم
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={handlePrintStatement}
@@ -355,14 +358,16 @@ export default function CustomersView({
                     <Download size={14} />
                     JSON
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => openEdit(detailCustomer)}
-                    className="p-2 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600"
-                    title="تعديل"
-                  >
-                    <Pencil size={16} />
-                  </button>
+                  {onSaveCustomer && (
+                    <button
+                      type="button"
+                      onClick={() => openEdit(detailCustomer)}
+                      className="p-2 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600"
+                      title="تعديل"
+                    >
+                      <Pencil size={16} />
+                    </button>
+                  )}
                   {onDeleteCustomer && (
                     <button
                       type="button"

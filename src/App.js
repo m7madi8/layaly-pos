@@ -94,6 +94,7 @@ import {
   EMPLOYEE_LOGIN_PASSWORD,
   EMPLOYEE_VIEWS,
   canCreateCustomers,
+  canManageOpenBills,
   normalizeLoginPassword,
   readSessionRole,
   saveSessionRole,
@@ -1222,6 +1223,10 @@ const AppCore = () => {
 
   const requestSuspendBill = () => {
     if (!user || openBillBusy || uploadProgress) return;
+    if (!canManageOpenBills(userRole)) {
+      alert('لا تملك صلاحية تعديل الفواتير المعلقة.');
+      return;
+    }
     if (!currentOrder.customerId) {
       alert('الفواتير المعلقة للعملاء المسجلين فقط — اختر عميلاً من القائمة');
       return;
@@ -1319,6 +1324,10 @@ const AppCore = () => {
   };
 
   const loadOpenBillIntoCart = (bill) => {
+    if (!canManageOpenBills(userRole)) {
+      alert('لا تملك صلاحية فتح الفواتير المعلقة.');
+      return;
+    }
     if (!bill || bill.status !== 'open') {
       alert('هذه الفاتورة لم تعد مفتوحة');
       return;
@@ -1624,6 +1633,10 @@ const AppCore = () => {
     }));
 
   const openQuickCustomer = (prefill = '') => {
+    if (!canCreateCustomers(userRole)) {
+      alert('لا تملك صلاحية إضافة عملاء.');
+      return;
+    }
     const p = String(prefill).trim();
     const isPhone = /^[\d+\s-]+$/.test(p);
     setQuickCustomerForm({
@@ -3088,7 +3101,7 @@ const AppCore = () => {
   }
 
   const isEmployee = userRole === 'employee';
-  const employeeCanCreateCustomers = canCreateCustomers(userRole);
+  const employeeCanManageCustomers = canCreateCustomers(userRole);
   const openBillsCount = openBills.filter((b) => b.status === 'open').length;
   const allNavItems = [
     { id: 'dashboard', icon: BarChart3, label: 'لوحة التحكم' },
@@ -4649,7 +4662,7 @@ const AppCore = () => {
                 editingOrderId={editingOrderId}
                 currentOrder={currentOrder}
                 customers={customers}
-                canCreateCustomers={employeeCanCreateCustomers}
+                canCreateCustomers={employeeCanManageCustomers}
                 onSelectCustomer={selectOrderCustomer}
                 onAddCustomer={openQuickCustomer}
                 onNotesChange={(notes) => setCurrentOrder((p) => ({ ...p, notes }))}
@@ -5110,7 +5123,7 @@ const AppCore = () => {
             theme={theme}
             FONT_UI={FONT_UI}
             FONT_HEADING={FONT_HEADING}
-            onSaveCustomer={employeeCanCreateCustomers ? handleSaveCustomer : undefined}
+            onSaveCustomer={employeeCanManageCustomers ? handleSaveCustomer : undefined}
             onAddLegacyDebt={isEmployee ? undefined : handleAddLegacyDebt}
             onDeleteCustomer={isEmployee ? undefined : handleDeleteCustomer}
             onExportCustomerFile={exportCustomerFile}
@@ -5901,7 +5914,7 @@ const AppCore = () => {
         </div>
       )}
 
-      {showQuickCustomerModal && (
+      {showQuickCustomerModal && employeeCanManageCustomers && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[65]">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
             <div className="flex justify-between items-center mb-4">

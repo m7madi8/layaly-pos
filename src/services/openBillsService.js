@@ -103,7 +103,11 @@ export async function suspendOpenBill(uid, { billId, currentOrder, discountAmoun
       let nextDiscount = Number(discountAmount) || 0;
       let nextTotal = Number(total) || 0;
 
-      if (shouldMerge || (!editingBillId && data.customerId === currentOrder.customerId)) {
+      if (editingBillId) {
+        nextSubtotal = Number(subtotal) || 0;
+        nextDiscount = Number(discountAmount) || 0;
+        nextTotal = Number(total) || 0;
+      } else if (shouldMerge || data.customerId === currentOrder.customerId) {
         items = mergeOpenBillItems(Array.isArray(data.items) ? data.items : [], incomingItems);
         nextSubtotal = items.reduce((s, i) => s + (Number(i.price) || 0) * (Number(i.quantity) || 1), 0);
         const prevDiscount = Number(data.discountAmount ?? data.discount) || 0;
