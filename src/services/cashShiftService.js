@@ -20,14 +20,17 @@ export async function findLastClosedCashShift(uid) {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() })).find((s) => s.status === 'closed') || null;
 }
 
-export async function openCashShift(uid, { openingBalance, actor, notes = '' }) {
+export async function openCashShift(uid, { openingBalance, actor, notes = '', shiftPeriod = 1, operatorName = '' }) {
   const existing = await findOpenCashShift(uid);
   if (existing) throw new Error('يوجد وردية كاش مفتوحة بالفعل — أغلقها أولاً');
 
   const opening = Math.max(0, Number(openingBalance) || 0);
   const nowMs = Date.now();
+  const period = Number(shiftPeriod) === 2 ? 2 : 1;
   const ref = await addDoc(shiftsCol(uid), {
     status: 'open',
+    shiftPeriod: period,
+    operatorName: String(operatorName || '').trim(),
     openingBalance: opening,
     cashSales: 0,
     cashWithdrawals: 0,
@@ -169,6 +172,8 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
     });
 
     const closingWithdrawal = Math.round(Math.max(0, expected - actual) * 100) / 100;
+    const period = Number(shift.shiftPeriod) === 2 ? 2 : 1;
+    const vaultLabel = period === 2 ? 'إغلاق الشفت النهائي — للخزنة' : 'إغلاق الشفت الأول — للخزنة';
     let finalWithdrawals = Number(shift.cashWithdrawals) || 0;
     let finalExpected = expected;
 
@@ -186,7 +191,7 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
         shiftId,
         type: 'withdrawal',
         amount: closingWithdrawal,
-        reason: 'نقل إلى الخزنة عند إغلاق الكاش',
+        reason: vaultLabel,
         employeeId: actor?.role || null,
         createdBy: actor || null,
         createdAt: serverTimestamp(),
@@ -200,7 +205,7 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
       applyVaultCredit(tx, uid, vSnap, {
         amount: closingWithdrawal,
         type: 'from_cash_close',
-        reason: 'إغلاق كاش — الفائض إلى الخزنة',
+        reason: vaultLabel,
         actor,
         shiftId,
       });

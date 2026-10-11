@@ -1,24 +1,33 @@
 import React, { useEffect, useState } from 'react';
 import { Wallet } from 'lucide-react';
 import { FONT_HEADING, FONT_UI } from '../branding';
+import { shiftPeriodLabel } from '../utils/cashDayGate';
 
 export default function DailyCashOpenModal({
   expected,
   firstTime,
+  shiftPeriod = 1,
   fmtMoney,
   theme,
   busy,
   onContinue,
 }) {
   const [amount, setAmount] = useState('');
+  const [operatorName, setOperatorName] = useState('');
 
   useEffect(() => {
     setAmount(String(expected ?? 0));
   }, [expected]);
 
+  useEffect(() => {
+    setOperatorName('');
+  }, [shiftPeriod]);
+
   const parsed = parseFloat(amount);
-  const valid = amount !== '' && Number.isFinite(parsed) && parsed >= 0;
-  const diff = valid ? Math.round((parsed - (Number(expected) || 0)) * 100) / 100 : 0;
+  const validAmount = amount !== '' && Number.isFinite(parsed) && parsed >= 0;
+  const validName = operatorName.trim().length >= 2;
+  const diff = validAmount ? Math.round((parsed - (Number(expected) || 0)) * 100) / 100 : 0;
+  const periodLabel = shiftPeriodLabel(shiftPeriod);
 
   return (
     <div
@@ -38,15 +47,27 @@ export default function DailyCashOpenModal({
           </span>
           <div>
             <h2 id="daily-cash-title" className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>
-              {firstTime ? 'الافتتاح الأول للصندوق' : 'تأكيد نقد الصندوق'}
+              {firstTime ? 'الافتتاح الأول للصندوق' : `بدء ${periodLabel}`}
             </h2>
             <p className="text-xs text-gray-500 mt-0.5" style={{ fontFamily: FONT_UI }}>
-              {firstTime
-                ? 'سجّل المبلغ الموجود في الصندوق الآن لبدء العمل.'
-                : 'المبلغ المتوقع من إغلاق آخر وردية — عدّ النقد وتأكد قبل الاستمرار.'}
+              {shiftPeriod === 2
+                ? 'بعد إغلاق الشفت الأول — أكّد النقد في الصندوق لبدء الشفت الثاني.'
+                : firstTime
+                  ? 'سجّل اسمك والمبلغ في الصندوق لبدء الشفت الأول.'
+                  : 'الشفت الأول — عدّ النقد واضغط استمرار.'}
             </p>
           </div>
         </div>
+
+        <label className="block text-xs text-gray-500 mb-1" style={{ fontFamily: FONT_UI }}>اسم المشغّل *</label>
+        <input
+          type="text"
+          value={operatorName}
+          onChange={(e) => setOperatorName(e.target.value)}
+          placeholder="مثال: أحمد"
+          className="w-full px-3 py-3 rounded-xl border border-gray-200 text-base outline-none focus:ring-2 focus:ring-primary/20 mb-3"
+          autoFocus
+        />
 
         {!firstTime && (
           <p className="text-sm text-gray-700 mb-3 rounded-xl bg-[var(--color-bg-warm)] px-3 py-2.5" style={{ fontFamily: FONT_UI }}>
@@ -65,30 +86,27 @@ export default function DailyCashOpenModal({
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
           className="w-full px-3 py-3.5 rounded-xl border border-gray-200 text-xl font-bold text-center outline-none focus:ring-2 focus:ring-primary/20 mb-2"
-          autoFocus
         />
 
-        {!firstTime && valid && Math.abs(diff) > 0.009 && (
+        {!firstTime && validAmount && Math.abs(diff) > 0.009 && (
           <p className="text-xs text-amber-800 mb-3" style={{ fontFamily: FONT_UI }}>
-            فرق عن المتوقع: <strong>{fmtMoney(diff)}</strong> — سيُفتح اليوم على المبلغ الذي أدخلته.
+            فرق عن المتوقع: <strong>{fmtMoney(diff)}</strong>
           </p>
         )}
 
         <button
           type="button"
-          disabled={busy || !valid}
-          onClick={() => onContinue(parsed)}
+          disabled={busy || !validAmount || !validName}
+          onClick={() => onContinue(parsed, operatorName.trim())}
           className="w-full py-3.5 rounded-xl text-white text-sm font-semibold disabled:opacity-50"
           style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
         >
           {busy ? 'جاري الفتح…' : 'استمرار وبدء العمل'}
         </button>
 
-        {!firstTime && (
-          <p className="text-[11px] text-gray-400 text-center mt-3" style={{ fontFamily: FONT_UI }}>
-            تظهر هذه النافذة يومياً بعد 12 ظهراً عند عدم وجود وردية مفتوحة.
-          </p>
-        )}
+        <p className="text-[11px] text-gray-400 text-center mt-3 leading-relaxed" style={{ fontFamily: FONT_UI }}>
+          الشفت الأول حتى تسكير الكاش الأول · الشفت الثاني حتى التسكير النهائي · الفائض يذهب للخزنة عند كل تسكير
+        </p>
       </div>
     </div>
   );

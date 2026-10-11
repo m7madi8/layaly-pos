@@ -2356,16 +2356,24 @@ const AppCore = () => {
     setCurrentView('pos');
   };
 
-  const confirmDailyCashOpenBusy = async (countedAmount, gate) => {
+  const confirmDailyCashOpenBusy = async (countedAmount, operatorName, gate) => {
     if (cashBusy || !gate?.show) return;
+    if (!String(operatorName || '').trim()) {
+      alert('أدخل اسم المشغّل');
+      return;
+    }
     setCashBusy(true);
     try {
-      const expected = Number(gate.expected) || 0;
+      const period = gate.shiftPeriod === 2 ? 2 : 1;
       const note = gate.firstTime
-        ? 'افتتاح أول للصندوق'
-        : `تأكيد يومي بعد 12 ظهراً — متوقع ${expected}`;
+        ? 'افتتاح أول — الشفت الأول'
+        : period === 2
+          ? 'بدء الشفت الثاني'
+          : `بدء الشفت الأول — متوقع ${Number(gate.expected) || 0}`;
       await openCashShift(user.uid, {
         openingBalance: countedAmount,
+        shiftPeriod: period,
+        operatorName: String(operatorName).trim(),
         notes: note,
         actor: sessionActor(),
       });
@@ -2434,7 +2442,12 @@ const AppCore = () => {
         notes,
         actor: sessionActor(),
       });
-      alert('تم إغلاق الصندوق بنجاح');
+      const period = Number(openShift.shiftPeriod) === 2 ? 2 : 1;
+      alert(
+        period === 1
+          ? 'تم إغلاق الشفت الأول ونقل الفائض للخزنة — ستظهر نافذة بدء الشفت الثاني.'
+          : 'تم إغلاق الشفت النهائي ونقل الفائض للخزنة.'
+      );
     } catch (error) {
       alert(error.message);
     } finally {
@@ -6575,10 +6588,11 @@ const AppCore = () => {
         <DailyCashOpenModal
           expected={dailyCashGate.expected}
           firstTime={dailyCashGate.firstTime}
+          shiftPeriod={dailyCashGate.shiftPeriod}
           fmtMoney={fmtMoney}
           theme={theme}
           busy={cashBusy}
-          onContinue={(amount) => confirmDailyCashOpenBusy(amount, dailyCashGate)}
+          onContinue={(amount, operatorName) => confirmDailyCashOpenBusy(amount, operatorName, dailyCashGate)}
         />
       )}
 

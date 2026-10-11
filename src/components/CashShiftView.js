@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Wallet, Plus, Minus, Lock, Unlock, CalendarDays } from 'lucide-react';
 import { computeExpectedCash } from '../utils/cashShiftMath';
+import { shiftPeriodLabel } from '../utils/cashDayGate';
 
 function shiftDayLabel(shift) {
   const ms = Number(shift.closedAtMs) || Number(shift.openedAtMs) || 0;
@@ -97,6 +98,8 @@ export default function CashShiftView({
           : null,
       toVault: vaultTransferForShift(shift, movements),
       status: shift.status,
+      shiftPeriod: Number(shift.shiftPeriod) === 2 ? 2 : 1,
+      operatorName: shift.operatorName || '—',
     }));
   }, [shiftHistory, movements]);
 
@@ -106,7 +109,7 @@ export default function CashShiftView({
         الصندوق / إغلاق الكاش
       </h2>
       <p className="text-sm text-gray-600 mb-6" style={{ fontFamily: FONT_UI }}>
-        عند الإغلاق: أدخل ما يبقى في الصندوق فقط — الباقي يُنقل تلقائياً إلى الخزنة.
+        شفتان يومياً: الأول حتى تسكير الكاش الأول، الثاني حتى التسكير النهائي — الفائض يُنقل للخزنة عند كل تسكير.
       </p>
 
       {!openShift ? (
@@ -123,14 +126,22 @@ export default function CashShiftView({
                 (المتوقع من آخر إغلاق: <strong>{fmtMoney(suggestedOpening)}</strong>)
               </>
             ) : null}
-            . بعد الساعة 12 ظهراً تظهر النافذة يومياً — عدّ النقد واضغط «استمرار».
+            . الشفت الثاني يبدأ تلقائياً بعد تسكير الأول.
           </p>
           <p className="text-[11px] text-gray-400" style={{ fontFamily: FONT_UI }}>
-            الافتتاح الأول يظهر فور تسجيل الدخول. لا حاجة لفتح الكاش يدوياً كل يوم.
+            الشفت الأول يبدأ من نافذة «استمرار» عند فتح النظام (أو بعد 12 ظهراً ليوم جديد).
           </p>
         </div>
       ) : (
         <>
+          <div className="mb-4 rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-warm)] px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-bold text-primary" style={{ fontFamily: FONT_UI }}>
+              {shiftPeriodLabel(openShift.shiftPeriod)}
+            </p>
+            <p className="text-sm text-gray-600" style={{ fontFamily: FONT_UI }}>
+              المشغّل: <strong>{openShift.operatorName || '—'}</strong>
+            </p>
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
             {[
               ['الرصيد الافتتاحي', totals.openingBalance],
@@ -228,7 +239,7 @@ export default function CashShiftView({
             style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
           >
             <Lock size={16} />
-            إغلاق الكاش
+            {Number(openShift.shiftPeriod) === 2 ? 'تسكير الشفت النهائي' : 'تسكير الشفت الأول'}
           </button>
 
           <div className="bg-white rounded-2xl border border-gray-200 p-4 mb-8">
@@ -282,8 +293,10 @@ export default function CashShiftView({
               <thead>
                 <tr className="text-xs text-gray-500 border-b border-gray-100">
                   <th className="text-start py-2 pe-2 font-medium">اليوم</th>
+                  <th className="text-start py-2 px-2 font-medium">الشفت</th>
+                  <th className="text-start py-2 px-2 font-medium">المشغّل</th>
                   <th className="text-start py-2 px-2 font-medium">الافتتاح</th>
-                  <th className="text-start py-2 px-2 font-medium">التسكير (في الصندوق)</th>
+                  <th className="text-start py-2 px-2 font-medium">التسكير</th>
                   <th className="text-start py-2 ps-2 font-medium">للخزنة</th>
                 </tr>
               </thead>
@@ -300,6 +313,8 @@ export default function CashShiftView({
                         )}
                       </p>
                     </td>
+                    <td className="py-3 px-2 text-xs whitespace-nowrap">{shiftPeriodLabel(row.shiftPeriod)}</td>
+                    <td className="py-3 px-2 text-xs max-w-[5rem] truncate">{row.operatorName}</td>
                     <td className="py-3 px-2 tabular-nums whitespace-nowrap">{fmtMoney(row.opening)}</td>
                     <td className="py-3 px-2 tabular-nums whitespace-nowrap">
                       {row.closingInDrawer != null ? fmtMoney(row.closingInDrawer) : '—'}
@@ -322,7 +337,7 @@ export default function CashShiftView({
         <div className="fixed inset-0 z-[60] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
             <h3 className="text-lg font-bold text-primary mb-4" style={{ fontFamily: FONT_HEADING }}>
-              إغلاق الكاش
+              {Number(openShift.shiftPeriod) === 2 ? 'تسكير الشفت النهائي' : 'تسكير الشفت الأول'}
             </h3>
             <p className="text-sm text-gray-600 mb-2" style={{ fontFamily: FONT_UI }}>
               الرصيد المتوقع في الصندوق: <strong>{fmtMoney(expected)}</strong>
