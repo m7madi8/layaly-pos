@@ -64,7 +64,7 @@ describe('collectProductionSecretErrors', () => {
         NODE_ENV: 'production',
         REACT_APP_DEMO_MODE: 'false',
         REACT_APP_EMPLOYEE_PASSWORD: 'LayaliStaff',
-        REACT_APP_VAULT_PIN: '861501',
+        REACT_APP_VAULT_PIN: '123321',
         ...firebaseEnv,
       })
     ).toEqual([]);

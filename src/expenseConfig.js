@@ -9,6 +9,7 @@ export const OPERATING_EXPENSE_CATEGORIES = [
   { id: 'Rent', label: 'إيجار' },
   { id: 'Food', label: 'أكل' },
   { id: 'Advance', label: 'سلف' },
+  { id: 'SupplierPayment', label: 'صرف للتاجر' },
 ];
 
 export const PURCHASE_CATEGORY = 'Purchase';
@@ -16,6 +17,7 @@ export const PURCHASE_CATEGORY = 'Purchase';
 const PURCHASE_LEGACY_CATEGORIES = new Set(['Inventory', 'Purchase']);
 
 export function resolveExpenseSection(expense) {
+  if (expense?.section === 'supplier_payment') return 'operating';
   if (expense?.section === 'purchase' || expense?.section === 'operating') {
     return expense.section;
   }
@@ -35,10 +37,19 @@ export function defaultExpenseForm(section = 'operating') {
     linkedIngredientId: '',
     linkedProductId: '',
     quantityBought: 0,
+    paymentMethod: 'Cash',
+    notes: '',
     section,
   };
   if (section === 'purchase') {
     return { ...base, category: PURCHASE_CATEGORY };
   }
+  if (section === 'supplier_payment') {
+    return { ...base, section: 'supplier_payment', category: 'SupplierPayment' };
+  }
   return { ...base, category: 'Salaries' };
+}
+
+export function isSupplierPaymentForm(form) {
+  return form?.section === 'supplier_payment' || form?.category === 'SupplierPayment';
 }

@@ -95,6 +95,9 @@ export const expenseCategoryLabel = (cat) => {
     Maintenance: 'صيانة',
     Marketing: 'تسويق',
     Other: 'أخرى',
+    SupplierPayment: 'صرف للتاجر',
   };
   return map[cat] || cat;
 };
+
+export const supplierPaymentMethodLabel = (method) => paymentMethodLabel(method);

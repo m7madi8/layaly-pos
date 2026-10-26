@@ -7,7 +7,20 @@ import {
   PURCHASE_CATEGORY,
   resolveExpenseSection,
   defaultExpenseForm,
+  isSupplierPaymentForm,
 } from './expenseConfig';
+import SupplierTraderDetailModal, { SupplierPaymentFields } from './components/SupplierTraderDetailModal';
+import {
+  executeSupplierPayment,
+  applySupplierPurchaseBalanceInTransaction,
+  reconcileSupplierBalance,
+} from './services/supplierPaymentService';
+import {
+  isSupplierPaymentExpense,
+  roundMoney,
+  sumReportExpenses,
+  resolveSupplierOutstandingBalance,
+} from './utils/supplierAccounting';
 import PosProductCard from './components/PosProductCard';
 import PosCart from './components/PosCart';
 import { PaymentChooserSheet, CashSheet, MixedSheet } from './components/PosPaymentSheets';
@@ -272,6 +285,8 @@ const AppCore = () => {
   const [supplierForm, setSupplierForm] = useState({ name: '', contactPerson: '', phone: '', email: '', address: '' });
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [showSupplierModal, setShowSupplierModal] = useState(false);
+  const [selectedSupplierId, setSelectedSupplierId] = useState(null);
+  const supplierPaymentIdemRef = useRef(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [appSettings, setAppSettings] = useState({
     tax: 0,
@@ -685,9 +700,93 @@ const AppCore = () => {
     setShowExpenseModal(true);
   };
 
+  const handleSupplierPaymentSubmit = async (payload) => {
+    setUploadProgress(true);
+    supplierPaymentIdemRef.current = payload.idempotencyKey || newIdempotencyKey('sup_pay');
+    try {
+      const openShift = cashShifts.find((s) => s.status === 'open');
+      const result = await executeSupplierPayment(
+        user.uid,
+        {
+          ...payload,
+          suppliers,
+          shiftId: openShift?.id || null,
+          expensesSnapshot: expenses,
+        },
+        { actor: sessionActor(), idempotencyKey: supplierPaymentIdemRef.current }
+      );
+      if (!result.duplicate && payload.paymentMethod === 'Cash' && !result.cashRecorded) {
+        alert('تم تسجيل الدفعة على حساب التاجر، لكن لم تُسجَّل في وردية الكاش (لا توجد وردية مفتوحة).');
+      }
+      return result;
+    } catch (error) {
+      alert(error.message || 'تعذّر تسجيل الدفعة');
+      return null;
+    } finally {
+      setUploadProgress(false);
+      supplierPaymentIdemRef.current = null;
+    }
+  };
+
+  const handleReconcileSupplier = useCallback(
+    async (supplierId) => {
+      if (!user?.uid || !supplierId) return;
+      try {
+        await reconcileSupplierBalance(user.uid, supplierId, expenses);
+      } catch (e) {
+        console.error('Supplier balance reconcile failed:', e);
+      }
+    },
+    [user?.uid, expenses]
+  );
+
   const handleAddExpense = async (e) => {
     e.preventDefault();
     const section = expenseForm.section || resolveExpenseSection(expenseForm);
+    if (isSupplierPaymentForm(expenseForm)) {
+      if (editingExpenseId) {
+        alert('لا يمكن تعديل دفعة تاجر من هنا — احذف السجل وأعد الإدخال إن لزم.');
+        return;
+      }
+      if (!expenseForm.supplierId) {
+        alert('يرجى اختيار التاجر');
+        return;
+      }
+      setUploadProgress(true);
+      const idem = supplierPaymentIdemRef.current || newIdempotencyKey('sup_pay');
+      supplierPaymentIdemRef.current = idem;
+      try {
+        const openShift = cashShifts.find((s) => s.status === 'open');
+        const result = await executeSupplierPayment(
+          user.uid,
+          {
+            amount: expenseForm.amount,
+            supplierId: expenseForm.supplierId,
+            suppliers,
+            date: expenseForm.date,
+            paymentMethod: expenseForm.paymentMethod || 'Cash',
+            notes: expenseForm.notes || expenseForm.description,
+            shiftId: openShift?.id || null,
+            expensesSnapshot: expenses,
+          },
+          { actor: sessionActor(), idempotencyKey: idem }
+        );
+        if (!result.duplicate && expenseForm.paymentMethod === 'Cash' && !result.cashRecorded) {
+          alert('تم تسجيل الدفعة. لم تُسجَّل في وردية الكاش — لا توجد وردية مفتوحة.');
+        } else if (!result.duplicate) {
+          alert(`تم تسجيل صرف للتاجر بنجاح.\nرقم السند: ${result.paymentRef}`);
+        }
+        setShowExpenseModal(false);
+        setExpenseForm(defaultExpenseForm('operating'));
+        setExpenseReceiptFile(null);
+      } catch (error) {
+        alert(error.message || 'تعذّر حفظ الدفعة');
+      } finally {
+        setUploadProgress(false);
+        supplierPaymentIdemRef.current = null;
+      }
+      return;
+    }
     if (section === 'purchase' && !expenseForm.supplierId) {
       alert('يرجى اختيار التاجر للمشتريات');
       return;
@@ -770,6 +869,15 @@ const AppCore = () => {
               updatedAt: serverTimestamp(),
             });
           }
+          if (section === 'purchase' && expenseData.supplierId) {
+            await applySupplierPurchaseBalanceInTransaction(
+              transaction,
+              user.uid,
+              expenseData.supplierId,
+              expenseData.amount,
+              expenses
+            );
+          }
         });
       }
 
@@ -810,22 +918,64 @@ const AppCore = () => {
   const handleDeleteExpense = async (expenseId) => {
     const expense = expenses.find((e) => e.id === expenseId);
     const reversesStock = Boolean(expense?.linkedProductId && Number(expense.quantityBought) > 0);
-    const message = reversesStock
-      ? `هل تريد حذف هذه العملية؟ سيتم خصم ${expense.quantityBought} من مخزون «${expense.linkedProductName || 'الصنف'}».`
-      : 'هل تريد حذف هذه العملية؟';
+    const isSupplierPay = isSupplierPaymentExpense(expense);
+    const isPurchase = resolveExpenseSection(expense) === 'purchase';
+    let message = 'هل تريد حذف هذه العملية؟';
+    if (reversesStock) {
+      message = `هل تريد حذف هذه العملية؟ سيتم خصم ${expense.quantityBought} من مخزون «${expense.linkedProductName || 'الصنف'}».`;
+    } else if (isSupplierPay) {
+      message = 'حذف دفعة التاجر؟ سيتم استرجاع الرصيد المستحق وإلغاء تأثيرها على الصندوق إن وُجد.';
+    } else if (isPurchase && expense.supplierId) {
+      message = 'حذف المشتريات؟ سيتم تخفيض رصيد المستحق على التاجر.';
+    }
     if (window.confirm(message)) {
       try {
         const expenseRef = doc(db, 'users', user.uid, 'expenses', expenseId);
-        if (reversesStock) {
+        if (reversesStock || isSupplierPay || (isPurchase && expense.supplierId)) {
           await runTransaction(db, async (transaction) => {
-            const productRef = doc(db, 'users', user.uid, 'products', expense.linkedProductId);
-            const productDoc = await transaction.get(productRef);
-            transaction.delete(expenseRef);
-            if (productDoc.exists()) {
-              const stock = Number(productDoc.data().stock) || 0;
-              transaction.update(productRef, { stock: Math.max(0, stock - Number(expense.quantityBought)) });
+            if (reversesStock) {
+              const productRef = doc(db, 'users', user.uid, 'products', expense.linkedProductId);
+              const productDoc = await transaction.get(productRef);
+              transaction.delete(expenseRef);
+              if (productDoc.exists()) {
+                const stock = Number(productDoc.data().stock) || 0;
+                transaction.update(productRef, { stock: Math.max(0, stock - Number(expense.quantityBought)) });
+              }
+            } else {
+              transaction.delete(expenseRef);
+            }
+            if (expense.supplierId && (isSupplierPay || isPurchase)) {
+              const supplierDocRef = doc(db, 'users', user.uid, 'suppliers', expense.supplierId);
+              const sSnap = await transaction.get(supplierDocRef);
+              if (sSnap.exists()) {
+                const prev = roundMoney(sSnap.data().balance);
+                const delta = isSupplierPay
+                  ? roundMoney(expense.amount)
+                  : isPurchase
+                    ? -roundMoney(expense.amount)
+                    : 0;
+                transaction.update(supplierDocRef, {
+                  balance: roundMoney(prev + delta),
+                  updatedAt: serverTimestamp(),
+                });
+              }
             }
           });
+          if (isSupplierPay && expense.paymentMethod === 'Cash') {
+            const openShift = cashShifts.find((s) => s.status === 'open');
+            if (openShift) {
+              try {
+                await recordCashDeposit(user.uid, {
+                  shiftId: openShift.id,
+                  amount: expense.amount,
+                  reason: `إلغاء دفعة تاجر — ${expense.paymentRef || expenseId}`,
+                  actor: sessionActor(),
+                });
+              } catch (cashErr) {
+                alert(`تم حذف الدفعة لكن تعذّر إرجاع المبلغ للصندوق: ${cashErr.message}`);
+              }
+            }
+          }
         } else {
           await deleteDoc(expenseRef);
         }
@@ -842,6 +992,7 @@ const AppCore = () => {
     try {
       await addDoc(collection(db, 'users', user.uid, 'suppliers'), {
         ...supplierForm,
+        balance: 0,
         userId: user.uid,
         createdAt: serverTimestamp()
       });
@@ -4102,25 +4253,32 @@ const AppCore = () => {
                       <thead>
                         <tr className="bg-gray-100 border-b border-gray-300">
                           <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">اسم التاجر</th>
+                          <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">مستحق</th>
                           <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">جهة الاتصال</th>
                           <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">الجوال</th>
-                          <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">البريد</th>
-                          <th className="p-3 text-xs font-bold text-gray-700 text-right">العنوان</th>
+                          <th className="p-3 text-xs font-bold text-gray-700 text-right">البريد</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-200">
-                        {suppliers.map((s) => (
-                          <tr key={s.id} className="hover:bg-blue-50 transition-colors">
+                        {suppliers.map((s) => {
+                          const due = resolveSupplierOutstandingBalance(s, expenses, s.id);
+                          return (
+                          <tr
+                            key={s.id}
+                            className="hover:bg-blue-50 transition-colors cursor-pointer"
+                            onClick={() => setSelectedSupplierId(s.id)}
+                          >
                             <td className="p-3 text-sm font-medium text-gray-900 border-r border-gray-200">{s.name}</td>
+                            <td className="p-3 text-sm font-semibold text-red-600 border-r border-gray-200">{fmtMoney(due)}</td>
                             <td className="p-3 text-sm text-gray-600 border-r border-gray-200">{s.contactPerson || '—'}</td>
                             <td className="p-3 text-sm text-gray-600 border-r border-gray-200">{s.phone || '—'}</td>
-                            <td className="p-3 text-sm text-gray-600 border-r border-gray-200">{s.email || '—'}</td>
-                            <td className="p-3 text-sm text-gray-600">{s.address || '—'}</td>
+                            <td className="p-3 text-sm text-gray-600">{s.email || '—'}</td>
                           </tr>
-                        ))}
+                          );
+                        })}
                         {suppliers.length === 0 && (
                           <tr>
-                            <td colSpan={5} className="p-8 text-center text-gray-500 text-sm bg-gray-50">لا يوجد تجار — أضف تاجراً لتسجيل المشتريات</td>
+                            <td colSpan={5} className="p-8 text-center text-gray-500 text-sm bg-gray-50">لا يوجد تجار — أضف تاجراً لتسجيل المشتريات والدفعات</td>
                           </tr>
                         )}
                       </tbody>
@@ -4387,7 +4545,7 @@ const AppCore = () => {
               const netSales = totalRevenue;
               const totalCost = filteredOrders.reduce((sum, o) => sum + (o.cost || 0), 0);
               const grossProfit = netSales - totalCost;
-              const totalExpenses = filteredExpenses.reduce((sum, e) => sum + parseFloat(e.amount || 0), 0);
+              const totalExpenses = sumReportExpenses(filteredExpenses);
               const netProfit = grossProfit - totalExpenses;
               
               const totalTransactions = filteredOrders.length;
@@ -6177,7 +6335,11 @@ const AppCore = () => {
             <h3 className="text-xl mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
               {editingExpenseId
                 ? (expenseForm.section === 'purchase' ? 'تعديل مشتريات' : 'تعديل مصروف')
-                : (expenseForm.section === 'purchase' ? 'إضافة مشتريات' : 'إضافة مصروف')}
+                : (expenseForm.section === 'purchase'
+                  ? 'إضافة مشتريات'
+                  : isSupplierPaymentForm(expenseForm)
+                    ? 'صرف للتاجر'
+                    : 'إضافة مصروف')}
             </h3>
             <div className="space-y-3">
               <div>
@@ -6204,7 +6366,22 @@ const AppCore = () => {
                   <label className="block text-xs mb-1.5 font-medium text-gray-600">نوع المصروف</label>
                   <select
                     value={expenseForm.category}
-                    onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}
+                    onChange={(e) => {
+                      const cat = e.target.value;
+                      if (cat === 'SupplierPayment') {
+                        setExpenseForm({
+                          ...expenseForm,
+                          category: cat,
+                          section: 'supplier_payment',
+                        });
+                      } else {
+                        setExpenseForm({
+                          ...expenseForm,
+                          category: cat,
+                          section: 'operating',
+                        });
+                      }
+                    }}
                     className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm bg-white"
                   >
                     {OPERATING_EXPENSE_CATEGORIES.map((cat) => (
@@ -6212,6 +6389,15 @@ const AppCore = () => {
                     ))}
                   </select>
                 </div>
+              )}
+              {isSupplierPaymentForm(expenseForm) && (
+                <SupplierPaymentFields
+                  expenseForm={expenseForm}
+                  setExpenseForm={setExpenseForm}
+                  suppliers={suppliers}
+                  expenses={expenses}
+                  disabled={Boolean(editingExpenseId)}
+                />
               )}
               <div>
                 <label className="block text-xs mb-1.5 font-medium text-gray-600">البيان</label>
@@ -6335,6 +6521,7 @@ const AppCore = () => {
                     uploadProgress ||
                     !expenseForm.amount ||
                     (expenseForm.section === 'purchase' && !expenseForm.supplierId) ||
+                    (isSupplierPaymentForm(expenseForm) && !expenseForm.supplierId) ||
                     (!editingExpenseId && expenseForm.linkedProductId && !(parseFloat(expenseForm.quantityBought) > 0))
                   }
                   className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50 hover:opacity-90"
@@ -6346,6 +6533,19 @@ const AppCore = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {selectedSupplierId && (
+        <SupplierTraderDetailModal
+          supplier={suppliers.find((s) => s.id === selectedSupplierId)}
+          suppliers={suppliers}
+          expenses={expenses}
+          theme={theme}
+          uploadProgress={uploadProgress}
+          onClose={() => setSelectedSupplierId(null)}
+          onReconcile={handleReconcileSupplier}
+          onSubmitPayment={handleSupplierPaymentSubmit}
+        />
       )}
 
       {/* Supplier Modal */}

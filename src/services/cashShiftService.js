@@ -51,7 +51,13 @@ export async function openCashShift(uid, { openingBalance, actor, notes = '', sh
   return ref.id;
 }
 
-async function appendMovementInTx(tx, uid, shiftId, shiftSnap, { type, amount, reason, actor, orderId, orderNumber }) {
+async function appendMovementInTx(
+  tx,
+  uid,
+  shiftId,
+  shiftSnap,
+  { type, amount, reason, actor, orderId, orderNumber, expenseId }
+) {
   const amt = Math.round((Number(amount) || 0) * 100) / 100;
   if (!(amt > 0)) throw new Error('أدخل مبلغاً أكبر من صفر');
   if (!shiftSnap.exists()) throw new Error('وردية الكاش غير موجودة');
@@ -86,6 +92,7 @@ async function appendMovementInTx(tx, uid, shiftId, shiftSnap, { type, amount, r
     createdBy: actor || null,
     orderId: orderId || null,
     orderNumber: orderNumber || null,
+    expenseId: expenseId || null,
     createdAt: serverTimestamp(),
     createdAtMs: Date.now(),
   });
@@ -120,6 +127,29 @@ export async function recordCashSaleInTransaction(tx, uid, { amount, orderId, or
     actor,
     orderId,
     orderNumber,
+  });
+  return shiftDocId;
+}
+
+export async function recordCashWithdrawalInTransaction(tx, uid, { amount, reason, actor, shiftId, expenseId }) {
+  if (!(Number(amount) > 0)) return null;
+  let shiftSnap;
+  let shiftDocId = shiftId;
+  if (shiftDocId) {
+    shiftSnap = await tx.get(cashShiftRef(uid, shiftDocId));
+  } else {
+    const q = query(shiftsCol(uid), where('status', '==', 'open'), limit(1));
+    const qSnap = await tx.get(q);
+    if (qSnap.empty) return null;
+    shiftSnap = qSnap.docs[0];
+    shiftDocId = shiftSnap.id;
+  }
+  await appendMovementInTx(tx, uid, shiftDocId, shiftSnap, {
+    type: 'withdrawal',
+    amount,
+    reason: reason || 'سحب من الصندوق',
+    actor,
+    expenseId,
   });
   return shiftDocId;
 }
