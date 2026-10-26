@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Plus, Pencil, Trash2, Download, Phone, User, FileText, Search, X, Eye, Calendar, Clock, Printer, FileDown, Percent, Wallet } from 'lucide-react';
+import { Plus, Pencil, Trash2, Download, Phone, User, FileText, Search, X, Eye, Calendar, Clock, Printer, FileDown, Percent, Wallet, MessageCircle } from 'lucide-react';
 import { orderDiscountValue, discountedOrders } from '../utils/customerStatementData';
 import {
   printCustomerAccountStatement,
@@ -10,6 +10,8 @@ import {
   customerTransactionTypeLabel,
 } from '../utils/customerAccountStatement';
 import { orderStatusLabel, paymentTypeLabel, paymentMethodLabel } from '../i18n';
+import { SYSTEM_WHATSAPP_DISPLAY } from '../branding';
+import { buildCustomerStatementWhatsAppText, buildCustomerStatementWhatsAppUrl } from '../utils/whatsappStatement';
 
 export default function CustomersView({
   customers,
@@ -156,6 +158,29 @@ export default function CustomersView({
     } finally {
       setPdfLoading(false);
     }
+  };
+
+  const handleSendStatementWhatsApp = () => {
+    if (!detailCustomer) return;
+    const phone = String(detailCustomer.phone || '').trim();
+    if (!phone) {
+      alert('أضف رقم جوال العميل أولاً حتى يُرسل الكشف على واتسابه.');
+      return;
+    }
+    const text = buildCustomerStatementWhatsAppText({
+      customer: detailCustomer,
+      orders: customerOrders,
+      business: businessProfile,
+      fmtMoney,
+      totals: statementTotals,
+      legacyDebtTotal,
+    });
+    const url = buildCustomerStatementWhatsAppUrl(phone, text);
+    if (!url) {
+      alert('رقم جوال العميل غير صالح. اكتبه مثل 059xxxxxxx');
+      return;
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   const handleSubmitCustomerPayment = async (e) => {
@@ -355,15 +380,28 @@ export default function CustomersView({
                     ملف العميل: {detailCustomer.name}
                   </h3>
                   {detailCustomer.phone && (
-                    <p className="text-sm text-gray-600 mt-1" style={{ fontFamily: FONT_UI }}>
+                    <p className="text-sm text-gray-600 mt-1" dir="ltr" style={{ fontFamily: FONT_UI }}>
                       {detailCustomer.phone}
                     </p>
                   )}
+                  <p className="text-[11px] text-gray-400 mt-1" style={{ fontFamily: FONT_UI }}>
+                    واتساب الكشوف: <span dir="ltr">{SYSTEM_WHATSAPP_DISPLAY}</span>
+                  </p>
                   {detailCustomer.address && (
                     <p className="text-xs text-gray-500 mt-0.5">{detailCustomer.address}</p>
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSendStatementWhatsApp}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-white text-xs font-medium hover:opacity-90"
+                    style={{ backgroundColor: '#128C7E', fontFamily: FONT_UI }}
+                    title={`يُفتح واتساب ${SYSTEM_WHATSAPP_DISPLAY} برسالة الكشف جاهزة`}
+                  >
+                    <MessageCircle size={14} />
+                    إرسال عبر واتساب
+                  </button>
                   <button
                     type="button"
                     onClick={handleDownloadStatementPdf}

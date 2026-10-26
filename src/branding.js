@@ -1,5 +1,8 @@
 export const APP_NAME = 'ليالي كافيه';
 export const APP_TAGLINE = 'نظام نقاط البيع';
+/** واتساب النظام — كشوف الحساب تُرسل من هذا الرقم */
+export const SYSTEM_WHATSAPP_E164 = '970595360982';
+export const SYSTEM_WHATSAPP_DISPLAY = '+970 59 536 0982';
 /** الشعار الرسمي للموقع — الملف: public/logo5.png */
 export const APP_LOGO = `${process.env.PUBLIC_URL || ''}/logo5.png`;
 

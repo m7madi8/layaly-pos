@@ -19,6 +19,7 @@
   },
   "scripts": {
     "start": "react-scripts start",
+    "prebuild": "node scripts/assert-production-env.js",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "test:rules": "firebase emulators:exec --only firestore --project layali-rules-test \"npx jest -c jest.rules.config.js --runInBand\"",

@@ -18,6 +18,11 @@ REACT_APP_FIREBASE_APP_ID=
 
 # Optional — login email (must match Firebase Auth user)
 REACT_APP_ADMIN_EMAIL=admin@layali.cafe
+
+# Required for production — employee screen password and vault PIN.
+# Do not use the development defaults (admin123 / 1221). Values are baked in at build time.
+REACT_APP_EMPLOYEE_PASSWORD=
+REACT_APP_VAULT_PIN=
 ```
 
 `REACT_APP_DEMO_MODE=true` enables **local demo only** (localStorage). Leave `false` for the café.
@@ -32,10 +37,11 @@ REACT_APP_ADMIN_EMAIL=admin@layali.cafe
 | Admin user | Create user with same email as `REACT_APP_ADMIN_EMAIL` |
 | Firestore | Create database + publish `firestore.rules` |
 | Authorized domains | Add your Vercel domain + `localhost` |
-| Vercel env | All variables above |
-| Redeploy | After every env change |
+| Vercel env | All variables above, including employee password and vault PIN |
+| Redeploy | After every env change — required so new values are baked into the bundle |
 | Store setup | Business profile, menu, prices, stock |
-| Password | Use a strong password in Firebase Auth (not documented in repo) |
+| Admin password | Use a strong password in Firebase Auth (not documented in repo) |
+| Staff PIN | `REACT_APP_EMPLOYEE_PASSWORD` for the employee tab; `REACT_APP_VAULT_PIN` for the cash vault |
 | Printer | Test Bluetooth (Chrome/Android) or browser print fallback |
 
 ---
