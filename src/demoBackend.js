@@ -404,8 +404,17 @@ class DemoTransaction {
     return data;
   }
 
-  async get(ref) {
-    return makeDocSnapshot(ref, this.getEffectiveData(ref));
+  async get(refOrQuery) {
+    if (refOrQuery?.type === 'query') {
+      let docs = getCollectionDocs(this.store, refOrQuery.collection.path);
+      docs = sortDocs(docs, refOrQuery.constraints || []);
+      const limitC = (refOrQuery.constraints || []).find((c) => c.type === 'limit');
+      if (limitC && Number.isFinite(limitC.count)) {
+        docs = docs.slice(0, limitC.count);
+      }
+      return makeQuerySnapshot(docs);
+    }
+    return makeDocSnapshot(refOrQuery, this.getEffectiveData(refOrQuery));
   }
 
   set(ref, data, options) {

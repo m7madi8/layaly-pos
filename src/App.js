@@ -35,6 +35,7 @@ import { externalHookahCartItemId, selectHookahExternalCheckoutProducts } from '
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory } from './productAssets';
 import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, Landmark, PauseCircle, Check } from 'lucide-react';
 import { friendlyError } from './utils/friendlyError';
+import { normalizeDocId } from './utils/firestoreIds';
 
 import {
   auth,
@@ -1566,8 +1567,9 @@ const AppCore = () => {
 
           const reversedDebt = effectiveDebt(orderData);
           let customerDoc = null;
-          if (reversedDebt > 0) {
-            const cRef = doc(db, 'users', user.uid, 'customers', orderData.customerId);
+          const cancelCustomerId = normalizeDocId(orderData.customerId);
+          if (reversedDebt > 0 && cancelCustomerId) {
+            const cRef = doc(db, 'users', user.uid, 'customers', cancelCustomerId);
             const cSnap = await transaction.get(cRef);
             if (cSnap.exists()) customerDoc = { ref: cRef, data: cSnap.data() };
           }
@@ -1575,7 +1577,8 @@ const AppCore = () => {
           const cashToReverse = Math.max(0, Number(orderData.cashPaid) || 0);
           let cashShiftCtx = null;
           if (cashToReverse > 0 && orderData.status !== 'cancelled') {
-            cashShiftCtx = await readOpenCashShiftInTransaction(transaction, user.uid);
+            const openShiftIdForTx = cashShifts.find((s) => s.status === 'open')?.id || null;
+            cashShiftCtx = await readOpenCashShiftInTransaction(transaction, user.uid, openShiftIdForTx);
           }
 
           if (customerDoc) {
@@ -2227,7 +2230,7 @@ const AppCore = () => {
       let finalStatus = status;
       let cashPaid = 0;
       let debtAmount = 0;
-      const customerId = payment.customerId || currentOrder.customerId || '';
+      const customerId = normalizeDocId(payment.customerId || currentOrder.customerId || '');
 
       if (paymentType === 'compliment' || methodEarly === 'Compliment') {
         finalStatus = 'paid';
@@ -2310,10 +2313,22 @@ const AppCore = () => {
         }
         
         // Collect all product IDs to read (both new and old items)
+        for (const item of currentOrder.items) {
+          if (!normalizeDocId(item.id)) {
+            throw new Error(`الصنف «${item.name || '—'}» غير صالح — أزل البند وأضفه من القائمة مرة أخرى`);
+          }
+        }
+
         const productIds = new Set();
-        currentOrder.items.forEach(i => productIds.add(i.id));
+        currentOrder.items.forEach((i) => {
+          const pid = normalizeDocId(i.id);
+          if (pid) productIds.add(pid);
+        });
         if (existingOrderData && existingOrderData.status !== 'cancelled') {
-            existingOrderData.items.forEach(i => productIds.add(i.id));
+            existingOrderData.items.forEach((i) => {
+              const pid = normalizeDocId(i.id);
+              if (pid) productIds.add(pid);
+            });
         }
 
         // Read all products
@@ -2340,19 +2355,27 @@ const AppCore = () => {
         // Read Ingredients
         const ingredientDocs = {};
         for (const ingId of ingredientIds) {
-            const ingRef = doc(db, 'users', user.uid, 'ingredients', ingId);
+            const safeIngId = normalizeDocId(ingId);
+            if (!safeIngId) continue;
+            const ingRef = doc(db, 'users', user.uid, 'ingredients', safeIngId);
             const ingDoc = await transaction.get(ingRef);
             if (ingDoc.exists()) {
-                ingredientDocs[ingId] = { ref: ingRef, data: ingDoc.data() };
+                ingredientDocs[safeIngId] = { ref: ingRef, data: ingDoc.data() };
             }
         }
 
-        const newSessionIds = new Set(currentOrder.items.filter((i) => i.sessionId).map((i) => i.sessionId));
+        const newSessionIds = new Set(
+          currentOrder.items.map((i) => normalizeDocId(i.sessionId)).filter(Boolean)
+        );
         const oldSessionIds = new Set(
-          (existingOrderData?.items || []).filter((i) => i.sessionId).map((i) => i.sessionId)
+          (existingOrderData?.items || [])
+            .map((i) => normalizeDocId(i.sessionId))
+            .filter(Boolean)
         );
         for (const sessionId of newSessionIds) {
-          const sSnap = await transaction.get(playstationSessionRef(user.uid, sessionId));
+          const safeSessionId = normalizeDocId(sessionId);
+          if (!safeSessionId) continue;
+          const sSnap = await transaction.get(playstationSessionRef(user.uid, safeSessionId));
           if (!sSnap.exists()) throw new Error('جلسة البلايستيشن غير موجودة');
           const s = sSnap.data();
           if (s.status !== 'ended') throw new Error('أنهِ جلسة البلايستيشن قبل حفظ الطلب');
@@ -2366,9 +2389,14 @@ const AppCore = () => {
           debtAmount,
           status: finalStatus,
         });
-        const affectedCustomerIds = new Set(Object.keys(balanceDeltas));
-        if (existingOrderData?.customerId) affectedCustomerIds.add(existingOrderData.customerId);
-        if (customerId && debtAmount > 0) affectedCustomerIds.add(customerId);
+        const affectedCustomerIds = new Set();
+        const trackCustomerId = (raw) => {
+          const id = normalizeDocId(raw);
+          if (id) affectedCustomerIds.add(id);
+        };
+        Object.keys(balanceDeltas).forEach(trackCustomerId);
+        trackCustomerId(existingOrderData?.customerId);
+        if (customerId && debtAmount > 0) trackCustomerId(customerId);
         const customerDocs = {};
         for (const cid of affectedCustomerIds) {
           const cRef = doc(db, 'users', user.uid, 'customers', cid);
@@ -2379,7 +2407,11 @@ const AppCore = () => {
 
         let cashShiftCtx = null;
         if (!editingOrderId && cashPaid > 0) {
-          cashShiftCtx = await readOpenCashShiftInTransaction(transaction, user.uid);
+          const openShiftIdForTx = cashShifts.find((s) => s.status === 'open')?.id || null;
+          cashShiftCtx = await readOpenCashShiftInTransaction(transaction, user.uid, openShiftIdForTx);
+          if (!cashShiftCtx) {
+            throw new Error('لا توجد وردية كاش مفتوحة لتسجيل النقد — افتح الوردية من شاشة الكاش أولاً');
+          }
         }
 
         // 2. LOGIC & WRITES
@@ -2523,20 +2555,24 @@ const AppCore = () => {
         }
 
         for (const sessionId of newSessionIds) {
-          transaction.update(playstationSessionRef(user.uid, sessionId), {
+          const safeSessionId = normalizeDocId(sessionId);
+          if (!safeSessionId) continue;
+          transaction.update(playstationSessionRef(user.uid, safeSessionId), {
             billed: true,
             orderId: newOrderRef.id,
             orderNumber,
           });
         }
         for (const sessionId of oldSessionIds) {
-          if (!newSessionIds.has(sessionId)) {
-            transaction.update(playstationSessionRef(user.uid, sessionId), { billed: false, orderId: null, orderNumber: null });
-          }
+          const safeSessionId = normalizeDocId(sessionId);
+          if (!safeSessionId || newSessionIds.has(sessionId)) continue;
+          transaction.update(playstationSessionRef(user.uid, safeSessionId), { billed: false, orderId: null, orderNumber: null });
         }
 
         for (const movementId of currentOrder.assetMovementIds || []) {
-          transaction.update(assetMovementRef(user.uid, movementId), { orderId: newOrderRef.id, orderNumber });
+          const safeMovementId = normalizeDocId(movementId);
+          if (!safeMovementId) continue;
+          transaction.update(assetMovementRef(user.uid, safeMovementId), { orderId: newOrderRef.id, orderNumber });
         }
 
         if (!editingOrderId && cashPaid > 0 && cashShiftCtx) {
