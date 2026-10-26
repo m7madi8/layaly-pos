@@ -1,7 +1,9 @@
 import {
   getLocalCalendarDayStart,
   orderCashCollected,
+  orderDebtRecorded,
   computeTodayCashSales,
+  computeTodayDebtSales,
   isOrderOnOrAfterDayStart,
 } from './dashboardCashSales';
 
@@ -38,6 +40,43 @@ describe('orderCashCollected', () => {
     expect(
       orderCashCollected({ status: 'paid', paymentType: 'compliment', paymentMethod: 'Compliment', total: 0 })
     ).toBe(0);
+  });
+});
+
+describe('orderDebtRecorded / computeTodayDebtSales', () => {
+  const dayStart = new Date(2026, 9, 26, 0, 0, 0, 0);
+  const todayNoon = new Date(2026, 9, 26, 12, 0, 0);
+  const yesterday = new Date(2026, 9, 25, 23, 0, 0);
+
+  test('debt and mixed portions', () => {
+    expect(
+      orderDebtRecorded({
+        status: 'unpaid',
+        customerId: 'c1',
+        debtAmount: 50,
+      })
+    ).toBe(50);
+    expect(
+      orderDebtRecorded({
+        status: 'partial',
+        customerId: 'c1',
+        cashPaid: 20,
+        debtAmount: 30,
+      })
+    ).toBe(30);
+    expect(orderDebtRecorded({ status: 'cancelled', customerId: 'c1', debtAmount: 10 })).toBe(0);
+    expect(orderDebtRecorded({ status: 'unpaid', debtAmount: 10 })).toBe(0);
+  });
+
+  test('sums today debt; excludes yesterday and cancelled', () => {
+    const orders = [
+      { status: 'unpaid', customerId: 'c1', debtAmount: 40, timestamp: ts(todayNoon) },
+      { status: 'partial', customerId: 'c1', cashPaid: 10, debtAmount: 15, timestamp: ts(todayNoon) },
+      { status: 'cancelled', customerId: 'c1', debtAmount: 99, timestamp: ts(todayNoon) },
+      { status: 'unpaid', customerId: 'c1', debtAmount: 20, timestamp: ts(yesterday) },
+      { status: 'paid', cashPaid: 100, debtAmount: 0, timestamp: ts(todayNoon) },
+    ];
+    expect(computeTodayDebtSales(orders, dayStart)).toBe(55);
   });
 });
 

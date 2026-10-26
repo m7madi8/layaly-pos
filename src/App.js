@@ -81,7 +81,7 @@ import {
 import { ensureStarterProducts, ensureStarterAssets, ensureTobaccoImage, ensurePlaystationPricing } from './services/starterProducts';
 import { ensureDrinkCategoriesSplit } from './services/drinkCategoriesMigration';
 import { effectiveDebt, debtDeltasByCustomer, replaceOrderDebtEntry, diffOrders } from './utils/orderAccounting';
-import { computeTodayCashSales, getLocalCalendarDayStart } from './utils/dashboardCashSales';
+import { computeTodayCashSales, computeTodayDebtSales, getLocalCalendarDayStart } from './utils/dashboardCashSales';
 import {
   PRODUCT_TYPES,
   TIME_ROUNDING_OPTIONS,
@@ -3102,6 +3102,7 @@ const AppCore = () => {
   });
 
   const todayCashSales = computeTodayCashSales(orders, dashboardDayStart);
+  const todayDebtSales = computeTodayDebtSales(orders, dashboardDayStart);
 
   const totalProfit = orders
     .filter(o => o.status === 'paid')
@@ -3763,7 +3764,7 @@ const AppCore = () => {
             </div>
             
             {/* Key Metrics Row */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5">
               {/* Today's cash collected (order cashPaid) */}
               <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100 hover:shadow-lg transition-all duration-300">
                 <div className="flex justify-between items-start mb-4">
@@ -3774,6 +3775,19 @@ const AppCore = () => {
                 </div>
                 <p className="text-gray-500 text-sm font-medium mb-1">كاش اليوم</p>
                 <h3 className="text-2xl font-bold text-primary">{fmtMoney(todayCashSales)}</h3>
+              </div>
+
+              {/* Today's debt recorded on orders (debtAmount) */}
+              <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100 hover:shadow-lg transition-all duration-300">
+                <div className="flex justify-between items-start mb-4">
+                  <div className="p-3 rounded-xl bg-red-50 text-red-600">
+                    <Users size={24} />
+                  </div>
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-red-100 text-red-800">دين</span>
+                </div>
+                <p className="text-gray-500 text-sm font-medium mb-1">دين اليوم</p>
+                <h3 className="text-2xl font-bold text-red-600">{fmtMoney(todayDebtSales)}</h3>
+                <p className="text-[10px] text-gray-400 mt-1">من طلبات اليوم على حساب العملاء</p>
               </div>
 
               {/* Total Paid Sales */}

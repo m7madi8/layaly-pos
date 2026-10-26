@@ -1,7 +1,9 @@
 /**
- * «كاش اليوم» — نقداً مُسجَّلاً على الطلبات (حقل cashPaid)، وليس حركات الصندوق
- * لتجنب العد المزدوج مع cashMovements من نوع sale.
+ * «كاش اليوم» / «دين اليوم» — من حقول الطلب (cashPaid / debtAmount)، وليس حركات الصندوق
+ * لتجنب العد المزدوج مع cashMovements.
  */
+
+import { effectiveDebt } from './orderAccounting';
 
 const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -37,6 +39,21 @@ export function computeTodayCashSales(orders, dayStart) {
   for (const order of orders) {
     if (!isOrderOnOrAfterDayStart(order, dayStart)) continue;
     sum += orderCashCollected(order);
+  }
+  return money(sum);
+}
+
+/** الدين المُسجَّل على طلبات اليوم (حقل debtAmount لعميل مرتبط — نفس منطق رصيد العميل). */
+export function orderDebtRecorded(order) {
+  return effectiveDebt(order);
+}
+
+export function computeTodayDebtSales(orders, dayStart) {
+  if (!Array.isArray(orders) || !dayStart) return 0;
+  let sum = 0;
+  for (const order of orders) {
+    if (!isOrderOnOrAfterDayStart(order, dayStart)) continue;
+    sum += orderDebtRecorded(order);
   }
   return money(sum);
 }
