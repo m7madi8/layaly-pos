@@ -1,5 +1,8 @@
 import { db, doc, collection, runTransaction, serverTimestamp, updateDoc } from '../firebaseClient';
-import { recordCashWithdrawalInTransaction } from './cashShiftService';
+import {
+  readOpenCashShiftInTransaction,
+  appendCashMovementInTransaction,
+} from './cashShiftService';
 import {
   SUPPLIER_PAYMENT_CATEGORY,
   SUPPLIER_PAYMENT_SECTION,
@@ -12,6 +15,23 @@ import {
 const expensesCol = (uid) => collection(db, 'users', uid, 'expenses');
 const supplierRef = (uid, supplierId) => doc(db, 'users', uid, 'suppliers', supplierId);
 const idempotencyCol = (uid) => collection(db, 'users', uid, 'supplierPaymentIdempotency');
+
+function nextSupplierBalanceAfterPayment(supplierSnap, amount, expensesSnapshot, supplierId) {
+  const hasStoredBalance =
+    supplierSnap.data().balance != null && supplierSnap.data().balance !== '';
+  const prevBalance = hasStoredBalance
+    ? roundMoney(supplierSnap.data().balance)
+    : computeSupplierPayableFromExpenses(expensesSnapshot || [], supplierId);
+  return roundMoney(prevBalance - amount);
+}
+
+function nextSupplierBalanceAfterPurchase(supplierSnap, amount, expensesSnapshot, supplierId) {
+  const hasStored = supplierSnap.data().balance != null && supplierSnap.data().balance !== '';
+  const prev = hasStored
+    ? roundMoney(supplierSnap.data().balance)
+    : computeSupplierPayableFromExpenses(expensesSnapshot, supplierId);
+  return roundMoney(prev + roundMoney(amount));
+}
 
 /**
  * Records a supplier payment once: expense + payable balance + optional cash withdrawal.
@@ -39,8 +59,9 @@ export async function executeSupplierPayment(uid, input, { actor, idempotencyKey
   const idemKey = String(idempotencyKey || '').trim();
 
   return runTransaction(db, async (tx) => {
+    let idemRef = null;
     if (idemKey) {
-      const idemRef = doc(idempotencyCol(uid), idemKey);
+      idemRef = doc(idempotencyCol(uid), idemKey);
       const idemSnap = await tx.get(idemRef);
       if (idemSnap.exists()) {
         const data = idemSnap.data();
@@ -57,9 +78,13 @@ export async function executeSupplierPayment(uid, input, { actor, idempotencyKey
     const supplierSnap = await tx.get(sRef);
     if (!supplierSnap.exists()) throw new Error('التاجر غير موجود');
 
+    let cashShiftCtx = null;
+    if (paymentMethod === 'Cash') {
+      cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, input.shiftId || null);
+    }
+
     const expenseRef = doc(expensesCol(uid));
-    const description =
-      notes || `دفعة للتاجر — ${supplierName}`;
+    const description = notes || `دفعة للتاجر — ${supplierName}`;
 
     const expenseData = {
       amount,
@@ -86,31 +111,30 @@ export async function executeSupplierPayment(uid, input, { actor, idempotencyKey
 
     tx.set(expenseRef, expenseData);
 
-    const hasStoredBalance =
-      supplierSnap.data().balance != null && supplierSnap.data().balance !== '';
-    const prevBalance = hasStoredBalance
-      ? roundMoney(supplierSnap.data().balance)
-      : computeSupplierPayableFromExpenses(input.expensesSnapshot || [], supplierId);
-    const newBalance = roundMoney(prevBalance - amount);
+    const newBalance = nextSupplierBalanceAfterPayment(
+      supplierSnap,
+      amount,
+      input.expensesSnapshot || [],
+      supplierId
+    );
     tx.update(sRef, {
       balance: newBalance,
       updatedAt: serverTimestamp(),
     });
 
     let cashRecorded = false;
-    if (paymentMethod === 'Cash') {
-      const recordedShiftId = await recordCashWithdrawalInTransaction(tx, uid, {
+    if (paymentMethod === 'Cash' && cashShiftCtx) {
+      await appendCashMovementInTransaction(tx, uid, cashShiftCtx.shiftId, cashShiftCtx.shiftSnap, {
+        type: 'withdrawal',
         amount,
         reason: `دفعة تاجر — ${supplierName}${paymentRef ? ` (${paymentRef})` : ''}`,
         actor,
-        shiftId: input.shiftId || null,
         expenseId: expenseRef.id,
       });
-      cashRecorded = Boolean(recordedShiftId);
+      cashRecorded = true;
     }
 
-    if (idemKey) {
-      const idemRef = doc(idempotencyCol(uid), idemKey);
+    if (idemKey && idemRef) {
       tx.set(idemRef, {
         expenseId: expenseRef.id,
         paymentRef,
@@ -130,7 +154,22 @@ export async function executeSupplierPayment(uid, input, { actor, idempotencyKey
   });
 }
 
-/** Increase supplier payable when a purchase expense is created. */
+/** Increase supplier payable when a purchase expense is created (supplierSnap must be pre-read). */
+export function applySupplierPurchaseBalanceWrite(
+  tx,
+  supplierRefPath,
+  supplierSnap,
+  supplierId,
+  amount,
+  expensesSnapshot = []
+) {
+  const amt = roundMoney(amount);
+  if (!supplierSnap?.exists() || !(amt > 0)) return;
+  const next = nextSupplierBalanceAfterPurchase(supplierSnap, amt, expensesSnapshot, supplierId);
+  tx.update(supplierRefPath, { balance: next, updatedAt: serverTimestamp() });
+}
+
+/** @deprecated Use applySupplierPurchaseBalanceWrite after reading supplier in the same transaction. */
 export async function applySupplierPurchaseBalanceInTransaction(
   tx,
   uid,
@@ -138,17 +177,9 @@ export async function applySupplierPurchaseBalanceInTransaction(
   amount,
   expensesSnapshot = []
 ) {
-  const amt = roundMoney(amount);
-  if (!supplierId || !(amt > 0)) return;
   const sRef = supplierRef(uid, supplierId);
   const snap = await tx.get(sRef);
-  if (!snap.exists()) return;
-  const hasStored = snap.data().balance != null && snap.data().balance !== '';
-  const prev = hasStored
-    ? roundMoney(snap.data().balance)
-    : computeSupplierPayableFromExpenses(expensesSnapshot, supplierId);
-  const next = roundMoney(prev + amt);
-  tx.update(sRef, { balance: next, updatedAt: serverTimestamp() });
+  applySupplierPurchaseBalanceWrite(tx, sRef, snap, supplierId, amount, expensesSnapshot);
 }
 
 /** Align stored payable with purchase/payment history (legacy suppliers). */

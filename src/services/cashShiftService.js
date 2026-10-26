@@ -51,6 +51,25 @@ export async function openCashShift(uid, { openingBalance, actor, notes = '', sh
   return ref.id;
 }
 
+/** Read open shift inside a transaction — must run before any writes in the same transaction. */
+export async function readOpenCashShiftInTransaction(tx, uid, preferredShiftId = null) {
+  if (preferredShiftId) {
+    const snap = await tx.get(cashShiftRef(uid, preferredShiftId));
+    if (!snap.exists() || snap.data().status !== 'open') return null;
+    return { shiftId: preferredShiftId, shiftSnap: snap };
+  }
+  const q = query(shiftsCol(uid), where('status', '==', 'open'), limit(1));
+  const qSnap = await tx.get(q);
+  if (qSnap.empty) return null;
+  const shiftSnap = qSnap.docs[0];
+  return { shiftId: shiftSnap.id, shiftSnap };
+}
+
+/** Append cash movement when shift was already read (no further reads). */
+export async function appendCashMovementInTransaction(tx, uid, shiftId, shiftSnap, movement) {
+  return appendMovementInTx(tx, uid, shiftId, shiftSnap, movement);
+}
+
 async function appendMovementInTx(
   tx,
   uid,
@@ -106,21 +125,17 @@ async function appendMovementInTx(
 }
 
 /** Record cash sale inside an existing Firestore transaction (order + shift atomicity). */
-export async function recordCashSaleInTransaction(tx, uid, { amount, orderId, orderNumber, actor, shiftId }) {
+export async function recordCashSaleInTransaction(tx, uid, { amount, orderId, orderNumber, actor, shiftId, shiftSnap }) {
   if (!(Number(amount) > 0)) return null;
-  let shiftSnap;
   let shiftDocId = shiftId;
-  if (shiftDocId) {
-    const sRef = cashShiftRef(uid, shiftDocId);
-    shiftSnap = await tx.get(sRef);
-  } else {
-    const q = query(shiftsCol(uid), where('status', '==', 'open'), limit(1));
-    const qSnap = await tx.get(q);
-    if (qSnap.empty) return null;
-    shiftSnap = qSnap.docs[0];
-    shiftDocId = shiftSnap.id;
+  let snap = shiftSnap;
+  if (!snap) {
+    const ctx = await readOpenCashShiftInTransaction(tx, uid, shiftId || null);
+    if (!ctx) return null;
+    shiftDocId = ctx.shiftId;
+    snap = ctx.shiftSnap;
   }
-  await appendMovementInTx(tx, uid, shiftDocId, shiftSnap, {
+  await appendMovementInTx(tx, uid, shiftDocId, snap, {
     type: 'sale',
     amount,
     reason: orderNumber ? `بيع طلب #${orderNumber}` : 'بيع كاش',
@@ -131,20 +146,17 @@ export async function recordCashSaleInTransaction(tx, uid, { amount, orderId, or
   return shiftDocId;
 }
 
-export async function recordCashWithdrawalInTransaction(tx, uid, { amount, reason, actor, shiftId, expenseId }) {
+export async function recordCashWithdrawalInTransaction(tx, uid, { amount, reason, actor, shiftId, expenseId, shiftSnap }) {
   if (!(Number(amount) > 0)) return null;
-  let shiftSnap;
   let shiftDocId = shiftId;
-  if (shiftDocId) {
-    shiftSnap = await tx.get(cashShiftRef(uid, shiftDocId));
-  } else {
-    const q = query(shiftsCol(uid), where('status', '==', 'open'), limit(1));
-    const qSnap = await tx.get(q);
-    if (qSnap.empty) return null;
-    shiftSnap = qSnap.docs[0];
-    shiftDocId = shiftSnap.id;
+  let snap = shiftSnap;
+  if (!snap) {
+    const ctx = await readOpenCashShiftInTransaction(tx, uid, shiftId || null);
+    if (!ctx) return null;
+    shiftDocId = ctx.shiftId;
+    snap = ctx.shiftSnap;
   }
-  await appendMovementInTx(tx, uid, shiftDocId, shiftSnap, {
+  await appendMovementInTx(tx, uid, shiftDocId, snap, {
     type: 'withdrawal',
     amount,
     reason: reason || 'سحب من الصندوق',
@@ -154,20 +166,17 @@ export async function recordCashWithdrawalInTransaction(tx, uid, { amount, reaso
   return shiftDocId;
 }
 
-export async function recordCashRefundInTransaction(tx, uid, { amount, orderId, orderNumber, actor, shiftId }) {
+export async function recordCashRefundInTransaction(tx, uid, { amount, orderId, orderNumber, actor, shiftId, shiftSnap }) {
   if (!(Number(amount) > 0)) return null;
-  let shiftSnap;
   let shiftDocId = shiftId;
-  if (shiftDocId) {
-    shiftSnap = await tx.get(cashShiftRef(uid, shiftDocId));
-  } else {
-    const q = query(shiftsCol(uid), where('status', '==', 'open'), limit(1));
-    const qSnap = await tx.get(q);
-    if (qSnap.empty) return null;
-    shiftSnap = qSnap.docs[0];
-    shiftDocId = shiftSnap.id;
+  let snap = shiftSnap;
+  if (!snap) {
+    const ctx = await readOpenCashShiftInTransaction(tx, uid, shiftId || null);
+    if (!ctx) return null;
+    shiftDocId = ctx.shiftId;
+    snap = ctx.shiftSnap;
   }
-  await appendMovementInTx(tx, uid, shiftDocId, shiftSnap, {
+  await appendMovementInTx(tx, uid, shiftDocId, snap, {
     type: 'refund',
     amount,
     reason: orderNumber ? `مرتجع طلب #${orderNumber}` : 'مرتجع كاش',

@@ -12,7 +12,7 @@ import {
 import SupplierTraderDetailModal, { SupplierPaymentFields } from './components/SupplierTraderDetailModal';
 import {
   executeSupplierPayment,
-  applySupplierPurchaseBalanceInTransaction,
+  applySupplierPurchaseBalanceWrite,
   reconcileSupplierBalance,
 } from './services/supplierPaymentService';
 import {
@@ -124,6 +124,7 @@ import {
   openCashShift,
   recordCashSaleInTransaction,
   recordCashRefundInTransaction,
+  readOpenCashShiftInTransaction,
   recordCashWithdrawal,
   recordCashDeposit,
   closeCashShift,
@@ -835,11 +836,9 @@ const AppCore = () => {
         expenseData.createdAt = serverTimestamp();
         await runTransaction(db, async (transaction) => {
           const expenseRef = doc(collection(db, 'users', user.uid, 'expenses'));
-          
+
           let ingRef = null;
           let currentStock = 0;
-          
-          // If linked to an ingredient, update stock and cost
           if (expenseData.linkedIngredientId && expenseData.quantityBought > 0) {
             ingRef = doc(db, 'users', user.uid, 'ingredients', expenseData.linkedIngredientId);
             const ingDoc = await transaction.get(ingRef);
@@ -856,7 +855,14 @@ const AppCore = () => {
             if (!productDoc.exists()) throw new Error('الصنف المرتبط بالمشتريات غير موجود');
             productData = productDoc.data();
           }
-          
+
+          let supplierRefPath = null;
+          let supplierSnap = null;
+          if (section === 'purchase' && expenseData.supplierId) {
+            supplierRefPath = doc(db, 'users', user.uid, 'suppliers', expenseData.supplierId);
+            supplierSnap = await transaction.get(supplierRefPath);
+          }
+
           transaction.set(expenseRef, expenseData);
           if (ingRef) {
             transaction.update(ingRef, { stock: currentStock + expenseData.quantityBought });
@@ -869,10 +875,11 @@ const AppCore = () => {
               updatedAt: serverTimestamp(),
             });
           }
-          if (section === 'purchase' && expenseData.supplierId) {
-            await applySupplierPurchaseBalanceInTransaction(
+          if (supplierRefPath && supplierSnap?.exists()) {
+            applySupplierPurchaseBalanceWrite(
               transaction,
-              user.uid,
+              supplierRefPath,
+              supplierSnap,
               expenseData.supplierId,
               expenseData.amount,
               expenses
@@ -933,32 +940,35 @@ const AppCore = () => {
         const expenseRef = doc(db, 'users', user.uid, 'expenses', expenseId);
         if (reversesStock || isSupplierPay || (isPurchase && expense.supplierId)) {
           await runTransaction(db, async (transaction) => {
+            let productRef = null;
+            let productDoc = null;
             if (reversesStock) {
-              const productRef = doc(db, 'users', user.uid, 'products', expense.linkedProductId);
-              const productDoc = await transaction.get(productRef);
-              transaction.delete(expenseRef);
-              if (productDoc.exists()) {
-                const stock = Number(productDoc.data().stock) || 0;
-                transaction.update(productRef, { stock: Math.max(0, stock - Number(expense.quantityBought)) });
-              }
-            } else {
-              transaction.delete(expenseRef);
+              productRef = doc(db, 'users', user.uid, 'products', expense.linkedProductId);
+              productDoc = await transaction.get(productRef);
             }
+            let supplierDocRef = null;
+            let sSnap = null;
             if (expense.supplierId && (isSupplierPay || isPurchase)) {
-              const supplierDocRef = doc(db, 'users', user.uid, 'suppliers', expense.supplierId);
-              const sSnap = await transaction.get(supplierDocRef);
-              if (sSnap.exists()) {
-                const prev = roundMoney(sSnap.data().balance);
-                const delta = isSupplierPay
-                  ? roundMoney(expense.amount)
-                  : isPurchase
-                    ? -roundMoney(expense.amount)
-                    : 0;
-                transaction.update(supplierDocRef, {
-                  balance: roundMoney(prev + delta),
-                  updatedAt: serverTimestamp(),
-                });
-              }
+              supplierDocRef = doc(db, 'users', user.uid, 'suppliers', expense.supplierId);
+              sSnap = await transaction.get(supplierDocRef);
+            }
+
+            transaction.delete(expenseRef);
+            if (reversesStock && productDoc?.exists()) {
+              const stock = Number(productDoc.data().stock) || 0;
+              transaction.update(productRef, { stock: Math.max(0, stock - Number(expense.quantityBought)) });
+            }
+            if (supplierDocRef && sSnap?.exists()) {
+              const prev = roundMoney(sSnap.data().balance);
+              const delta = isSupplierPay
+                ? roundMoney(expense.amount)
+                : isPurchase
+                  ? -roundMoney(expense.amount)
+                  : 0;
+              transaction.update(supplierDocRef, {
+                balance: roundMoney(prev + delta),
+                updatedAt: serverTimestamp(),
+              });
             }
           });
           if (isSupplierPay && expense.paymentMethod === 'Cash') {
@@ -1561,6 +1571,13 @@ const AppCore = () => {
             const cSnap = await transaction.get(cRef);
             if (cSnap.exists()) customerDoc = { ref: cRef, data: cSnap.data() };
           }
+
+          const cashToReverse = Math.max(0, Number(orderData.cashPaid) || 0);
+          let cashShiftCtx = null;
+          if (cashToReverse > 0 && orderData.status !== 'cancelled') {
+            cashShiftCtx = await readOpenCashShiftInTransaction(transaction, user.uid);
+          }
+
           if (customerDoc) {
             transaction.update(customerDoc.ref, {
               balance: Math.round(((Number(customerDoc.data.balance) || 0) - reversedDebt) * 100) / 100,
@@ -1579,13 +1596,14 @@ const AppCore = () => {
             }
           }
 
-          const cashToReverse = Math.max(0, Number(orderData.cashPaid) || 0);
-          if (cashToReverse > 0 && orderData.status !== 'cancelled') {
+          if (cashShiftCtx) {
             await recordCashRefundInTransaction(transaction, user.uid, {
               amount: cashToReverse,
               orderId,
               orderNumber: orderData.orderNumber,
               actor: sessionActor(),
+              shiftId: cashShiftCtx.shiftId,
+              shiftSnap: cashShiftCtx.shiftSnap,
             });
           }
 
@@ -2359,6 +2377,11 @@ const AppCore = () => {
           else if (cid === customerId && debtAmount > 0) throw new Error('العميل غير موجود');
         }
 
+        let cashShiftCtx = null;
+        if (!editingOrderId && cashPaid > 0) {
+          cashShiftCtx = await readOpenCashShiftInTransaction(transaction, user.uid);
+        }
+
         // 2. LOGIC & WRITES
         
         // Restore stock if editing
@@ -2516,12 +2539,14 @@ const AppCore = () => {
           transaction.update(assetMovementRef(user.uid, movementId), { orderId: newOrderRef.id, orderNumber });
         }
 
-        if (!editingOrderId && cashPaid > 0) {
+        if (!editingOrderId && cashPaid > 0 && cashShiftCtx) {
           await recordCashSaleInTransaction(transaction, user.uid, {
             amount: cashPaid,
             orderId: newOrderRef.id,
             orderNumber,
             actor: sessionActor(),
+            shiftId: cashShiftCtx.shiftId,
+            shiftSnap: cashShiftCtx.shiftSnap,
           });
         }
 
