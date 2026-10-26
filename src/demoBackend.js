@@ -318,6 +318,10 @@ export function where() {
   return { type: 'where' };
 }
 
+export function limit(n) {
+  return { type: 'limit', count: n };
+}
+
 export function onSnapshot(refOrQuery, onNext, onError) {
   let entry;
   if (refOrQuery.type === 'query') {

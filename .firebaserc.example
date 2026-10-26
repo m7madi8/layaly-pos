@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "default": "layaly-cafe-13c2b",
+    "staging": "REPLACE_WITH_YOUR_STAGING_PROJECT_ID"
+  }
+}

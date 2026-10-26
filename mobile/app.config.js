@@ -4,7 +4,7 @@ export default {
     name: 'ليالي كافيه',
     slug: 'layali-cafe-pos',
     owner: 'm7madi8',
-    version: '1.0.0',
+    version: '1.0.1',
     orientation: 'default',
     icon: './assets/icon.png',
     userInterfaceStyle: 'light',
@@ -26,6 +26,7 @@ export default {
       },
     },
     android: {
+      versionCode: 2,
       package: 'com.layali.cafepos',
       adaptiveIcon: {
         backgroundColor: '#1a3328',

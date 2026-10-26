@@ -21,6 +21,11 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
+    "test:rules": "firebase emulators:exec --only firestore --project layali-rules-test \"npx jest -c jest.rules.config.js --runInBand\"",
+    "test:functions:unit": "npx jest -c jest.functions.config.js --runInBand tests/functions/orderEngine.unit.test.js tests/functions/idempotency.unit.test.js tests/functions/hookahPricing.unit.test.js tests/functions/cashShift.unit.test.js tests/functions/authz.unit.test.js tests/functions/callableActor.unit.test.js",
+    "verify:staging-deploy-context": "node scripts/check-staging-deploy-context.js",
+    "test:functions:integration": "firebase emulators:exec --only firestore --project layali-rules-test \"npx jest -c jest.functions.config.js --runInBand tests/functions/orderEngine.emulator.test.js\"",
+    "test:functions:emulator": "npx jest -c jest.functions.config.js --runInBand tests/functions/orderEngine.emulator.test.js tests/functions/cashShift.emulator.test.js tests/functions/concurrency.emulator.test.js",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {
@@ -42,7 +47,11 @@
     ]
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^3.0.4",
+    "firebase-admin": "^12.7.0",
     "autoprefixer": "^10.4.23",
+    "firebase-tools": "^13.29.1",
+    "jest": "^27.5.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.1"
   }

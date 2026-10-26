@@ -42,12 +42,18 @@ REACT_APP_ADMIN_EMAIL=admin@layali.cafe
 
 ## Deploy Firestore rules
 
+**Phase 1 security:** Production still uses `firestore.rules` (legacy). Hardened rules live in `firestore.rules.hardened` — deploy only after `docs/SECURITY-REMEDIATION-PLAN.md` checklist.
+
 ```bash
 npm i -g firebase-tools
 firebase login
 firebase use layaly-cafe-13c2b
 firebase deploy --only firestore:rules
 ```
+
+## Security hardening (local)
+
+See `docs/SECURITY-REMEDIATION-PLAN.md`. Rules tests: `npm run test:rules` (requires Java + Firebase emulators).
 
 ---
 

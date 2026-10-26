@@ -1,4 +1,4 @@
-import { db, doc, collection, addDoc, getDocs, query, orderBy, runTransaction, serverTimestamp } from '../firebaseClient';
+import { db, doc, collection, addDoc, getDocs, query, orderBy, where, limit, runTransaction, serverTimestamp } from '../firebaseClient';
 import { computeExpectedCash } from '../utils/cashShiftMath';
 import { vaultDocRef, applyVaultCredit } from './vaultService';
 
@@ -98,6 +98,56 @@ async function appendMovementInTx(tx, uid, shiftId, shiftSnap, { type, amount, r
   return mRef.id;
 }
 
+/** Record cash sale inside an existing Firestore transaction (order + shift atomicity). */
+export async function recordCashSaleInTransaction(tx, uid, { amount, orderId, orderNumber, actor, shiftId }) {
+  if (!(Number(amount) > 0)) return null;
+  let shiftSnap;
+  let shiftDocId = shiftId;
+  if (shiftDocId) {
+    const sRef = cashShiftRef(uid, shiftDocId);
+    shiftSnap = await tx.get(sRef);
+  } else {
+    const q = query(shiftsCol(uid), where('status', '==', 'open'), limit(1));
+    const qSnap = await tx.get(q);
+    if (qSnap.empty) return null;
+    shiftSnap = qSnap.docs[0];
+    shiftDocId = shiftSnap.id;
+  }
+  await appendMovementInTx(tx, uid, shiftDocId, shiftSnap, {
+    type: 'sale',
+    amount,
+    reason: orderNumber ? `بيع طلب #${orderNumber}` : 'بيع كاش',
+    actor,
+    orderId,
+    orderNumber,
+  });
+  return shiftDocId;
+}
+
+export async function recordCashRefundInTransaction(tx, uid, { amount, orderId, orderNumber, actor, shiftId }) {
+  if (!(Number(amount) > 0)) return null;
+  let shiftSnap;
+  let shiftDocId = shiftId;
+  if (shiftDocId) {
+    shiftSnap = await tx.get(cashShiftRef(uid, shiftDocId));
+  } else {
+    const q = query(shiftsCol(uid), where('status', '==', 'open'), limit(1));
+    const qSnap = await tx.get(q);
+    if (qSnap.empty) return null;
+    shiftSnap = qSnap.docs[0];
+    shiftDocId = shiftSnap.id;
+  }
+  await appendMovementInTx(tx, uid, shiftDocId, shiftSnap, {
+    type: 'refund',
+    amount,
+    reason: orderNumber ? `مرتجع طلب #${orderNumber}` : 'مرتجع كاش',
+    actor,
+    orderId,
+    orderNumber,
+  });
+  return shiftDocId;
+}
+
 export async function recordCashSale(uid, { shiftId, amount, orderId, orderNumber, actor }) {
   if (!(Number(amount) > 0)) return null;
   let targetShiftId = shiftId;
@@ -177,6 +227,9 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
     let finalWithdrawals = Number(shift.cashWithdrawals) || 0;
     let finalExpected = expected;
 
+    const vRef = vaultDocRef(uid);
+    const vSnap = closingWithdrawal > 0 ? await tx.get(vRef) : null;
+
     if (closingWithdrawal > 0) {
       finalWithdrawals += closingWithdrawal;
       finalExpected = computeExpectedCash({
@@ -200,8 +253,6 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
         toVault: true,
       });
 
-      const vRef = vaultDocRef(uid);
-      const vSnap = await tx.get(vRef);
       applyVaultCredit(tx, uid, vSnap, {
         amount: closingWithdrawal,
         type: 'from_cash_close',

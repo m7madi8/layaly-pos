@@ -1,0 +1,82 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function userDoc(userId) {
+      return get(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function securityMode(userId) {
+      return userDoc(userId).data.securityMode == 'hardened';
+    }
+
+    function claimRole() {
+      return request.auth.token.role;
+    }
+
+    function isAdmin() {
+      return claimRole() == 'admin';
+    }
+
+    function isCashierOrAdmin() {
+      return claimRole() == 'admin' || claimRole() == 'cashier';
+    }
+
+    // Legacy: full owner access (current production behavior)
+    function legacyOwnerWrite(userId) {
+      return isOwner(userId) && !securityMode(userId);
+    }
+
+    // Hardened: catalog / CRM writes for cashier+admin; financial writes server-only
+    function hardenedCatalogWrite(userId) {
+      return isOwner(userId) && securityMode(userId) && isCashierOrAdmin();
+    }
+
+    function financialSubpath(sub) {
+      return sub in [
+        'orders', 'orderEdits', 'openBills', 'cashShifts', 'cashMovements',
+        'vault', 'vaultMovements', 'counters', 'idempotency', 'cashShiftIdempotency'
+      ];
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow update: if legacyOwnerWrite(userId)
+        || (isOwner(userId) && securityMode(userId) && isAdmin()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['securityMode', 'updatedAt']));
+      allow delete: if false;
+
+      match /{subCollection}/{docId} {
+        allow read: if isOwner(userId);
+
+        allow write: if legacyOwnerWrite(userId);
+
+        allow create, update, delete: if isOwner(userId)
+          && securityMode(userId)
+          && !financialSubpath(subCollection)
+          && hardenedCatalogWrite(userId);
+      }
+
+      match /vault/{docId} {
+        allow read: if isOwner(userId) && (!securityMode(userId) || isAdmin());
+        allow write: if legacyOwnerWrite(userId);
+        allow write: if false;
+      }
+
+      match /counters/{docId} {
+        allow read: if isOwner(userId);
+        allow write: if legacyOwnerWrite(userId);
+        allow write: if false;
+      }
+    }
+  }
+}

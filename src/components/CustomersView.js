@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Plus, Pencil, Trash2, Download, Phone, User, FileText, Search, X, Eye, Calendar, Clock, Printer, FileDown, Percent } from 'lucide-react';
+import { Plus, Pencil, Trash2, Download, Phone, User, FileText, Search, X, Eye, Calendar, Clock, Printer, FileDown, Percent, Wallet } from 'lucide-react';
 import { orderDiscountValue, discountedOrders } from '../utils/customerStatementData';
 import {
   printCustomerAccountStatement,
@@ -20,6 +20,7 @@ export default function CustomersView({
   FONT_HEADING,
   onSaveCustomer,
   onAddLegacyDebt,
+  onAddCustomerPayment,
   onDeleteCustomer,
   onExportCustomerFile,
   onClearAllCustomers,
@@ -46,6 +47,19 @@ export default function CustomersView({
   const [legacyModalOpen, setLegacyModalOpen] = useState(false);
   const [legacyForm, setLegacyForm] = useState({ amount: '', note: '' });
   const [legacySaving, setLegacySaving] = useState(false);
+  const [paymentModalCustomerId, setPaymentModalCustomerId] = useState(null);
+  const [paymentForm, setPaymentForm] = useState({ amount: '', note: '' });
+  const [paymentSaving, setPaymentSaving] = useState(false);
+
+  const paymentModalCustomer = customers.find((c) => c.id === paymentModalCustomerId);
+
+  const openPaymentModal = (customerId) => {
+    if (!onAddCustomerPayment) return;
+    setPaymentForm({ amount: '', note: '' });
+    setPaymentModalCustomerId(customerId);
+    setDetailId(customerId);
+    setSelectedOrder(null);
+  };
 
   const formatOrderDate = (order) => {
     if (!order?.timestamp) return '—';
@@ -141,6 +155,24 @@ export default function CustomersView({
       alert(e.message || 'تعذّر إنشاء ملف PDF');
     } finally {
       setPdfLoading(false);
+    }
+  };
+
+  const handleSubmitCustomerPayment = async (e) => {
+    e.preventDefault();
+    if (!paymentModalCustomer || paymentSaving || !onAddCustomerPayment) return;
+    const amt = Number(paymentForm.amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      alert('أدخل مبلغاً صحيحاً أكبر من صفر.');
+      return;
+    }
+    setPaymentSaving(true);
+    try {
+      await onAddCustomerPayment(paymentModalCustomer.id, amt, paymentForm.note);
+      setPaymentModalCustomerId(null);
+      setPaymentForm({ amount: '', note: '' });
+    } finally {
+      setPaymentSaving(false);
     }
   };
 
@@ -259,36 +291,52 @@ export default function CustomersView({
               </p>
             )}
             {filtered.map((c) => (
-              <button
+              <div
                 key={c.id}
-                type="button"
-                onClick={() => {
-                  setDetailId(c.id);
-                  setSelectedOrder(null);
-                }}
-                className={`w-full text-start p-4 hover:bg-gray-50 transition-colors ${
+                className={`flex items-stretch gap-1 ${
                   detailId === c.id ? 'bg-accent-soft/40 border-s-4 border-accent' : ''
                 }`}
               >
-                <div className="flex justify-between items-start gap-2">
-                  <div>
-                    <p className="font-semibold text-primary text-sm" style={{ fontFamily: FONT_UI }}>
-                      {c.name}
-                    </p>
-                    {c.phone ? (
-                      <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1">
-                        <Phone size={12} /> {c.phone}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDetailId(c.id);
+                    setSelectedOrder(null);
+                  }}
+                  className="flex-1 min-w-0 text-start p-4 hover:bg-gray-50 transition-colors"
+                >
+                  <div className="flex justify-between items-start gap-2">
+                    <div>
+                      <p className="font-semibold text-primary text-sm" style={{ fontFamily: FONT_UI }}>
+                        {c.name}
                       </p>
-                    ) : null}
+                      {c.phone ? (
+                        <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1">
+                          <Phone size={12} /> {c.phone}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="text-end shrink-0">
+                      <p className="text-[10px] text-gray-400">رصيد الدين</p>
+                      <p className={`text-sm font-bold ${Number(c.balance) > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {fmtMoney(c.balance || 0)}
+                      </p>
+                    </div>
                   </div>
-                  <div className="text-end shrink-0">
-                    <p className="text-[10px] text-gray-400">رصيد الدين</p>
-                    <p className={`text-sm font-bold ${Number(c.balance) > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      {fmtMoney(c.balance || 0)}
-                    </p>
-                  </div>
-                </div>
-              </button>
+                </button>
+                {onAddCustomerPayment && (
+                  <button
+                    type="button"
+                    onClick={() => openPaymentModal(c.id)}
+                    className="shrink-0 self-center me-2 flex items-center gap-1 px-2.5 py-2 rounded-xl border border-emerald-200 bg-emerald-50/90 text-emerald-800 text-[11px] font-semibold hover:bg-emerald-100"
+                    style={{ fontFamily: FONT_UI }}
+                    title="إضافة دفعة"
+                  >
+                    <Wallet size={14} />
+                    دفعة
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         </div>
@@ -326,6 +374,17 @@ export default function CustomersView({
                     <FileDown size={14} />
                     {pdfLoading ? 'جاري التحميل…' : 'كشف حساب PDF'}
                   </button>
+                  {onAddCustomerPayment && (
+                    <button
+                      type="button"
+                      onClick={() => openPaymentModal(detailCustomer.id)}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-emerald-200 bg-emerald-50 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
+                      style={{ fontFamily: FONT_UI }}
+                    >
+                      <Wallet size={14} />
+                      إضافة دفعة
+                    </button>
+                  )}
                   {onAddLegacyDebt && (
                     <button
                       type="button"
@@ -487,6 +546,24 @@ export default function CustomersView({
                               ) : null}
                             </span>
                             <span className="font-bold text-red-600 shrink-0 ms-2">+{fmtMoney(t.amount)}</span>
+                          </div>
+                        );
+                      }
+                      if (t.type === 'payment') {
+                        return (
+                          <div
+                            key={t.id}
+                            className="w-full flex justify-between items-center text-xs p-2.5 rounded-xl bg-emerald-50/80 border border-emerald-100 text-start"
+                            style={{ fontFamily: FONT_UI }}
+                          >
+                            <span>
+                              {customerTransactionTypeLabel(t.type)}
+                              {t.description ? ` — ${t.description}` : ''}
+                              {t.date ? (
+                                <span className="block text-[10px] text-gray-400 mt-0.5">{formatLegacyDate(t.date)}</span>
+                              ) : null}
+                            </span>
+                            <span className="font-bold text-emerald-700 shrink-0 ms-2">-{fmtMoney(t.amount)}</span>
                           </div>
                         );
                       }
@@ -811,6 +888,74 @@ export default function CustomersView({
                   style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
                 >
                   {legacySaving ? 'جاري الحفظ…' : 'تأكيد الإضافة'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {paymentModalCustomer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-5 border border-gray-100">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>
+                إضافة دفعة
+              </h3>
+              <button
+                type="button"
+                onClick={() => setPaymentModalCustomerId(null)}
+                className="p-1 rounded-lg hover:bg-gray-100 text-gray-500"
+                aria-label="إغلاق"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-4" style={{ fontFamily: FONT_UI }}>
+              للعميل: <strong>{paymentModalCustomer.name}</strong> — الرصيد الحالي:{' '}
+              {fmtMoney(paymentModalCustomer.balance || 0)}
+            </p>
+            <form onSubmit={handleSubmitCustomerPayment} className="space-y-3">
+              <div>
+                <label className="block text-xs mb-1 text-gray-600">مبلغ الدفعة</label>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  required
+                  autoFocus
+                  value={paymentForm.amount}
+                  onChange={(e) => setPaymentForm((f) => ({ ...f, amount: e.target.value }))}
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm outline-none"
+                  style={{ fontFamily: FONT_UI }}
+                />
+              </div>
+              <div>
+                <label className="block text-xs mb-1 text-gray-600">ملاحظة (اختياري)</label>
+                <input
+                  value={paymentForm.note}
+                  onChange={(e) => setPaymentForm((f) => ({ ...f, note: e.target.value }))}
+                  placeholder="دفعة على الحساب"
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm outline-none"
+                  style={{ fontFamily: FONT_UI }}
+                />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentModalCustomerId(null)}
+                  className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium"
+                  style={{ fontFamily: FONT_UI }}
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={paymentSaving}
+                  className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-60"
+                  style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
+                >
+                  {paymentSaving ? 'جاري الحفظ…' : 'تسجيل الدفعة'}
                 </button>
               </div>
             </form>

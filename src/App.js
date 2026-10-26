@@ -18,6 +18,7 @@ import VaultView from './components/VaultView';
 import VaultPinScreen from './components/VaultPinScreen';
 import DailyCashOpenModal from './components/DailyCashOpenModal';
 import { resolveDailyCashGate } from './utils/cashDayGate';
+import { externalHookahCartItemId, selectHookahExternalCheckoutProducts } from './utils/hookahExternalSale';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory } from './productAssets';
 import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, Landmark, PauseCircle, Check } from 'lucide-react';
 import { friendlyError } from './utils/friendlyError';
@@ -67,6 +68,7 @@ import {
 import { ensureStarterProducts, ensureStarterAssets, ensureTobaccoImage, ensurePlaystationPricing } from './services/starterProducts';
 import { ensureDrinkCategoriesSplit } from './services/drinkCategoriesMigration';
 import { effectiveDebt, debtDeltasByCustomer, replaceOrderDebtEntry, diffOrders } from './utils/orderAccounting';
+import { computeTodayCashSales, getLocalCalendarDayStart } from './utils/dashboardCashSales';
 import {
   PRODUCT_TYPES,
   TIME_ROUNDING_OPTIONS,
@@ -91,7 +93,7 @@ import {
   playstationSessionRef,
 } from './services/playstationService';
 import {
-  EMPLOYEE_LOGIN_PASSWORD,
+  getEmployeeLoginPassword,
   EMPLOYEE_VIEWS,
   canCreateCustomers,
   canManageOpenBills,
@@ -107,7 +109,8 @@ import {
 } from './services/openBillsService';
 import {
   openCashShift,
-  recordCashSale,
+  recordCashSaleInTransaction,
+  recordCashRefundInTransaction,
   recordCashWithdrawal,
   recordCashDeposit,
   closeCashShift,
@@ -117,6 +120,18 @@ import { printReceiptViaBrowser } from './utils/printReceiptBrowser';
 import { downloadBusinessReportPdf } from './utils/businessReportPdf';
 import { resetSalesAndCustomerLedgers } from './services/resetSalesAndLedgers';
 import { downloadCustomersLedgerPdf } from './utils/customersLedgerPdf';
+import { buildTrustedCompleteOrderPayload } from './services/trustedOrderPayload';
+import {
+  callCancelOrder,
+  callCompleteOrder,
+  callCloseCashShift,
+  callOpenCashShift,
+  callRecordCashShiftMovement,
+  callVerifyEmployeePin,
+  isTrustedCashShiftsEnabled,
+  isTrustedOrdersEnabled,
+} from './services/secureFunctions';
+import { newIdempotencyKey } from './utils/idempotencyKey';
 
 const LOW_STOCK_THRESHOLD = 10;
 
@@ -597,11 +612,21 @@ const AppCore = () => {
     }
   };
 
-  const handleEmployeeLogin = (e) => {
+  const handleEmployeeLogin = async (e) => {
     e.preventDefault();
     const password = normalizeLoginPassword(adminPassword);
     if (!password) return;
-    if (password !== EMPLOYEE_LOGIN_PASSWORD) {
+    if (process.env.REACT_APP_VERIFY_EMPLOYEE_PIN_ON_SERVER === 'true') {
+      setUploadProgress(true);
+      try {
+        await callVerifyEmployeePin(password);
+      } catch {
+        alert('كلمة مرور الموظف غير صحيحة');
+        return;
+      } finally {
+        setUploadProgress(false);
+      }
+    } else if (password !== getEmployeeLoginPassword()) {
       alert('كلمة مرور الموظف غير صحيحة');
       return;
     }
@@ -1350,6 +1375,10 @@ const AppCore = () => {
   const handleCancelOrder = async (orderId) => {
     if (window.confirm('هل تريد إلغاء هذا الطلب؟')) {
       try {
+        if (isTrustedOrdersEnabled()) {
+          await callCancelOrder(orderId);
+          return;
+        }
         await runTransaction(db, async (transaction) => {
           const orderRef = doc(db, 'users', user.uid, 'orders', orderId);
           const orderDoc = await transaction.get(orderRef);
@@ -1397,6 +1426,16 @@ const AppCore = () => {
             if (item.sessionId) {
               transaction.update(playstationSessionRef(user.uid, item.sessionId), { billed: false, orderId: null, orderNumber: null });
             }
+          }
+
+          const cashToReverse = Math.max(0, Number(orderData.cashPaid) || 0);
+          if (cashToReverse > 0 && orderData.status !== 'cancelled') {
+            await recordCashRefundInTransaction(transaction, user.uid, {
+              amount: cashToReverse,
+              orderId,
+              orderNumber: orderData.orderNumber,
+              actor: sessionActor(),
+            });
           }
 
           transaction.update(orderRef, {
@@ -1454,16 +1493,16 @@ const AppCore = () => {
     }, 1100);
   };
 
-  const addItemToCart = (product, selectedAddons) => {
+  const addItemToCart = (product, selectedAddons, cartItemIdOverride = null) => {
     const addonsPrice = selectedAddons.reduce((sum, addon) => sum + (parseFloat(addon.price) || 0), 0);
     const addonsCost = selectedAddons.reduce((sum, addon) => sum + (parseFloat(addon.cost) || 0), 0);
     const finalPrice = product.price + addonsPrice;
     const finalCost = (product.cost || 0) + addonsCost;
     
     // Create a unique ID for cart item based on product ID and selected add-ons
-    const cartItemId = selectedAddons.length > 0 
+    const cartItemId = cartItemIdOverride ?? (selectedAddons.length > 0 
       ? `${product.id}-${JSON.stringify(selectedAddons.map(a => a.name).sort())}`
-      : product.id;
+      : product.id);
 
     const existing = currentOrder.items.find(i => i.cartItemId === cartItemId);
     
@@ -1580,9 +1619,9 @@ const AppCore = () => {
     }
   };
 
-  const hookahSaleProducts = products
-    .filter((p) => getProductType(p) === 'standard' && String(p.category || '').includes('أرجيل'))
-    .sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+  const hookahSaleProducts = selectHookahExternalCheckoutProducts(
+    products.filter((p) => getProductType(p) === 'standard' && String(p.category || '').includes('أرجيل'))
+  );
 
   const handleCheckoutAsset = ({ assetId, person, notes, productId }) =>
     runAssetAction(async () => {
@@ -1601,7 +1640,7 @@ const AppCore = () => {
         ...prev,
         assetMovementIds: [...(prev.assetMovementIds || []), movementId],
       }));
-      addToOrder(saleProduct);
+      addItemToCart(saleProduct, [], externalHookahCartItemId(saleProduct.id));
     });
 
   const handleReturnAsset = (movement) => {
@@ -1729,6 +1768,49 @@ const AppCore = () => {
         transactions,
         updatedAt: serverTimestamp(),
       });
+    } catch (error) {
+      alert(error.message);
+    }
+  };
+
+  const handleAddCustomerPayment = async (customerId, amount, description) => {
+    const parsed = Math.round(Number(amount) * 100) / 100;
+    if (!customerId || !Number.isFinite(parsed) || parsed <= 0) {
+      alert('أدخل مبلغاً صحيحاً أكبر من صفر.');
+      return;
+    }
+    const existing = customers.find((c) => c.id === customerId);
+    if (!existing) return;
+    const note = String(description || '').trim() || 'دفعة على الحساب';
+    const entry = {
+      id: `pay_${Date.now()}`,
+      type: 'payment',
+      amount: parsed,
+      description: note,
+      date: new Date().toISOString(),
+    };
+    const transactions = [...(existing.transactions || []), entry].slice(-100);
+    const newBalance = Math.round(((Number(existing.balance) || 0) - parsed) * 100) / 100;
+    try {
+      await updateDoc(doc(db, 'users', user.uid, 'customers', customerId), {
+        balance: newBalance,
+        transactions,
+        updatedAt: serverTimestamp(),
+      });
+      const openShift = cashShifts.find((s) => s.status === 'open');
+      if (openShift) {
+        try {
+          await recordCashDeposit(user.uid, {
+            shiftId: openShift.id,
+            amount: parsed,
+            reason: `دفعة عميل — ${existing.name || 'عميل'}`,
+            actor: sessionActor(),
+          });
+        } catch (cashErr) {
+          console.error('Customer payment recorded; cash shift deposit failed:', cashErr);
+          alert(`تم تسجيل الدفعة على حساب العميل، لكن لم تُسجَّل في وردية الكاش: ${cashErr.message}`);
+        }
+      }
     } catch (error) {
       alert(error.message);
     }
@@ -1932,7 +2014,6 @@ const AppCore = () => {
 
     let createdOrderId = editingOrderId || null;
     let createdOrderNumber = null;
-    let recordedCashPaid = 0;
     const billIdToClose = activeOpenBillId;
 
     try {
@@ -2016,6 +2097,25 @@ const AppCore = () => {
         }
       }
 
+      if (isTrustedOrdersEnabled()) {
+        const trustedPayload = buildTrustedCompleteOrderPayload({
+          currentOrder,
+          discount: finalDiscount,
+          discountType: currentDiscountType,
+          payment: {
+            ...payment,
+            paymentType,
+            customerId,
+            customPrice: payment.customPrice,
+            cashPaid: payment.cashPaid,
+          },
+          status: finalStatus === 'unpaid' ? 'unpaid' : 'paid',
+          editingOrderId,
+        });
+        const trustedResult = await callCompleteOrder(trustedPayload);
+        createdOrderId = trustedResult.orderId;
+        createdOrderNumber = trustedResult.orderNumber;
+      } else {
       const cost = currentOrder.items.reduce((sum, i) => sum + ((i.cost || 0) * i.quantity), 0);
 
       await runTransaction(db, async (transaction) => {
@@ -2143,7 +2243,12 @@ const AppCore = () => {
             for (const ing of pData.ingredients) {
               if (ing.ingredientId && ingredientDocs[ing.ingredientId]) {
                 const ingData = ingredientDocs[ing.ingredientId];
-                ingData.data.stock = (ingData.data.stock || 0) - (ing.usageQty * item.quantity);
+                const usage = (Number(ing.usageQty) || 0) * item.quantity;
+                const nextStock = (ingData.data.stock || 0) - usage;
+                if (nextStock < -0.0001) {
+                  throw new Error(`مخزون المكوّن «${ingData.data.name || ing.ingredientId}» غير كافٍ`);
+                }
+                ingData.data.stock = nextStock;
               }
             }
           }
@@ -2260,6 +2365,15 @@ const AppCore = () => {
           transaction.update(assetMovementRef(user.uid, movementId), { orderId: newOrderRef.id, orderNumber });
         }
 
+        if (!editingOrderId && cashPaid > 0) {
+          await recordCashSaleInTransaction(transaction, user.uid, {
+            amount: cashPaid,
+            orderId: newOrderRef.id,
+            orderNumber,
+            actor: sessionActor(),
+          });
+        }
+
         for (const cid of affectedCustomerIds) {
           const customerDoc = customerDocs[cid];
           if (!customerDoc) continue;
@@ -2279,8 +2393,10 @@ const AppCore = () => {
 
         createdOrderId = newOrderRef.id;
         createdOrderNumber = orderNumber;
-        recordedCashPaid = cashPaid;
       });
+      }
+
+      const wasEditing = Boolean(editingOrderId);
 
       setCurrentOrder({ items: [], customer: '', customerId: '', notes: '', assetMovementIds: [] });
       setDiscount(0);
@@ -2292,7 +2408,7 @@ const AppCore = () => {
       setShowPaymentModal(false);
       setShowMixedPaymentModal(false);
       setShowCashModal(false);
-      if (!editingOrderId) {
+      if (!wasEditing) {
         setSuspendFeedback(`✓ تم الدفع${createdOrderNumber ? ` · #${createdOrderNumber}` : ''}`);
       }
 
@@ -2308,20 +2424,7 @@ const AppCore = () => {
         }
       }
 
-      if (!editingOrderId && recordedCashPaid > 0) {
-        try {
-          await recordCashSale(user.uid, {
-            amount: recordedCashPaid,
-            orderId: createdOrderId,
-            orderNumber: createdOrderNumber,
-            actor: sessionActor(),
-          });
-        } catch (cashError) {
-          console.error('Cash sale recording failed:', cashError);
-        }
-      }
-
-      if (editingOrderId) {
+      if (wasEditing) {
         setCurrentView('orders');
         alert('تم تحديث الطلب بنجاح');
       }
@@ -2370,13 +2473,23 @@ const AppCore = () => {
         : period === 2
           ? 'بدء الشفت الثاني'
           : `بدء الشفت الأول — متوقع ${Number(gate.expected) || 0}`;
-      await openCashShift(user.uid, {
-        openingBalance: countedAmount,
-        shiftPeriod: period,
-        operatorName: String(operatorName).trim(),
-        notes: note,
-        actor: sessionActor(),
-      });
+      if (isTrustedCashShiftsEnabled()) {
+        await callOpenCashShift({
+          openingBalance: countedAmount,
+          shiftPeriod: period,
+          operatorName: String(operatorName).trim(),
+          notes: note,
+          idempotencyKey: newIdempotencyKey('open_shift'),
+        });
+      } else {
+        await openCashShift(user.uid, {
+          openingBalance: countedAmount,
+          shiftPeriod: period,
+          operatorName: String(operatorName).trim(),
+          notes: note,
+          actor: sessionActor(),
+        });
+      }
     } catch (error) {
       alert(error.message);
     } finally {
@@ -2393,12 +2506,22 @@ const AppCore = () => {
     if (cashBusy) return;
     setCashBusy(true);
     try {
-      await recordCashWithdrawal(user.uid, {
-        shiftId: openShift.id,
-        amount,
-        reason,
-        actor: sessionActor(),
-      });
+      if (isTrustedCashShiftsEnabled()) {
+        await callRecordCashShiftMovement({
+          shiftId: openShift.id,
+          type: 'withdrawal',
+          amount,
+          reason,
+          idempotencyKey: newIdempotencyKey('shift_wd'),
+        });
+      } else {
+        await recordCashWithdrawal(user.uid, {
+          shiftId: openShift.id,
+          amount,
+          reason,
+          actor: sessionActor(),
+        });
+      }
     } catch (error) {
       alert(error.message);
     } finally {
@@ -2415,11 +2538,21 @@ const AppCore = () => {
     if (cashBusy) return;
     setCashBusy(true);
     try {
-      await recordCashDeposit(user.uid, {
-        shiftId: openShift.id,
-        amount,
-        actor: sessionActor(),
-      });
+      if (isTrustedCashShiftsEnabled()) {
+        await callRecordCashShiftMovement({
+          shiftId: openShift.id,
+          type: 'deposit',
+          amount,
+          reason: 'إيداع في الصندوق',
+          idempotencyKey: newIdempotencyKey('shift_dep'),
+        });
+      } else {
+        await recordCashDeposit(user.uid, {
+          shiftId: openShift.id,
+          amount,
+          actor: sessionActor(),
+        });
+      }
     } catch (error) {
       alert(error.message);
     } finally {
@@ -2436,12 +2569,20 @@ const AppCore = () => {
     if (cashBusy) return;
     setCashBusy(true);
     try {
-      await closeCashShift(user.uid, {
-        shiftId: openShift.id,
-        actualClosingBalance,
-        notes,
-        actor: sessionActor(),
-      });
+      if (isTrustedCashShiftsEnabled()) {
+        await callCloseCashShift({
+          shiftId: openShift.id,
+          actualClosingBalance,
+          notes,
+        });
+      } else {
+        await closeCashShift(user.uid, {
+          shiftId: openShift.id,
+          actualClosingBalance,
+          notes,
+          actor: sessionActor(),
+        });
+      }
       const period = Number(openShift.shiftPeriod) === 2 ? 2 : 1;
       alert(
         period === 1
@@ -2476,21 +2617,6 @@ const AppCore = () => {
       alert(error.message);
     } finally {
       setVaultBusy(false);
-    }
-  };
-
-  const toggleOrderStatus = async (orderId, currentStatus) => {
-    if (currentStatus === 'paid' && !orders.find((o) => o.id === orderId)?.customerId) {
-      alert('لا يمكن جعل طلب الضيف غير مدفوع — الدين والآجل للعملاء المسجلين فقط');
-      return;
-    }
-    try {
-      const orderRef = doc(db, 'users', user.uid, 'orders', orderId);
-      await updateDoc(orderRef, {
-        status: currentStatus === 'paid' ? 'unpaid' : 'paid'
-      });
-    } catch (error) {
-      alert(error.message);
     }
   };
 
@@ -2816,14 +2942,15 @@ const AppCore = () => {
   const taxableAmount = cartSubtotal - cartDiscountAmount;
   const cartTotal = taxableAmount;
   
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const dashboardDayStart = getLocalCalendarDayStart();
 
-  const dashboardOrders = orders.filter(o => {
+  const dashboardOrders = orders.filter((o) => {
     if (!o.timestamp) return false;
     const orderDate = o.timestamp.toDate ? o.timestamp.toDate() : new Date(o.timestamp);
-    return orderDate >= today;
+    return orderDate >= dashboardDayStart;
   });
+
+  const todayCashSales = computeTodayCashSales(orders, dashboardDayStart);
 
   const totalProfit = orders
     .filter(o => o.status === 'paid')
@@ -3485,7 +3612,19 @@ const AppCore = () => {
             </div>
             
             {/* Key Metrics Row */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5">
+              {/* Today's cash collected (order cashPaid) */}
+              <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100 hover:shadow-lg transition-all duration-300">
+                <div className="flex justify-between items-start mb-4">
+                  <div className="p-3 rounded-xl bg-emerald-50 text-emerald-700">
+                    <Wallet size={24} />
+                  </div>
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800">كاش</span>
+                </div>
+                <p className="text-gray-500 text-sm font-medium mb-1">كاش اليوم</p>
+                <h3 className="text-2xl font-bold text-primary">{fmtMoney(todayCashSales)}</h3>
+              </div>
+
               {/* Total Paid Sales */}
               <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100 hover:shadow-lg transition-all duration-300">
                 <div className="flex justify-between items-start mb-4">
@@ -3718,7 +3857,7 @@ const AppCore = () => {
                     {orders.filter(o => {
                         if (!o.timestamp) return false;
                         const orderDate = o.timestamp.toDate ? o.timestamp.toDate() : new Date(o.timestamp);
-                        return orderDate >= today;
+                        return orderDate >= dashboardDayStart;
                     }).sort((a, b) => {
                         const dateA = a.timestamp.toDate ? a.timestamp.toDate() : new Date(a.timestamp);
                         const dateB = b.timestamp.toDate ? b.timestamp.toDate() : new Date(b.timestamp);
@@ -3746,7 +3885,7 @@ const AppCore = () => {
                     {orders.filter(o => {
                         if (!o.timestamp) return false;
                         const orderDate = o.timestamp.toDate ? o.timestamp.toDate() : new Date(o.timestamp);
-                        return orderDate >= today;
+                        return orderDate >= dashboardDayStart;
                     }).length === 0 && (
                       <tr>
                         <td colSpan="6" className="p-8 text-center text-gray-400 text-sm">لا مبيعات اليوم</td>
@@ -5037,14 +5176,13 @@ const AppCore = () => {
                           {fmtMoney(order.total)}
                         </p>
                         <div className="flex gap-2">
-                          <button
-                            onClick={() => order.status !== 'cancelled' && toggleOrderStatus(order.id, order.status)}
-                            disabled={order.status === 'cancelled'}
+                          <span
                             className={`px-3 py-1.5 rounded-lg text-white text-xs font-medium ${order.status === 'paid' ? 'bg-green-500' : order.status === 'cancelled' ? 'bg-gray-400' : 'bg-yellow-500'}`}
                             style={{ fontFamily: FONT_UI }}
+                            title="لتعديل الدفع استخدم تعديل الطلب أو الإلغاء — لا يُغيّر الحالة من هنا"
                           >
                             {order.status === 'paid' ? 'مدفوع' : order.status === 'cancelled' ? 'ملغى' : 'غير مدفوع'}
-                          </button>
+                          </span>
                           {order.status !== 'cancelled' && (
                             <button
                               onClick={() => handleCancelOrder(order.id)}
@@ -5138,6 +5276,7 @@ const AppCore = () => {
             FONT_HEADING={FONT_HEADING}
             onSaveCustomer={employeeCanManageCustomers ? handleSaveCustomer : undefined}
             onAddLegacyDebt={isEmployee ? undefined : handleAddLegacyDebt}
+            onAddCustomerPayment={handleAddCustomerPayment}
             onDeleteCustomer={isEmployee ? undefined : handleDeleteCustomer}
             onExportCustomerFile={exportCustomerFile}
             onClearAllCustomers={isEmployee ? undefined : handleClearAllCustomers}

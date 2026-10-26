@@ -111,6 +111,7 @@ export function resolveCustomerStatementOrders(customer, orders = []) {
 export function customerTransactionTypeLabel(type) {
   if (type === 'order_debt') return 'دين من طلب';
   if (type === 'legacy_debt') return 'دين قديم';
+  if (type === 'payment') return 'دفعة سداد';
   return type || '—';
 }
 

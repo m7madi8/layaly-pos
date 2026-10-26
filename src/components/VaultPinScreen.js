@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Landmark, Delete } from 'lucide-react';
 import { FONT_HEADING, FONT_UI } from '../branding';
-import { isVaultPinValid, VAULT_PIN } from '../vaultAuth';
+import { getVaultPinInputLength, isVaultPinValid } from '../vaultAuth';
 
-const PIN_LENGTH = VAULT_PIN.length;
+const PIN_LENGTH = getVaultPinInputLength();
 
 export default function VaultPinScreen({ theme, onUnlocked }) {
   const [digits, setDigits] = useState('');

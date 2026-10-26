@@ -1,10 +1,13 @@
+import { resolveEmployeeLoginPassword } from './config/authSecrets';
+
 /** بريد الدخول — يجب أن يطابق مستخدم Firebase Authentication */
 export const ADMIN_LOGIN_EMAIL =
   (process.env.REACT_APP_ADMIN_EMAIL || 'admin@layali.cafe').trim();
 
-/** كلمة مرور شاشة الموظف — مستقلة عن كلمة مرور المدير على Firebase */
-export const EMPLOYEE_LOGIN_PASSWORD =
-  (process.env.REACT_APP_EMPLOYEE_PASSWORD || 'admin123').trim();
+/** كلمة مرور شاشة الموظف — في الإنتاج يجب ضبط REACT_APP_EMPLOYEE_PASSWORD (لا افتراضي في البناء) */
+export function getEmployeeLoginPassword() {
+  return resolveEmployeeLoginPassword();
+}
 
 /** الصفحات المسموحة للموظف */
 export const EMPLOYEE_VIEWS = ['pos', 'customers', 'cash'];

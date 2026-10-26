@@ -18,6 +18,7 @@ import {
   query as firestoreQuery,
   where as firestoreWhere,
   orderBy as firestoreOrderBy,
+  limit as firestoreLimit,
   serverTimestamp as firestoreServerTimestamp,
   onSnapshot as firestoreOnSnapshot,
   setDoc as firestoreSetDoc,
@@ -100,6 +101,7 @@ export const deleteDoc = bind(demo.deleteDoc, firestoreDeleteDoc);
 export const query = bind(demo.query, firestoreQuery);
 export const where = bind(demo.where, firestoreWhere);
 export const orderBy = bind(demo.orderBy, firestoreOrderBy);
+export const limit = bind(demo.limit, firestoreLimit);
 export const serverTimestamp = bind(demo.serverTimestamp, firestoreServerTimestamp);
 export const onSnapshot = bind(demo.onSnapshot, firestoreOnSnapshot);
 export const setDoc = bind(demo.setDoc, firestoreSetDoc);

@@ -1,6 +1,13 @@
-/** رمز دخول الخزنة (أرقام فقط) — يمكن تغييره عبر REACT_APP_VAULT_PIN */
-export const VAULT_PIN = String(process.env.REACT_APP_VAULT_PIN || '1221').trim();
+import { resolveVaultPin } from './config/authSecrets';
+
+/** أقصى طول لإدخال الرمز في الواجهة (لا يُعرض الرمز الفعلي). */
+export function getVaultPinInputLength() {
+  const pin = resolveVaultPin();
+  return pin ? pin.length : 6;
+}
 
 export function isVaultPinValid(digits) {
-  return String(digits || '').trim() === VAULT_PIN;
+  const expected = resolveVaultPin();
+  if (!expected) return false;
+  return String(digits || '').trim() === expected;
 }
