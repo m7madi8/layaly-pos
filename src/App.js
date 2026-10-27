@@ -309,6 +309,7 @@ const AppCore = () => {
   const supplierPaymentIdemRef = useRef(null);
   const employeeBenefitIdemRef = useRef(null);
   const employeeBenefitExpenseSyncRef = useRef(false);
+  const completeOrderLockRef = useRef(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showRemoveTestSalesModal, setShowRemoveTestSalesModal] = useState(false);
   const [showRemoveOldPlaystationModal, setShowRemoveOldPlaystationModal] = useState(false);
@@ -505,13 +506,16 @@ const AppCore = () => {
     if (currentView !== 'expenses' || !user?.uid || userRole !== 'admin') return;
     if (employeeBenefitExpenseSyncRef.current) return;
     employeeBenefitExpenseSyncRef.current = true;
-    syncEmployeeBenefitExpenses(user.uid)
-      .then((r) => {
-        if (r.created > 0) {
-          console.info(`مزامنة استفادة الموظفين: ${r.created} مصروف(ات) في Firestore`);
-        }
-      })
-      .catch((e) => console.error('Employee benefit expense sync failed:', e));
+    const syncTimer = setTimeout(() => {
+      syncEmployeeBenefitExpenses(user.uid)
+        .then((r) => {
+          if (r.created > 0) {
+            console.info(`مزامنة استفادة الموظفين: ${r.created} مصروف(ات) في Firestore`);
+          }
+        })
+        .catch((e) => console.error('Employee benefit expense sync failed:', e));
+    }, 8000);
+    return () => clearTimeout(syncTimer);
   }, [currentView, user?.uid, userRole]);
 
   useEffect(() => {
@@ -2301,7 +2305,7 @@ const AppCore = () => {
       alert('يجب تسجيل الدخول لحفظ الطلب');
       return;
     }
-    if (uploadProgress) return;
+    if (uploadProgress || completeOrderLockRef.current) return;
 
     if (activeOpenBillId) {
       const openBill = openBills.find((b) => b.id === activeOpenBillId);
@@ -2317,6 +2321,7 @@ const AppCore = () => {
         : { method: paymentOrMethod, customPrice: customPriceLegacy };
 
     setUploadProgress(true);
+    completeOrderLockRef.current = true;
 
     let createdOrderId = editingOrderId || null;
     let createdOrderNumber = null;
@@ -2465,25 +2470,31 @@ const AppCore = () => {
             });
         }
 
-        // Read all products
+        const productsById = new Map(products.map((p) => [p.id, p]));
+
         const productDocs = {};
         for (const pid of productIds) {
-            const pRef = doc(db, 'users', user.uid, 'products', pid);
-            const pDoc = await transaction.get(pRef);
-            if (pDoc.exists()) {
-                productDocs[pid] = { ref: pRef, data: pDoc.data() };
-            }
+          const pRef = doc(db, 'users', user.uid, 'products', pid);
+          const cached = productsById.get(pid);
+          if (cached && getProductType(cached) === 'time') {
+            productDocs[pid] = { ref: pRef, data: { ...cached } };
+            continue;
+          }
+          const pDoc = await transaction.get(pRef);
+          if (pDoc.exists()) {
+            productDocs[pid] = { ref: pRef, data: pDoc.data() };
+          }
         }
 
-        // Collect Ingredient IDs from the READ products (source of truth)
         const ingredientIds = new Set();
-        currentOrder.items.forEach(item => {
-            const pData = productDocs[item.id]?.data;
-            if (pData && pData.ingredients) {
-                pData.ingredients.forEach(ing => {
-                    if (ing.ingredientId) ingredientIds.add(ing.ingredientId);
-                });
-            }
+        currentOrder.items.forEach((item) => {
+          const pid = normalizeDocId(item.id);
+          const pData = productDocs[pid]?.data || productsById.get(pid);
+          if (pData?.ingredients) {
+            pData.ingredients.forEach((ing) => {
+              if (ing.ingredientId) ingredientIds.add(ing.ingredientId);
+            });
+          }
         });
 
         // Read Ingredients
@@ -2777,6 +2788,7 @@ const AppCore = () => {
     } catch (error) {
       alert(friendlyError(error, 'تعذّر إتمام الدفع. لم يُحفظ الطلب ولم يُخصم شيء من المخزون. حاول مرة أخرى.'));
     } finally {
+      completeOrderLockRef.current = false;
       setUploadProgress(false);
     }
   };

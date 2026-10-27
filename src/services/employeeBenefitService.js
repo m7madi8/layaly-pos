@@ -1,5 +1,5 @@
 import { Timestamp } from 'firebase/firestore';
-import { db, doc, collection, runTransaction, serverTimestamp, getDocs, getDoc, writeBatch } from '../firebaseClient';
+import { db, doc, collection, runTransaction, serverTimestamp, getDocs, writeBatch } from '../firebaseClient';
 import {
   readOpenCashShiftInTransaction,
   appendCashMovementInTransaction,
@@ -398,7 +398,12 @@ export async function cancelEmployeeBenefit(uid, benefitId, { actor, reason }) {
  * يُنشئ مستندات expenses الناقصة لسجلات employeeBenefits (استعادة بعد تصفير أو أخطاء سابقة).
  */
 export async function syncEmployeeBenefitExpenses(uid) {
-  const benefitsSnap = await getDocs(benefitsCol(uid));
+  const [benefitsSnap, expensesSnap] = await Promise.all([
+    getDocs(benefitsCol(uid)),
+    getDocs(expensesCol(uid)),
+  ]);
+  const existingExpenseIds = new Set(expensesSnap.docs.map((d) => d.id));
+
   let created = 0;
   let linked = 0;
   let alreadyOk = 0;
@@ -422,8 +427,7 @@ export async function syncEmployeeBenefitExpenses(uid) {
 
     let expenseId = benefit.expenseId ? String(benefit.expenseId) : '';
     if (expenseId) {
-      const eSnap = await getDoc(doc(db, 'users', uid, 'expenses', expenseId));
-      if (eSnap.exists()) {
+      if (existingExpenseIds.has(expenseId)) {
         alreadyOk += 1;
         continue;
       }
