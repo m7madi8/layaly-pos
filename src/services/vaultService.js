@@ -75,3 +75,39 @@ export async function depositVaultManual(uid, { amount, note, actor }) {
     });
   });
 }
+
+/** سحب من الخزنة داخل transaction (بعد tx.get على vault) */
+export function applyVaultDebit(tx, uid, vaultSnap, { amount, type, reason, actor, expenseId = null }) {
+  const amt = Math.round((Number(amount) || 0) * 100) / 100;
+  if (!(amt > 0)) return;
+
+  const vRef = vaultDocRef(uid);
+  const exists = vaultSnap && typeof vaultSnap.exists === 'function' ? vaultSnap.exists() : Boolean(vaultSnap?.exists);
+  const prev = exists ? Number(vaultSnap.data().balance) || 0 : 0;
+  if (prev < amt - 0.001) {
+    throw new Error(`رصيد الخزنة غير كافٍ (المتاح ${prev} ₪)`);
+  }
+
+  tx.set(
+    vRef,
+    {
+      balance: Math.round((prev - amt) * 100) / 100,
+      updatedAt: serverTimestamp(),
+      updatedAtMs: Date.now(),
+    },
+    { merge: true }
+  );
+
+  const mRef = doc(vaultMovementsCol(uid));
+  tx.set(mRef, {
+    type: type || 'withdrawal',
+    amount: amt,
+    reason: String(reason || '').trim(),
+    expenseId: expenseId || null,
+    shiftId: null,
+    createdBy: actor || null,
+    employeeId: actor?.role || null,
+    createdAt: serverTimestamp(),
+    createdAtMs: Date.now(),
+  });
+}

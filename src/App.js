@@ -13,12 +13,14 @@ import {
 } from './expenseConfig';
 import SupplierTraderDetailModal, { SupplierPaymentFields } from './components/SupplierTraderDetailModal';
 import EmployeeBenefitFields from './components/EmployeeBenefitFields';
+import PurchasePaymentFields from './components/PurchasePaymentFields';
 import EmployeeBenefitsPanel from './components/EmployeeBenefitsPanel';
 import {
   executeSupplierPayment,
-  applySupplierPurchaseBalanceWrite,
   reconcileSupplierBalance,
 } from './services/supplierPaymentService';
+import { executePurchase, reversePurchaseEffectsInTransaction } from './services/purchaseService';
+import { PURCHASE_PAYMENT_CASH, purchasePaymentMethodLabel } from './utils/purchasePayment';
 import { executeEmployeeBenefit, cancelEmployeeBenefit, syncEmployeeBenefitExpenses } from './services/employeeBenefitService';
 import { ensureDefaultStaffMembers, updateStaffBenefitLimit } from './services/staffMembersService';
 import {
@@ -973,60 +975,35 @@ const AppCore = () => {
 
       if (editingExpenseId) {
         await updateDoc(doc(db, 'users', user.uid, 'expenses', editingExpenseId), expenseData);
+      } else if (section === 'purchase') {
+        const supplier = suppliers.find((s) => s.id === expenseForm.supplierId);
+        const openShift = cashShifts.find((s) => s.status === 'open');
+        const result = await executePurchase(
+          user.uid,
+          {
+            amount: expenseData.amount,
+            date: expenseForm.date,
+            category,
+            description: expenseData.description,
+            supplierId: expenseData.supplierId,
+            supplierName: supplier?.name || '',
+            paymentMethod: expenseForm.paymentMethod,
+            notes: expenseForm.notes,
+            linkedIngredientId: expenseData.linkedIngredientId,
+            linkedProductId: expenseData.linkedProductId,
+            linkedProductName: expenseData.linkedProductName,
+            quantityBought: expenseData.quantityBought,
+            receiptUrl,
+            expensesSnapshot: expenses,
+          },
+          { actor: sessionActor(), shiftId: openShift?.id || null }
+        );
+        if (result.paymentMethod === PURCHASE_PAYMENT_CASH && !result.cashRecorded) {
+          alert('تم حفظ المشتريات. لم يُسجَّل سحب من الصندوق — لا توجد وردية مفتوحة.');
+        }
       } else {
         expenseData.createdAt = serverTimestamp();
-        await runTransaction(db, async (transaction) => {
-          const expenseRef = doc(collection(db, 'users', user.uid, 'expenses'));
-
-          let ingRef = null;
-          let currentStock = 0;
-          if (expenseData.linkedIngredientId && expenseData.quantityBought > 0) {
-            ingRef = doc(db, 'users', user.uid, 'ingredients', expenseData.linkedIngredientId);
-            const ingDoc = await transaction.get(ingRef);
-            if (ingDoc.exists()) {
-              currentStock = ingDoc.data().stock || 0;
-            }
-          }
-
-          let productRef = null;
-          let productData = null;
-          if (expenseData.linkedProductId && expenseData.quantityBought > 0) {
-            productRef = doc(db, 'users', user.uid, 'products', expenseData.linkedProductId);
-            const productDoc = await transaction.get(productRef);
-            if (!productDoc.exists()) throw new Error('الصنف المرتبط بالمشتريات غير موجود');
-            productData = productDoc.data();
-          }
-
-          let supplierRefPath = null;
-          let supplierSnap = null;
-          if (section === 'purchase' && expenseData.supplierId) {
-            supplierRefPath = doc(db, 'users', user.uid, 'suppliers', expenseData.supplierId);
-            supplierSnap = await transaction.get(supplierRefPath);
-          }
-
-          transaction.set(expenseRef, expenseData);
-          if (ingRef) {
-            transaction.update(ingRef, { stock: currentStock + expenseData.quantityBought });
-          }
-          if (productRef) {
-            const unitCost = purchaseUnitCost(productData, expenseData.amount, expenseData.quantityBought);
-            transaction.update(productRef, {
-              stock: (Number(productData.stock) || 0) + expenseData.quantityBought,
-              ...(unitCost > 0 ? { cost: unitCost } : {}),
-              updatedAt: serverTimestamp(),
-            });
-          }
-          if (supplierRefPath && supplierSnap?.exists()) {
-            applySupplierPurchaseBalanceWrite(
-              transaction,
-              supplierRefPath,
-              supplierSnap,
-              expenseData.supplierId,
-              expenseData.amount,
-              expenses
-            );
-          }
-        });
+        await addDoc(collection(db, 'users', user.uid, 'expenses'), expenseData);
       }
 
       setShowExpenseModal(false);
@@ -1056,7 +1033,9 @@ const AppCore = () => {
       receiptUrl: expense.receiptUrl,
       linkedIngredientId: expense.linkedIngredientId || '',
       linkedProductId: expense.linkedProductId || '',
-      quantityBought: expense.quantityBought || 0
+      quantityBought: expense.quantityBought || 0,
+      paymentMethod: expense.paymentMethod || 'Debt',
+      notes: expense.notes || '',
     });
     setCurrentView(section === 'purchase' ? 'purchases' : 'expenses');
     setEditingExpenseId(expense.id);
@@ -1084,7 +1063,7 @@ const AppCore = () => {
     } else if (isSupplierPay) {
       message = 'حذف دفعة التاجر؟ سيتم استرجاع الرصيد المستحق وإلغاء تأثيرها على الصندوق إن وُجد.';
     } else if (isPurchase && expense.supplierId) {
-      message = 'حذف المشتريات؟ سيتم تخفيض رصيد المستحق على التاجر.';
+      message = 'حذف المشتريات؟ سيتم عكس تأثيرها على التاجر والصندوق أو الخزنة إن وُجد.';
     }
     if (window.confirm(message)) {
       try {
@@ -1109,19 +1088,28 @@ const AppCore = () => {
               const stock = Number(productDoc.data().stock) || 0;
               transaction.update(productRef, { stock: Math.max(0, stock - Number(expense.quantityBought)) });
             }
-            if (supplierDocRef && sSnap?.exists()) {
+            if (isPurchase) {
+              const openShift = cashShifts.find((s) => s.status === 'open');
+              await reversePurchaseEffectsInTransaction(transaction, user.uid, expense, {
+                actor: sessionActor(),
+                supplierDocRef,
+                supplierSnap: sSnap,
+                shiftId: openShift?.id || null,
+              });
+            } else if (supplierDocRef && sSnap?.exists() && isSupplierPay) {
               const prev = roundMoney(sSnap.data().balance);
-              const delta = isSupplierPay
-                ? roundMoney(expense.amount)
-                : isPurchase
-                  ? -roundMoney(expense.amount)
-                  : 0;
               transaction.update(supplierDocRef, {
-                balance: roundMoney(prev + delta),
+                balance: roundMoney(prev + roundMoney(expense.amount)),
                 updatedAt: serverTimestamp(),
               });
             }
           });
+          if (isPurchase && expense.paymentMethod === PURCHASE_PAYMENT_CASH) {
+            const openShift = cashShifts.find((s) => s.status === 'open');
+            if (!openShift) {
+              alert('تم حذف المشتريات. لم يُرجَع المبلغ للصندوق — لا توجد وردية مفتوحة.');
+            }
+          }
           if (isSupplierPay && expense.paymentMethod === 'Cash') {
             const openShift = cashShifts.find((s) => s.status === 'open');
             if (openShift) {
@@ -4646,6 +4634,9 @@ const AppCore = () => {
                           {isPurchaseView && (
                             <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">التاجر</th>
                           )}
+                          {isPurchaseView && (
+                            <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">الدفع</th>
+                          )}
                           <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-left">المبلغ</th>
                           <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-center">إيصال</th>
                           <th className="p-3 text-xs font-bold text-gray-700 text-center">إجراءات</th>
@@ -4668,6 +4659,11 @@ const AppCore = () => {
                             {isPurchaseView && (
                               <td className="p-3 text-sm text-gray-600 border-r border-gray-200">
                                 {suppliers.find((s) => s.id === expense.supplierId)?.name || '—'}
+                              </td>
+                            )}
+                            {isPurchaseView && (
+                              <td className="p-3 text-sm text-gray-600 border-r border-gray-200">
+                                <span className="text-xs text-gray-700">{purchasePaymentMethodLabel(expense.paymentMethod)}</span>
                               </td>
                             )}
                             <td className="p-3 text-sm font-bold text-gray-900 text-left border-r border-gray-200">
@@ -4706,7 +4702,7 @@ const AppCore = () => {
                         ))}
                         {getFilteredExpenses().length === 0 && (
                           <tr>
-                            <td colSpan={isPurchaseView ? 6 : 6} className="p-8 text-center text-gray-500 text-sm bg-gray-50">
+                            <td colSpan={isPurchaseView ? 7 : 6} className="p-8 text-center text-gray-500 text-sm bg-gray-50">
                               {isPurchaseView ? 'لا توجد مشتريات في هذه الفترة' : 'لا توجد مصروفات في هذه الفترة'}
                             </td>
                           </tr>
@@ -6735,6 +6731,15 @@ const AppCore = () => {
                     <p className="text-xs text-amber-600 mt-1">أضف تاجراً من «التجار» في القائمة أولاً</p>
                   )}
                 </div>
+              )}
+              {expenseForm.section === 'purchase' && (
+                <PurchasePaymentFields
+                  expenseForm={expenseForm}
+                  setExpenseForm={setExpenseForm}
+                  openShift={cashShifts.find((s) => s.status === 'open') || null}
+                  vaultBalance={vaultSummary?.balance}
+                  disabled={Boolean(editingExpenseId)}
+                />
               )}
               {expenseForm.section === 'purchase' && (() => {
                 const selected = products.find((p) => p.id === expenseForm.linkedProductId);

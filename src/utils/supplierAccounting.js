@@ -1,4 +1,5 @@
 import { resolveExpenseSection } from '../expenseConfig';
+import { purchaseIncreasesSupplierDebt } from './purchasePayment';
 
 export const SUPPLIER_PAYMENT_CATEGORY = 'SupplierPayment';
 export const SUPPLIER_PAYMENT_SECTION = 'supplier_payment';
@@ -28,7 +29,7 @@ export function computeSupplierPayableFromExpenses(expenses, supplierId) {
     const amt = roundMoney(e.amount);
     if (!(amt > 0)) continue;
     if (isSupplierPaymentExpense(e)) payments += amt;
-    else if (resolveExpenseSection(e) === 'purchase') purchases += amt;
+    else if (resolveExpenseSection(e) === 'purchase' && purchaseIncreasesSupplierDebt(e)) purchases += amt;
   }
   return roundMoney(purchases - payments);
 }
@@ -101,7 +102,7 @@ export function supplierLedgerEntries(expenses, supplierId) {
         kind: 'purchase',
         date: e.date,
         amount: amt,
-        paymentMethod: null,
+        paymentMethod: e.paymentMethod || 'Debt',
         paymentRef: null,
         notes: e.description || '',
         recordedBy: e.recordedBy || null,

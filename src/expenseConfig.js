@@ -39,7 +39,7 @@ export function defaultExpenseForm(section = 'operating') {
     linkedIngredientId: '',
     linkedProductId: '',
     quantityBought: 0,
-    paymentMethod: 'Cash',
+    paymentMethod: section === 'purchase' ? 'Debt' : 'Cash',
     notes: '',
     section,
   };
