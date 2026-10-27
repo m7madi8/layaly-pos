@@ -67,6 +67,7 @@ import {
   doc,
   query,
   orderBy,
+  limit,
   serverTimestamp,
   onSnapshot,
   setDoc,
@@ -457,12 +458,14 @@ const AppCore = () => {
     return () => unsubscribe();
   }, [user]);
 
-  // Load orders
+  // Load orders (admin + شاشات تحتاج السجل — آخر 500 طلب لتوفير الحصة)
   useEffect(() => {
-    if (!user) return;
-    
+    if (!user || userRole !== 'admin') return;
+    const needsOrders = ['dashboard', 'orders', 'reports', 'settings'].includes(currentView);
+    if (!needsOrders) return;
+
     const unsubscribe = onSnapshot(
-      query(collection(db, 'users', user.uid, 'orders'), orderBy('timestamp', 'desc')),
+      query(collection(db, 'users', user.uid, 'orders'), orderBy('timestamp', 'desc'), limit(500)),
       (snapshot) => {
         const ordersData = snapshot.docs.map(doc => ({
           id: doc.id,
@@ -476,11 +479,11 @@ const AppCore = () => {
     );
     
     return () => unsubscribe();
-  }, [user]);
+  }, [user, userRole, currentView]);
 
   // Load ingredients
   useEffect(() => {
-    if (!user) return;
+    if (!user || userRole !== 'admin' || currentView !== 'inventory') return;
     const unsubscribe = onSnapshot(
       collection(db, 'users', user.uid, 'ingredients'),
       (snapshot) => {
@@ -488,19 +491,21 @@ const AppCore = () => {
       }
     );
     return () => unsubscribe();
-  }, [user]);
+  }, [user, userRole, currentView]);
 
   // Load expenses
   useEffect(() => {
-    if (!user) return;
-    const q = query(collection(db, 'users', user.uid, 'expenses'), orderBy('date', 'desc'));
+    if (!user || userRole !== 'admin') return;
+    const needsExpenses = ['expenses', 'purchases', 'traders', 'reports', 'dashboard'].includes(currentView);
+    if (!needsExpenses) return;
+    const q = query(collection(db, 'users', user.uid, 'expenses'), orderBy('date', 'desc'), limit(800));
     const unsubscribe = onSnapshot(q, snapshot => {
       setExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     }, (error) => {
       console.error("Error loading expenses:", error);
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user, userRole, currentView]);
 
   useEffect(() => {
     if (currentView !== 'expenses' || !user?.uid || userRole !== 'admin') return;
@@ -526,7 +531,9 @@ const AppCore = () => {
   }, [user?.uid, userRole]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || userRole !== 'admin') return;
+    const needsStaff = ['expenses', 'settings'].includes(currentView);
+    if (!needsStaff) return;
     const q = query(collection(db, 'users', user.uid, 'staffMembers'), orderBy('name', 'asc'));
     const unsubscribe = onSnapshot(
       q,
@@ -534,10 +541,11 @@ const AppCore = () => {
       (error) => console.error('Error loading staff:', error)
     );
     return () => unsubscribe();
-  }, [user]);
+  }, [user, userRole, currentView]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || userRole !== 'admin') return;
+    if (!['expenses', 'settings'].includes(currentView)) return;
     const unsubscribe = onSnapshot(
       collection(db, 'users', user.uid, 'employeeBenefits'),
       (snapshot) => {
@@ -548,11 +556,13 @@ const AppCore = () => {
       (error) => console.error('Error loading employee benefits:', error)
     );
     return () => unsubscribe();
-  }, [user]);
+  }, [user, userRole, currentView]);
 
   // Load suppliers
   useEffect(() => {
-    if (!user) return;
+    if (!user || userRole !== 'admin') return;
+    const needsSuppliers = ['purchases', 'traders', 'expenses', 'dashboard'].includes(currentView);
+    if (!needsSuppliers) return;
     const q = query(collection(db, 'users', user.uid, 'suppliers'), orderBy('name', 'asc'));
     const unsubscribe = onSnapshot(q, snapshot => {
       setSuppliers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -560,30 +570,30 @@ const AppCore = () => {
       console.error("Error loading suppliers:", error);
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user, userRole, currentView]);
 
   // Load PlayStation sessions
   useEffect(() => {
-    if (!user) return;
-    const q = query(collection(db, 'users', user.uid, 'playstationSessions'), orderBy('startedAtMs', 'desc'));
+    if (!user || currentView !== 'pos') return;
+    const q = query(collection(db, 'users', user.uid, 'playstationSessions'), orderBy('startedAtMs', 'desc'), limit(80));
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => setPlaystationSessions(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading PlayStation sessions:', error)
     );
     return () => unsubscribe();
-  }, [user]);
+  }, [user, currentView]);
 
   // Load external assets (hookahs taken outside) and their movements
   useEffect(() => {
-    if (!user) return;
+    if (!user || currentView !== 'pos') return;
     const unsubAssets = onSnapshot(
       query(collection(db, 'users', user.uid, 'externalAssets')),
       (snapshot) => setExternalAssets(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading external assets:', error)
     );
     const unsubMovements = onSnapshot(
-      query(collection(db, 'users', user.uid, 'assetMovements'), orderBy('checkoutAtMs', 'desc')),
+      query(collection(db, 'users', user.uid, 'assetMovements'), orderBy('checkoutAtMs', 'desc'), limit(100)),
       (snapshot) => setAssetMovements(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading asset movements:', error)
     );
@@ -591,7 +601,7 @@ const AppCore = () => {
       unsubAssets();
       unsubMovements();
     };
-  }, [user]);
+  }, [user, currentView]);
 
   const starterSeededRef = useRef(false);
   useEffect(() => {
@@ -612,6 +622,7 @@ const AppCore = () => {
   // Load customers
   useEffect(() => {
     if (!user) return;
+    if (!['pos', 'customers', 'orders', 'dashboard', 'reports'].includes(currentView)) return;
     const q = query(collection(db, 'users', user.uid, 'customers'), orderBy('name', 'asc'));
     const unsubscribe = onSnapshot(
       q,
@@ -621,55 +632,65 @@ const AppCore = () => {
       (error) => console.error('Error loading customers:', error)
     );
     return () => unsubscribe();
-  }, [user]);
+  }, [user, currentView]);
 
   // Open bills (parked tabs — not orders)
   useEffect(() => {
     if (!user) return;
+    if (!['pos', 'customers'].includes(currentView)) return;
     const unsubscribe = onSnapshot(
-      query(collection(db, 'users', user.uid, 'openBills'), orderBy('updatedAtMs', 'desc')),
+      query(collection(db, 'users', user.uid, 'openBills'), orderBy('updatedAtMs', 'desc'), limit(50)),
       (snapshot) => setOpenBills(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading open bills:', error)
     );
     return () => unsubscribe();
-  }, [user]);
+  }, [user, currentView]);
 
-  // Cash shifts + movements
+  // Cash shifts (خفيف) + حركات الصندوق فقط على شاشة الكاش
   useEffect(() => {
     if (!user) return;
+    const needsCash = ['pos', 'cash', 'dashboard'].includes(currentView);
+    if (!needsCash) return;
+
     const unsubShifts = onSnapshot(
-      query(collection(db, 'users', user.uid, 'cashShifts'), orderBy('openedAtMs', 'desc')),
+      query(collection(db, 'users', user.uid, 'cashShifts'), orderBy('openedAtMs', 'desc'), limit(30)),
       (snapshot) => setCashShifts(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading cash shifts:', error)
     );
+    return () => unsubShifts();
+  }, [user, userRole, currentView]);
+
+  useEffect(() => {
+    if (!user || currentView !== 'cash') return;
     const unsubMovements = onSnapshot(
-      query(collection(db, 'users', user.uid, 'cashMovements'), orderBy('createdAtMs', 'desc')),
+      query(collection(db, 'users', user.uid, 'cashMovements'), orderBy('createdAtMs', 'desc'), limit(200)),
       (snapshot) => setCashMovements(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading cash movements:', error)
     );
-    return () => {
-      unsubShifts();
-      unsubMovements();
-    };
-  }, [user]);
+    return () => unsubMovements();
+  }, [user, currentView]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || userRole !== 'admin') return;
+    const needsVault = ['vault', 'purchases', 'dashboard'].includes(currentView);
+    if (!needsVault) return;
     const unsubVault = onSnapshot(
       vaultDocRef(user.uid),
       (snap) => setVaultSummary(snap.exists() ? { id: snap.id, ...snap.data() } : { balance: 0, totalCapitalIn: 0 }),
       (error) => console.error('Error loading vault:', error)
     );
+    return () => unsubVault();
+  }, [user, userRole, currentView]);
+
+  useEffect(() => {
+    if (!user || userRole !== 'admin' || currentView !== 'vault') return;
     const unsubVaultMoves = onSnapshot(
-      query(collection(db, 'users', user.uid, 'vaultMovements'), orderBy('createdAtMs', 'desc')),
+      query(collection(db, 'users', user.uid, 'vaultMovements'), orderBy('createdAtMs', 'desc'), limit(200)),
       (snapshot) => setVaultMovements(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading vault movements:', error)
     );
-    return () => {
-      unsubVault();
-      unsubVaultMoves();
-    };
-  }, [user]);
+    return () => unsubVaultMoves();
+  }, [user, userRole, currentView]);
 
   useEffect(() => {
     if (currentView !== 'vault') {
