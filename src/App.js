@@ -500,7 +500,7 @@ const AppCore = () => {
   }, [user]);
 
   useEffect(() => {
-    if (activeView !== 'expenses' || !user?.uid || userRole !== 'admin') return;
+    if (currentView !== 'expenses' || !user?.uid || userRole !== 'admin') return;
     if (employeeBenefitExpenseSyncRef.current) return;
     employeeBenefitExpenseSyncRef.current = true;
     syncEmployeeBenefitExpenses(user.uid)
@@ -510,7 +510,7 @@ const AppCore = () => {
         }
       })
       .catch((e) => console.error('Employee benefit expense sync failed:', e));
-  }, [activeView, user?.uid, userRole]);
+  }, [currentView, user?.uid, userRole]);
 
   useEffect(() => {
     if (!user?.uid || userRole !== 'admin') return;
