@@ -41,6 +41,7 @@ import VaultView from './components/VaultView';
 import VaultPinScreen from './components/VaultPinScreen';
 import DailyCashOpenModal from './components/DailyCashOpenModal';
 import RemoveTestSalesModal from './components/RemoveTestSalesModal';
+import RemoveOldPlaystationModal from './components/RemoveOldPlaystationModal';
 import { resolveDailyCashGate } from './utils/cashDayGate';
 import { externalHookahCartItemId, selectHookahExternalCheckoutProducts } from './utils/hookahExternalSale';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory } from './productAssets';
@@ -306,6 +307,7 @@ const AppCore = () => {
   const employeeBenefitIdemRef = useRef(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showRemoveTestSalesModal, setShowRemoveTestSalesModal] = useState(false);
+  const [showRemoveOldPlaystationModal, setShowRemoveOldPlaystationModal] = useState(false);
   const [appSettings, setAppSettings] = useState({
     tax: 0,
     serviceCharge: 0,
@@ -7118,6 +7120,18 @@ const AppCore = () => {
                   />
                   <p className="text-[11px] text-gray-400 mt-1">تُحفظ مع كل جلسة عند إنهائها، فتغييرها لا يغيّر تقارير الجلسات السابقة.</p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSettingsModal(false);
+                    setShowRemoveOldPlaystationModal(true);
+                  }}
+                  disabled={isEmployee}
+                  className="w-full py-2.5 rounded-xl text-sm font-semibold text-yellow-950 bg-yellow-400 hover:bg-yellow-500 border border-yellow-500 transition-colors disabled:opacity-50"
+                  style={{ fontFamily: FONT_UI }}
+                >
+                  ساعات البلايستيشن القديمة
+                </button>
               </div>
               <div className="pt-2 border-t border-gray-100 space-y-2">
                 <button
@@ -7163,6 +7177,13 @@ const AppCore = () => {
         onClose={() => setShowRemoveTestSalesModal(false)}
         uid={user?.uid}
         theme={theme}
+        fmtMoney={fmtMoney}
+      />
+
+      <RemoveOldPlaystationModal
+        open={showRemoveOldPlaystationModal}
+        onClose={() => setShowRemoveOldPlaystationModal(false)}
+        uid={user?.uid}
         fmtMoney={fmtMoney}
       />
 
