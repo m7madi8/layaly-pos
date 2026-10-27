@@ -5,8 +5,6 @@ import {
   appendCashMovementInTransaction,
 } from './cashShiftService';
 import {
-  EMPLOYEE_BENEFIT_SECTION,
-  EMPLOYEE_BENEFIT_CATEGORY,
   BENEFIT_TYPE_CASH,
   BENEFIT_TYPE_INVENTORY,
   BENEFIT_STATUS_APPROVED,

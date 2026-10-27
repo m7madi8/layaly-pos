@@ -2173,25 +2173,6 @@ const AppCore = () => {
     }
   };
 
-  const handleClearAllCustomers = async () => {
-    if (
-      !window.confirm(
-        'حذف جميع العملاء وبياناتهم (الديون والسجل)؟\nالطلبات القديمة تبقى لكن بدون ربط بالملفات.'
-      )
-    ) {
-      return;
-    }
-    try {
-      const snap = await getDocs(collection(db, 'users', user.uid, 'customers'));
-      await Promise.all(
-        snap.docs.map((d) => deleteDoc(doc(db, 'users', user.uid, 'customers', d.id)))
-      );
-      alert('تم مسح بيانات العملاء — القائمة فارغة الآن.');
-    } catch (error) {
-      alert(error.message);
-    }
-  };
-
   const handleResetSalesAndCustomerLedgers = async () => {
     if (
       !window.confirm(

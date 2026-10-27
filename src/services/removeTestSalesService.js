@@ -134,7 +134,7 @@ export async function executeRemoveTestSales(uid, { orderIds, sessionIds, runId 
 
 /** Local Firestore purge — no stock reversal; mirrors server rules */
 async function executeRemoveTestSalesLocal(uid, { orderIds, sessionIds, runId }) {
-  const { runTransaction, deleteDoc, updateDoc, serverTimestamp, writeBatch } = await import('../firebaseClient');
+  const { runTransaction, deleteDoc, serverTimestamp } = await import('../firebaseClient');
   const { effectiveDebt, replaceOrderDebtEntry, money } = await import('../utils/orderAccounting');
   const { computeExpectedCash } = await import('../utils/cashShiftMath');
   const { isOrderMarkedAsTest, isSessionMarkedAsTest, customerHasDebtEntryForOrder } = await import(
