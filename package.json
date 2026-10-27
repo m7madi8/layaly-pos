@@ -23,7 +23,7 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "test:rules": "firebase emulators:exec --only firestore --project layali-rules-test \"npx jest -c jest.rules.config.js --runInBand\"",
-    "test:functions:unit": "npx jest -c jest.functions.config.js --runInBand tests/functions/orderEngine.unit.test.js tests/functions/idempotency.unit.test.js tests/functions/hookahPricing.unit.test.js tests/functions/cashShift.unit.test.js tests/functions/authz.unit.test.js tests/functions/callableActor.unit.test.js",
+    "test:functions:unit": "npx jest -c jest.functions.config.js --runInBand tests/functions/orderEngine.unit.test.js tests/functions/idempotency.unit.test.js tests/functions/hookahPricing.unit.test.js tests/functions/cashShift.unit.test.js tests/functions/authz.unit.test.js tests/functions/callableActor.unit.test.js tests/functions/testDataRemoval.unit.test.js",
     "verify:staging-deploy-context": "node scripts/check-staging-deploy-context.js",
     "test:functions:integration": "firebase emulators:exec --only firestore --project layali-rules-test \"npx jest -c jest.functions.config.js --runInBand tests/functions/orderEngine.emulator.test.js\"",
     "test:functions:emulator": "npx jest -c jest.functions.config.js --runInBand tests/functions/orderEngine.emulator.test.js tests/functions/cashShift.emulator.test.js tests/functions/concurrency.emulator.test.js",

@@ -16,10 +16,13 @@ async function deleteAllInSubcollection(uid, subcollection, { db, collection, do
 }
 
 /**
- * يحذف كل الطلبات والفواتير المعلقة وسجل التعديلات، ويصفّر ديون/حركات العملاء مع الإبقاء على ملفاتهم (الاسم، الجوال، …).
+ * يحذف الطلبات والفواتير المعلقة وسجل التعديلات.
  * لا يمسّ المنتجات ولا المخزون.
+ * @param {object} [options]
+ * @param {boolean} [options.preserveCustomerLedgers=true] — الإبقاء على balance و transactions لكل عميل
  */
-export async function resetSalesAndCustomerLedgers(uid, apis) {
+export async function resetSalesAndCustomerLedgers(uid, apis, options = {}) {
+  const preserveCustomerLedgers = options.preserveCustomerLedgers !== false;
   const { db, collection, doc, getDocs, writeBatch, setDoc, serverTimestamp } = apis;
 
   const ordersDeleted = await deleteAllInSubcollection(uid, 'orders', apis);
@@ -28,22 +31,28 @@ export async function resetSalesAndCustomerLedgers(uid, apis) {
 
   await setDoc(doc(db, 'users', uid, 'counters', 'orders'), { count: 0 }, { merge: true });
 
+  let customersReset = 0;
+  let customersPreserved = 0;
+
   const custSnap = await getDocs(collection(db, 'users', uid, 'customers'));
   const customerDocs = custSnap.docs;
-  let customersReset = 0;
+  customersPreserved = customerDocs.length;
 
-  for (let i = 0; i < customerDocs.length; i += BATCH_SIZE) {
-    const batch = writeBatch(db);
-    const chunk = customerDocs.slice(i, i + BATCH_SIZE);
-    for (const d of chunk) {
-      batch.update(doc(db, 'users', uid, 'customers', d.id), {
-        balance: 0,
-        transactions: [],
-        updatedAt: serverTimestamp(),
-      });
-      customersReset += 1;
+  if (!preserveCustomerLedgers) {
+    for (let i = 0; i < customerDocs.length; i += BATCH_SIZE) {
+      const batch = writeBatch(db);
+      const chunk = customerDocs.slice(i, i + BATCH_SIZE);
+      for (const d of chunk) {
+        batch.update(doc(db, 'users', uid, 'customers', d.id), {
+          balance: 0,
+          transactions: [],
+          updatedAt: serverTimestamp(),
+        });
+        customersReset += 1;
+      }
+      await batch.commit();
     }
-    await batch.commit();
+    customersPreserved = 0;
   }
 
   return {
@@ -51,5 +60,7 @@ export async function resetSalesAndCustomerLedgers(uid, apis) {
     openBillsDeleted,
     orderEditsDeleted,
     customersReset,
+    customersPreserved,
+    preserveCustomerLedgers,
   };
 }

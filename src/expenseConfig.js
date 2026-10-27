@@ -10,6 +10,7 @@ export const OPERATING_EXPENSE_CATEGORIES = [
   { id: 'Food', label: 'أكل' },
   { id: 'Advance', label: 'سلف' },
   { id: 'SupplierPayment', label: 'صرف للتاجر' },
+  { id: 'EmployeeBenefit', label: 'استفادة الموظفين' },
 ];
 
 export const PURCHASE_CATEGORY = 'Purchase';
@@ -17,6 +18,7 @@ export const PURCHASE_CATEGORY = 'Purchase';
 const PURCHASE_LEGACY_CATEGORIES = new Set(['Inventory', 'Purchase']);
 
 export function resolveExpenseSection(expense) {
+  if (expense?.section === 'employee_benefit') return 'operating';
   if (expense?.section === 'supplier_payment') return 'operating';
   if (expense?.section === 'purchase' || expense?.section === 'operating') {
     return expense.section;
@@ -47,7 +49,23 @@ export function defaultExpenseForm(section = 'operating') {
   if (section === 'supplier_payment') {
     return { ...base, section: 'supplier_payment', category: 'SupplierPayment' };
   }
+  if (section === 'employee_benefit') {
+    return {
+      ...base,
+      section: 'employee_benefit',
+      category: 'EmployeeBenefit',
+      staffMemberId: '',
+      benefitType: 'cash',
+      inventoryLines: [],
+      override: false,
+      overrideReason: '',
+    };
+  }
   return { ...base, category: 'Salaries' };
+}
+
+export function isEmployeeBenefitForm(form) {
+  return form?.section === 'employee_benefit' || form?.category === 'EmployeeBenefit';
 }
 
 export function isSupplierPaymentForm(form) {

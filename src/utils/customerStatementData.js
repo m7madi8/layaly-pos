@@ -121,6 +121,17 @@ export function computeLegacyDebtTotal(customer) {
     .reduce((s, t) => s + Number(t.amount || 0), 0);
 }
 
+/** يعيد حساب الرصيد من سجل الحركات بعد التعديل اليدوي */
+export function computeBalanceFromTransactions(transactions) {
+  let balance = 0;
+  for (const t of transactions || []) {
+    const amt = Math.round((Number(t.amount) || 0) * 100) / 100;
+    if (t.type === 'legacy_debt' || t.type === 'order_debt') balance += amt;
+    else if (t.type === 'payment') balance -= amt;
+  }
+  return Math.round(balance * 100) / 100;
+}
+
 /** خصم الطلب بالشيكل — الطلبات المجانية القديمة لا تُعد خصماً */
 export function orderDiscountValue(order) {
   if (!order || order.paymentMethod === 'Compliment' || order.paymentType === 'compliment') return 0;

@@ -8,13 +8,23 @@ import {
   resolveExpenseSection,
   defaultExpenseForm,
   isSupplierPaymentForm,
+  isEmployeeBenefitForm,
 } from './expenseConfig';
 import SupplierTraderDetailModal, { SupplierPaymentFields } from './components/SupplierTraderDetailModal';
+import EmployeeBenefitFields from './components/EmployeeBenefitFields';
+import EmployeeBenefitsPanel from './components/EmployeeBenefitsPanel';
 import {
   executeSupplierPayment,
   applySupplierPurchaseBalanceWrite,
   reconcileSupplierBalance,
 } from './services/supplierPaymentService';
+import { executeEmployeeBenefit, cancelEmployeeBenefit } from './services/employeeBenefitService';
+import { ensureDefaultStaffMembers, updateStaffBenefitLimit } from './services/staffMembersService';
+import {
+  isEmployeeBenefitExpense,
+  sumApprovedBenefitsUsage,
+} from './utils/employeeBenefitAccounting';
+import { getCashDayKey } from './utils/cashDayPeriod';
 import {
   isSupplierPaymentExpense,
   roundMoney,
@@ -30,6 +40,7 @@ import CashShiftView from './components/CashShiftView';
 import VaultView from './components/VaultView';
 import VaultPinScreen from './components/VaultPinScreen';
 import DailyCashOpenModal from './components/DailyCashOpenModal';
+import RemoveTestSalesModal from './components/RemoveTestSalesModal';
 import { resolveDailyCashGate } from './utils/cashDayGate';
 import { externalHookahCartItemId, selectHookahExternalCheckoutProducts } from './utils/hookahExternalSale';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory } from './productAssets';
@@ -83,6 +94,7 @@ import { ensureStarterProducts, ensureStarterAssets, ensureTobaccoImage, ensureP
 import { ensureDrinkCategoriesSplit } from './services/drinkCategoriesMigration';
 import { effectiveDebt, debtDeltasByCustomer, replaceOrderDebtEntry, diffOrders } from './utils/orderAccounting';
 import { computeTodayCashSales, computeTodayDebtSales, getLocalCalendarDayStart } from './utils/dashboardCashSales';
+import { computeBalanceFromTransactions } from './utils/customerStatementData';
 import {
   PRODUCT_TYPES,
   TIME_ROUNDING_OPTIONS,
@@ -281,6 +293,8 @@ const AppCore = () => {
   const [productIngredients, setProductIngredients] = useState([]);
   const [showIngredientModal, setShowIngredientModal] = useState(false);
   const [expenses, setExpenses] = useState([]);
+  const [staffMembers, setStaffMembers] = useState([]);
+  const [employeeBenefits, setEmployeeBenefits] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [expenseForm, setExpenseForm] = useState(() => defaultExpenseForm('operating'));
   const [expenseReceiptFile, setExpenseReceiptFile] = useState(null);
@@ -289,7 +303,9 @@ const AppCore = () => {
   const [showSupplierModal, setShowSupplierModal] = useState(false);
   const [selectedSupplierId, setSelectedSupplierId] = useState(null);
   const supplierPaymentIdemRef = useRef(null);
+  const employeeBenefitIdemRef = useRef(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showRemoveTestSalesModal, setShowRemoveTestSalesModal] = useState(false);
   const [appSettings, setAppSettings] = useState({
     tax: 0,
     serviceCharge: 0,
@@ -476,6 +492,38 @@ const AppCore = () => {
     }, (error) => {
       console.error("Error loading expenses:", error);
     });
+    return () => unsubscribe();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user?.uid || userRole !== 'admin') return;
+    ensureDefaultStaffMembers(user.uid)
+      .then(setStaffMembers)
+      .catch((e) => console.error('Staff seed failed:', e));
+  }, [user?.uid, userRole]);
+
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'users', user.uid, 'staffMembers'), orderBy('name', 'asc'));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => setStaffMembers(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (error) => console.error('Error loading staff:', error)
+    );
+    return () => unsubscribe();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsubscribe = onSnapshot(
+      collection(db, 'users', user.uid, 'employeeBenefits'),
+      (snapshot) => {
+        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        list.sort((a, b) => (Number(b.createdAtMs) || 0) - (Number(a.createdAtMs) || 0));
+        setEmployeeBenefits(list);
+      },
+      (error) => console.error('Error loading employee benefits:', error)
+    );
     return () => unsubscribe();
   }, [user]);
 
@@ -742,9 +790,84 @@ const AppCore = () => {
     [user?.uid, expenses]
   );
 
+  const handleCancelEmployeeBenefit = async (benefitId, reason) => {
+    if (!user?.uid || uploadProgress) return;
+    setUploadProgress(true);
+    try {
+      const result = await cancelEmployeeBenefit(user.uid, benefitId, {
+        actor: sessionActor(),
+        reason,
+      });
+      if (result.cashReversed === false && result.cancelled) {
+        alert('تم الإلغاء. لم تُعاد حركة الكاش (لا توجد وردية مفتوحة أو العملية أصناف فقط).');
+      } else {
+        alert('تم إلغاء عملية الاستفادة بنجاح');
+      }
+    } catch (error) {
+      alert(error.message || 'تعذّر الإلغاء');
+    } finally {
+      setUploadProgress(false);
+    }
+  };
+
   const handleAddExpense = async (e) => {
     e.preventDefault();
     const section = expenseForm.section || resolveExpenseSection(expenseForm);
+
+    if (isEmployeeBenefitForm(expenseForm)) {
+      if (editingExpenseId) {
+        alert('لا يمكن تعديل استفادة موظف — استخدم الإلغاء من السجل ثم سجّل من جديد إن لزم.');
+        return;
+      }
+      if (!expenseForm.staffMemberId) {
+        alert('اختر الموظف');
+        return;
+      }
+      const staffMember = staffMembers.find((s) => s.id === expenseForm.staffMemberId);
+      if (!staffMember) {
+        alert('الموظف غير موجود');
+        return;
+      }
+      setUploadProgress(true);
+      const idem = employeeBenefitIdemRef.current || newIdempotencyKey('emp_ben');
+      employeeBenefitIdemRef.current = idem;
+      try {
+        const openShift = cashShifts.find((s) => s.status === 'open');
+        const cashDayKey = getCashDayKey();
+        const usedToday = sumApprovedBenefitsUsage(employeeBenefits, staffMember.id, cashDayKey);
+        const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
+        const result = await executeEmployeeBenefit(
+          user.uid,
+          {
+            staffMember,
+            benefitType: expenseForm.benefitType || 'cash',
+            cashAmount: expenseForm.amount,
+            inventoryLines: expenseForm.inventoryLines || [],
+            date: expenseForm.date,
+            notes: expenseForm.notes || expenseForm.description,
+            shiftId: openShift?.id || null,
+            usedToday,
+            override: Boolean(expenseForm.override),
+            overrideReason: expenseForm.overrideReason,
+            productsById,
+          },
+          { actor: sessionActor(), idempotencyKey: idem }
+        );
+        if (!result.duplicate) {
+          alert(`تم تسجيل استفادة الموظف بنجاح.\nرقم العملية: ${result.benefitRef}`);
+        }
+        setShowExpenseModal(false);
+        setExpenseForm(defaultExpenseForm('operating'));
+        setExpenseReceiptFile(null);
+      } catch (error) {
+        alert(error.message || 'تعذّر حفظ الاستفادة');
+      } finally {
+        setUploadProgress(false);
+        employeeBenefitIdemRef.current = null;
+      }
+      return;
+    }
+
     if (isSupplierPaymentForm(expenseForm)) {
       if (editingExpenseId) {
         alert('لا يمكن تعديل دفعة تاجر من هنا — احذف السجل وأعد الإدخال إن لزم.');
@@ -925,6 +1048,16 @@ const AppCore = () => {
 
   const handleDeleteExpense = async (expenseId) => {
     const expense = expenses.find((e) => e.id === expenseId);
+    if (isEmployeeBenefitExpense(expense)) {
+      if (expense.benefitId) {
+        const reason = window.prompt('استخدم إلغاء الاستفادة من السجل مع سبب. أدخل سبب الإلغاء:');
+        if (!reason?.trim()) return;
+        await handleCancelEmployeeBenefit(expense.benefitId, reason.trim());
+      } else {
+        alert('لا يمكن حذف سجل استفادة موظف مباشرة.');
+      }
+      return;
+    }
     const reversesStock = Boolean(expense?.linkedProductId && Number(expense.quantityBought) > 0);
     const isSupplierPay = isSupplierPaymentExpense(expense);
     const isPurchase = resolveExpenseSection(expense) === 'purchase';
@@ -1945,6 +2078,21 @@ const AppCore = () => {
     }
   };
 
+  const handleUpdateCustomerTransactions = async (customerId, transactions) => {
+    const list = Array.isArray(transactions) ? transactions.slice(-100) : [];
+    const balance = computeBalanceFromTransactions(list);
+    try {
+      await updateDoc(doc(db, 'users', user.uid, 'customers', customerId), {
+        transactions: list,
+        balance,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      alert(error.message || 'تعذّر حفظ السجل');
+      throw error;
+    }
+  };
+
   const handleAddCustomerPayment = async (customerId, amount, description) => {
     const parsed = Math.round(Number(amount) * 100) / 100;
     if (!customerId || !Number.isFinite(parsed) || parsed <= 0) {
@@ -2042,7 +2190,7 @@ const AppCore = () => {
   const handleResetSalesAndCustomerLedgers = async () => {
     if (
       !window.confirm(
-        'بدء من الصفر:\n• حذف كل الطلبات والمبيعات السابقة\n• تصفير ديون وسجل حركات كل عميل\n• الإبقاء على ملفات العملاء (الاسم والجوال…) والمنتجات\n\nلا يمكن التراجع. هل تتابع؟'
+        'حذف سجل المبيعات:\n• حذف كل الطلبات والفواتير المعلقة من السجل\n• الإبقاء على ديون العملاء وأرصدتهم وسجل الدفعات كما هي\n• الإبقاء على المنتجات والمخزون\n\nلا يمكن التراجع. هل تتابع؟'
       )
     ) {
       return;
@@ -2062,7 +2210,7 @@ const AppCore = () => {
       setEditingOrderId(null);
       setActiveOpenBillId(null);
       alert(
-        `تم التصفير.\nطلبات محذوفة: ${result.ordersDeleted}\nعملاء مُصفَّر سجلهم: ${result.customersReset}\nفواتير معلقة محذوفة: ${result.openBillsDeleted}`
+        `تم حذف سجل المبيعات.\nطلبات محذوفة: ${result.ordersDeleted}\nفواتير معلقة محذوفة: ${result.openBillsDeleted}\nملفات عملاء بأرصدة محفوظة: ${result.customersPreserved ?? '—'}`
       );
     } catch (error) {
       alert(error.message || 'تعذّر التصفير');
@@ -4212,6 +4360,44 @@ const AppCore = () => {
               </div>
             </div>
 
+            {!isEmployee && (
+              <div className="mt-6 bg-white rounded-xl p-5 shadow-md border border-gray-200">
+                <h3 className="text-base md:text-lg mb-2 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
+                  حدود استفادة موظفي المقهى (يوم الكاش)
+                </h3>
+                <p className="text-xs text-gray-500 mb-4">تبدأ فترة الاحتساب من الساعة 12:00 ظهراً وفق إعدادات الصندوق.</p>
+                <div className="space-y-2">
+                  {staffMembers.map((s) => (
+                    <div key={s.id} className="flex flex-wrap items-center gap-2 justify-between border-b border-gray-50 py-2">
+                      <span className="font-medium text-primary">{s.name}</span>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          defaultValue={s.benefitLimitILS}
+                          className="w-24 px-2 py-1.5 rounded-lg border border-gray-200 text-sm"
+                          onBlur={async (e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!Number.isFinite(v) || v <= 0) return;
+                            try {
+                              await updateStaffBenefitLimit(user.uid, s.id, v);
+                            } catch (err) {
+                              alert(err.message);
+                            }
+                          }}
+                        />
+                        <span className="text-xs text-gray-500">₪ / يوم كاش</span>
+                      </div>
+                    </div>
+                  ))}
+                  {staffMembers.length === 0 && (
+                    <p className="text-sm text-gray-400">جاري تحميل الموظفين…</p>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="mt-6 bg-white rounded-xl p-5 shadow-md border border-gray-200">
               <h3 className="text-base md:text-lg mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>إحصائيات</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -4251,13 +4437,15 @@ const AppCore = () => {
             : expenses.filter((e) => resolveExpenseSection(e) === summarySection);
           const pageTitle =
             currentView === 'purchases' ? 'المشتريات' : currentView === 'traders' ? 'التجار' : 'المصروفات';
-          const monthTotal = summaryExpenses.filter((e) => {
-            if (!e.date) return false;
-            const d = e.date.toDate ? e.date.toDate() : new Date(e.date);
-            const now = new Date();
-            return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-          }).reduce((sum, exp) => sum + (parseFloat(exp.amount) || 0), 0);
-          const allTotal = summaryExpenses.reduce((sum, exp) => sum + (parseFloat(exp.amount) || 0), 0);
+          const allTotal = sumReportExpenses(summaryExpenses);
+          const monthTotal = sumReportExpenses(
+            summaryExpenses.filter((e) => {
+              if (!e.date) return false;
+              const d = e.date.toDate ? e.date.toDate() : new Date(e.date);
+              const now = new Date();
+              return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+            })
+          );
           const isPurchaseView = financeTab === 'purchases';
           const isOperatingView = financeTab === 'operating';
 
@@ -4510,6 +4698,15 @@ const AppCore = () => {
                     </table>
                   </div>
                 </div>
+
+                {isOperatingView && (
+                  <EmployeeBenefitsPanel
+                    benefits={employeeBenefits}
+                    staffMembers={staffMembers}
+                    onCancel={handleCancelEmployeeBenefit}
+                    busy={uploadProgress}
+                  />
+                )}
               </>
             )}
           </div>
@@ -5512,8 +5709,8 @@ const AppCore = () => {
             onAddCustomerPayment={handleAddCustomerPayment}
             onDeleteCustomer={isEmployee ? undefined : handleDeleteCustomer}
             onExportCustomerFile={exportCustomerFile}
-            onClearAllCustomers={isEmployee ? undefined : handleClearAllCustomers}
-            onResetSalesAndCustomerLedgers={isEmployee ? undefined : handleResetSalesAndCustomerLedgers}
+            onEditOrder={isEmployee ? undefined : handleEditOrder}
+            onUpdateCustomerTransactions={isEmployee ? undefined : handleUpdateCustomerTransactions}
             businessProfile={businessProfile}
             onExportCustomersLedgerPdf={isEmployee ? undefined : exportCustomersLedgerPdf}
             customersLedgerPdfLoading={customersLedgerPdfLoading}
@@ -6414,9 +6611,12 @@ const AppCore = () => {
                   ? 'إضافة مشتريات'
                   : isSupplierPaymentForm(expenseForm)
                     ? 'صرف للتاجر'
-                    : 'إضافة مصروف')}
+                    : isEmployeeBenefitForm(expenseForm)
+                      ? 'استفادة الموظفين'
+                      : 'إضافة مصروف')}
             </h3>
-            <div className="space-y-3">
+            <form className="space-y-3" onSubmit={handleAddExpense}>
+              {!isEmployeeBenefitForm(expenseForm) && (
               <div>
                 <label className="block text-xs mb-1.5 font-medium text-gray-600">المبلغ (₪)</label>
                 <input
@@ -6427,6 +6627,7 @@ const AppCore = () => {
                   placeholder="0"
                 />
               </div>
+              )}
               <div>
                 <label className="block text-xs mb-1.5 font-medium text-gray-600">التاريخ</label>
                 <input
@@ -6449,6 +6650,8 @@ const AppCore = () => {
                           category: cat,
                           section: 'supplier_payment',
                         });
+                      } else if (cat === 'EmployeeBenefit') {
+                        setExpenseForm(defaultExpenseForm('employee_benefit'));
                       } else {
                         setExpenseForm({
                           ...expenseForm,
@@ -6474,16 +6677,30 @@ const AppCore = () => {
                   disabled={Boolean(editingExpenseId)}
                 />
               )}
-              <div>
-                <label className="block text-xs mb-1.5 font-medium text-gray-600">البيان</label>
-                <input
-                  type="text"
-                  value={expenseForm.description}
-                  onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
-                  placeholder={expenseForm.section === 'purchase' ? 'تفاصيل المشتريات' : 'تفاصيل المصروف'}
+              {isEmployeeBenefitForm(expenseForm) && (
+                <EmployeeBenefitFields
+                  expenseForm={expenseForm}
+                  setExpenseForm={setExpenseForm}
+                  staffMembers={staffMembers}
+                  employeeBenefits={employeeBenefits}
+                  products={products}
+                  openShift={cashShifts.find((s) => s.status === 'open') || null}
+                  isAdmin={userRole === 'admin'}
+                  disabled={Boolean(editingExpenseId) || uploadProgress}
                 />
-              </div>
+              )}
+              {!isEmployeeBenefitForm(expenseForm) && (
+                <div>
+                  <label className="block text-xs mb-1.5 font-medium text-gray-600">البيان</label>
+                  <input
+                    type="text"
+                    value={expenseForm.description}
+                    onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })}
+                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
+                    placeholder={expenseForm.section === 'purchase' ? 'تفاصيل المشتريات' : 'تفاصيل المصروف'}
+                  />
+                </div>
+              )}
               {expenseForm.section === 'purchase' && (
                 <div>
                   <label className="block text-xs mb-1.5 font-medium text-gray-600">التاجر *</label>
@@ -6589,6 +6806,7 @@ const AppCore = () => {
                 >
                   إلغاء
                 </button>
+                {!isEmployeeBenefitForm(expenseForm) && (
                 <button
                   type="button"
                   onClick={handleAddExpense}
@@ -6604,8 +6822,9 @@ const AppCore = () => {
                 >
                   {uploadProgress ? 'جاري الحفظ...' : (editingExpenseId ? 'حفظ التعديلات' : 'حفظ')}
                 </button>
+                )}
               </div>
-            </div>
+            </form>
           </div>
         </div>
       )}
@@ -6903,11 +7122,23 @@ const AppCore = () => {
               <div className="pt-2 border-t border-gray-100 space-y-2">
                 <button
                   type="button"
+                  onClick={() => {
+                    setShowSettingsModal(false);
+                    setShowRemoveTestSalesModal(true);
+                  }}
+                  disabled={isEmployee}
+                  className="w-full py-2.5 rounded-xl text-sm font-medium text-primary bg-white hover:bg-gray-50 border border-gray-200 transition-colors disabled:opacity-50"
+                  style={{ fontFamily: FONT_UI }}
+                >
+                  إزالة المبيعات الوهمية
+                </button>
+                <button
+                  type="button"
                   onClick={handleResetSalesAndCustomerLedgers}
                   disabled={uploadProgress || isEmployee}
                   className="w-full py-2.5 rounded-xl text-sm font-medium text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition-colors disabled:opacity-50"
                 >
-                  تصفير المبيعات وسجل العملاء (بدء من الصفر)
+                  حذف سجل المبيعات (ديون العملاء تبقى)
                 </button>
                 <button
                   onClick={handleReindexOrders}
@@ -6926,6 +7157,14 @@ const AppCore = () => {
           </div>
         </div>
       )}
+
+      <RemoveTestSalesModal
+        open={showRemoveTestSalesModal}
+        onClose={() => setShowRemoveTestSalesModal(false)}
+        uid={user?.uid}
+        theme={theme}
+        fmtMoney={fmtMoney}
+      />
 
       {/* Discount Modal */}
       {showDiscountModal && (

@@ -24,7 +24,7 @@ export async function callResetSalesAndCustomerLedgers() {
   const fns = functionsInstance();
   if (!fns) throw new Error('الدوال السحابية غير متاحة');
   const fn = httpsCallable(fns, 'resetSalesAndCustomerLedgers');
-  const result = await fn({ confirm: true });
+  const result = await fn({ confirm: true, preserveCustomerLedgers: true });
   return result.data;
 }
 
@@ -56,6 +56,42 @@ export async function callCancelOrder(orderId) {
   if (!fns) throw new Error('الدوال السحابية غير متاحة');
   const fn = httpsCallable(fns, 'cancelOrder');
   const result = await fn({ orderId });
+  return result.data;
+}
+
+export function isTestDataRemovalCloudEnabled() {
+  return isFirebaseConfigured && !isDemoMode;
+}
+
+export async function callPreviewRemoveTestSales() {
+  const fns = functionsInstance();
+  if (!fns) throw new Error('الدوال السحابية غير متاحة');
+  const fn = httpsCallable(fns, 'previewRemoveTestSales');
+  const result = await fn({});
+  return result.data;
+}
+
+export async function callExecuteRemoveTestSales(payload) {
+  const fns = functionsInstance();
+  if (!fns) throw new Error('الدوال السحابية غير متاحة');
+  const fn = httpsCallable(fns, 'executeRemoveTestSales');
+  const result = await fn(payload);
+  return result.data;
+}
+
+export async function callUpdateTestDataRegistry(payload) {
+  const fns = functionsInstance();
+  if (!fns) throw new Error('الدوال السحابية غير متاحة');
+  const fn = httpsCallable(fns, 'updateTestDataRegistry');
+  const result = await fn(payload);
+  return result.data;
+}
+
+export async function callMarkOrdersAsTestData(payload) {
+  const fns = functionsInstance();
+  if (!fns) throw new Error('الدوال السحابية غير متاحة');
+  const fn = httpsCallable(fns, 'markOrdersAsTestData');
+  const result = await fn(payload);
   return result.data;
 }
 

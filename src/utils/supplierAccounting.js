@@ -43,6 +43,7 @@ export function resolveSupplierOutstandingBalance(supplier, expenses, supplierId
 
 export function expenseCountsInReportTotals(expense) {
   if (isSupplierPaymentExpense(expense)) return false;
+  if (expense?.cancelled) return false;
   return true;
 }
 

@@ -25,8 +25,8 @@ export default function CustomersView({
   onAddCustomerPayment,
   onDeleteCustomer,
   onExportCustomerFile,
-  onClearAllCustomers,
-  onResetSalesAndCustomerLedgers,
+  onEditOrder,
+  onUpdateCustomerTransactions,
   businessProfile,
   onExportCustomersLedgerPdf,
   customersLedgerPdfLoading,
@@ -52,6 +52,16 @@ export default function CustomersView({
   const [paymentModalCustomerId, setPaymentModalCustomerId] = useState(null);
   const [paymentForm, setPaymentForm] = useState({ amount: '', note: '' });
   const [paymentSaving, setPaymentSaving] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState(null);
+  const [txForm, setTxForm] = useState({
+    amount: '',
+    orderNumber: '',
+    description: '',
+    date: '',
+    cashPaid: '',
+    total: '',
+  });
+  const [txSaving, setTxSaving] = useState(false);
 
   const paymentModalCustomer = customers.find((c) => c.id === paymentModalCustomerId);
 
@@ -72,6 +82,101 @@ export default function CustomersView({
   const openOrderByNumber = (orderNumber) => {
     const found = customerOrders.find((o) => String(o.orderNumber) === String(orderNumber));
     if (found) setSelectedOrder(found);
+  };
+
+  const openEditTransaction = (t) => {
+    if (!t || !onUpdateCustomerTransactions) return;
+    setEditingTransaction(t);
+    let dateLocal = '';
+    if (t.date) {
+      try {
+        const d = new Date(t.date);
+        if (!Number.isNaN(d.getTime())) {
+          const pad = (n) => String(n).padStart(2, '0');
+          dateLocal = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        }
+      } catch {
+        dateLocal = '';
+      }
+    }
+    setTxForm({
+      amount: t.amount ?? '',
+      orderNumber: t.orderNumber ?? '',
+      description: t.description ?? '',
+      date: dateLocal,
+      cashPaid: t.cashPaid ?? '',
+      total: t.total ?? '',
+    });
+  };
+
+  const closeTxEditor = () => {
+    setEditingTransaction(null);
+    setTxForm({ amount: '', orderNumber: '', description: '', date: '', cashPaid: '', total: '' });
+  };
+
+  const saveEditedTransaction = async () => {
+    if (!detailCustomer || !editingTransaction || !onUpdateCustomerTransactions) return;
+    const amount = Math.round((Number(txForm.amount) || 0) * 100) / 100;
+    if (!(amount > 0)) {
+      alert('أدخل مبلغاً صحيحاً أكبر من صفر');
+      return;
+    }
+    setTxSaving(true);
+    try {
+      const updated = {
+        ...editingTransaction,
+        amount,
+        description: String(txForm.description || '').trim(),
+      };
+      if (txForm.date) {
+        updated.date = new Date(txForm.date).toISOString();
+      }
+      if (editingTransaction.type === 'order_debt') {
+        updated.orderNumber = String(txForm.orderNumber || '').trim() || editingTransaction.orderNumber;
+        const cashPaid = Math.round((Number(txForm.cashPaid) || 0) * 100) / 100;
+        const total = Math.round((Number(txForm.total) || amount + cashPaid) * 100) / 100;
+        updated.cashPaid = cashPaid;
+        updated.total = total;
+      }
+      const transactions = (detailCustomer.transactions || []).map((t) =>
+        t.id === editingTransaction.id ? updated : t
+      );
+      await onUpdateCustomerTransactions(detailCustomer.id, transactions);
+      closeTxEditor();
+    } catch {
+      /* alert in parent */
+    } finally {
+      setTxSaving(false);
+    }
+  };
+
+  const deleteTransaction = async (t) => {
+    if (!detailCustomer || !onUpdateCustomerTransactions || !t?.id) return;
+    if (!window.confirm('حذف هذه الحركة من سجل العميل؟ سيتم تحديث الرصيد تلقائياً.')) return;
+    setTxSaving(true);
+    try {
+      const transactions = (detailCustomer.transactions || []).filter((x) => x.id !== t.id);
+      await onUpdateCustomerTransactions(detailCustomer.id, transactions);
+      if (editingTransaction?.id === t.id) closeTxEditor();
+    } finally {
+      setTxSaving(false);
+    }
+  };
+
+  const editSelectedOrder = () => {
+    if (!selectedOrder) return;
+    if (selectedOrder._syntheticFromTransaction) {
+      const tx = (detailCustomer?.transactions || []).find(
+        (t) => t.type === 'order_debt' && String(t.orderNumber) === String(selectedOrder.orderNumber)
+      );
+      if (tx) openEditTransaction(tx);
+      else alert('لا يوجد سجل دين مرتبط لتعديله');
+      return;
+    }
+    if (onEditOrder) {
+      setSelectedOrder(null);
+      onEditOrder(selectedOrder);
+    }
   };
 
   const filtered = useMemo(() => {
@@ -262,34 +367,6 @@ export default function CustomersView({
             >
               <FileDown size={16} />
               {customersLedgerPdfLoading ? 'جاري PDF…' : 'ملخص الديون PDF'}
-            </button>
-          )}
-          {onResetSalesAndCustomerLedgers && (
-            <button
-              type="button"
-              onClick={() => {
-                onResetSalesAndCustomerLedgers();
-                setDetailId(null);
-              }}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-amber-300 text-amber-900 text-sm font-medium hover:bg-amber-50"
-              style={{ fontFamily: FONT_UI }}
-            >
-              <Trash2 size={16} />
-              تصفير المبيعات وسجل العملاء
-            </button>
-          )}
-          {customers.length > 0 && onClearAllCustomers && (
-            <button
-              type="button"
-              onClick={() => {
-                onClearAllCustomers();
-                setDetailId(null);
-              }}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-red-200 text-red-700 text-sm font-medium hover:bg-red-50"
-              style={{ fontFamily: FONT_UI }}
-            >
-              <Trash2 size={16} />
-              مسح كل العملاء
             </button>
           )}
         </div>
@@ -573,17 +650,27 @@ export default function CustomersView({
                         return (
                           <div
                             key={t.id}
-                            className="w-full flex justify-between items-center text-xs p-2.5 rounded-xl bg-amber-50/80 border border-amber-100 text-start"
+                            className="w-full flex justify-between items-center gap-2 text-xs p-2.5 rounded-xl bg-amber-50/80 border border-amber-100 text-start"
                             style={{ fontFamily: FONT_UI }}
                           >
-                            <span>
+                            <span className="flex-1 min-w-0">
                               {customerTransactionTypeLabel(t.type)}
                               {t.description ? ` — ${t.description}` : ''}
                               {t.date ? (
                                 <span className="block text-[10px] text-gray-400 mt-0.5">{formatLegacyDate(t.date)}</span>
                               ) : null}
                             </span>
-                            <span className="font-bold text-red-600 shrink-0 ms-2">+{fmtMoney(t.amount)}</span>
+                            <span className="font-bold text-red-600 shrink-0">+{fmtMoney(t.amount)}</span>
+                            {onUpdateCustomerTransactions && (
+                              <button
+                                type="button"
+                                onClick={() => openEditTransaction(t)}
+                                className="p-1.5 rounded-lg hover:bg-amber-100 text-amber-900 shrink-0"
+                                aria-label="تعديل"
+                              >
+                                <Pencil size={14} />
+                              </button>
+                            )}
                           </div>
                         );
                       }
@@ -591,34 +678,58 @@ export default function CustomersView({
                         return (
                           <div
                             key={t.id}
-                            className="w-full flex justify-between items-center text-xs p-2.5 rounded-xl bg-emerald-50/80 border border-emerald-100 text-start"
+                            className="w-full flex justify-between items-center gap-2 text-xs p-2.5 rounded-xl bg-emerald-50/80 border border-emerald-100 text-start"
                             style={{ fontFamily: FONT_UI }}
                           >
-                            <span>
+                            <span className="flex-1 min-w-0">
                               {customerTransactionTypeLabel(t.type)}
                               {t.description ? ` — ${t.description}` : ''}
                               {t.date ? (
                                 <span className="block text-[10px] text-gray-400 mt-0.5">{formatLegacyDate(t.date)}</span>
                               ) : null}
                             </span>
-                            <span className="font-bold text-emerald-700 shrink-0 ms-2">-{fmtMoney(t.amount)}</span>
+                            <span className="font-bold text-emerald-700 shrink-0">-{fmtMoney(t.amount)}</span>
+                            {onUpdateCustomerTransactions && (
+                              <button
+                                type="button"
+                                onClick={() => openEditTransaction(t)}
+                                className="p-1.5 rounded-lg hover:bg-emerald-100 text-emerald-900 shrink-0"
+                                aria-label="تعديل"
+                              >
+                                <Pencil size={14} />
+                              </button>
+                            )}
                           </div>
                         );
                       }
                       return (
-                        <button
+                        <div
                           key={t.id}
-                          type="button"
-                          onClick={() => openOrderByNumber(t.orderNumber)}
-                          className="w-full flex justify-between items-center text-xs p-2.5 rounded-xl bg-gray-50 border border-gray-100 hover:border-accent/40 hover:bg-accent-soft/30 transition-colors text-start"
+                          className="w-full flex items-center gap-1 text-xs p-2.5 rounded-xl bg-gray-50 border border-gray-100"
                           style={{ fontFamily: FONT_UI }}
                         >
-                          <span>
-                            طلب #{t.orderNumber || '—'} — {customerTransactionTypeLabel(t.type)}
-                            <span className="block text-[10px] text-gray-400 mt-0.5">اضغط لعرض تفاصيل الطلب</span>
-                          </span>
-                          <span className="font-bold text-red-600 shrink-0 ms-2">+{fmtMoney(t.amount)}</span>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => openOrderByNumber(t.orderNumber)}
+                            className="flex-1 flex justify-between items-center text-start hover:opacity-80 min-w-0"
+                          >
+                            <span>
+                              طلب #{t.orderNumber || '—'} — {customerTransactionTypeLabel(t.type)}
+                              <span className="block text-[10px] text-gray-400 mt-0.5">عرض التفاصيل</span>
+                            </span>
+                            <span className="font-bold text-red-600 shrink-0 ms-2">+{fmtMoney(t.amount)}</span>
+                          </button>
+                          {onUpdateCustomerTransactions && (
+                            <button
+                              type="button"
+                              onClick={() => openEditTransaction(t)}
+                              className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-600 shrink-0"
+                              aria-label="تعديل رقم أو مبلغ"
+                            >
+                              <Pencil size={14} />
+                            </button>
+                          )}
+                        </div>
                       );
                     })}
                   {customerOrders.map((o) => (
@@ -646,6 +757,25 @@ export default function CustomersView({
                       </span>
                       <span className="flex items-center gap-1.5 shrink-0">
                         <span className="font-semibold">{fmtMoney(o.total)}</span>
+                        {(onEditOrder || (o._syntheticFromTransaction && onUpdateCustomerTransactions)) && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (o._syntheticFromTransaction) {
+                                const tx = (detailCustomer?.transactions || []).find(
+                                  (t) =>
+                                    t.type === 'order_debt' && String(t.orderNumber) === String(o.orderNumber)
+                                );
+                                if (tx) openEditTransaction(tx);
+                              } else if (onEditOrder) onEditOrder(o);
+                            }}
+                            className="p-1 rounded-lg hover:bg-gray-100 text-primary"
+                            aria-label="تعديل الفاتورة"
+                          >
+                            <Pencil size={14} />
+                          </button>
+                        )}
                         <Eye size={14} className="text-gray-400" />
                       </span>
                     </button>
@@ -760,13 +890,136 @@ export default function CustomersView({
               )}
             </div>
 
-            <div className="p-5 border-t border-[var(--color-border)] bg-white">
+            <div className="p-5 border-t border-[var(--color-border)] bg-white space-y-3">
               <div className="flex justify-between items-center">
                 <span className="text-sm text-gray-600" style={{ fontFamily: FONT_UI }}>
                   الإجمالي
                 </span>
                 <span className="text-xl font-bold text-accent">{fmtMoney(selectedOrder.total)}</span>
               </div>
+              {(onEditOrder || onUpdateCustomerTransactions) && (
+                <button
+                  type="button"
+                  onClick={editSelectedOrder}
+                  className="w-full py-2.5 rounded-xl text-sm font-medium text-white flex items-center justify-center gap-2 hover:opacity-90"
+                  style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
+                >
+                  <Pencil size={16} />
+                  {selectedOrder._syntheticFromTransaction ? 'تعديل رقم/مبلغ السجل' : 'تعديل الفاتورة في الكاشير'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingTransaction && (
+        <div className="fixed inset-0 bg-black/45 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[60]">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>
+                تعديل حركة — {customerTransactionTypeLabel(editingTransaction.type)}
+              </h3>
+              <button type="button" onClick={closeTxEditor} className="text-gray-400 hover:text-gray-600">
+                <X size={22} />
+              </button>
+            </div>
+            <div className="space-y-3 text-sm" style={{ fontFamily: FONT_UI }}>
+              {editingTransaction.type === 'order_debt' && (
+                <div>
+                  <label className="block text-xs mb-1 text-gray-600">رقم الطلب / الفاتورة</label>
+                  <input
+                    value={txForm.orderNumber}
+                    onChange={(e) => setTxForm((f) => ({ ...f, orderNumber: e.target.value }))}
+                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none"
+                  />
+                </div>
+              )}
+              <div>
+                <label className="block text-xs mb-1 text-gray-600">
+                  {editingTransaction.type === 'payment' ? 'مبلغ الدفعة' : 'مبلغ الدين'}
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={txForm.amount}
+                  onChange={(e) => setTxForm((f) => ({ ...f, amount: e.target.value }))}
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none"
+                />
+              </div>
+              {editingTransaction.type === 'order_debt' && (
+                <>
+                  <div>
+                    <label className="block text-xs mb-1 text-gray-600">كاش مدفوع (إن وجد)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={txForm.cashPaid}
+                      onChange={(e) => setTxForm((f) => ({ ...f, cashPaid: e.target.value }))}
+                      className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1 text-gray-600">إجمالي الفاتورة (اختياري)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={txForm.total}
+                      onChange={(e) => setTxForm((f) => ({ ...f, total: e.target.value }))}
+                      className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none"
+                    />
+                  </div>
+                </>
+              )}
+              <div>
+                <label className="block text-xs mb-1 text-gray-600">وصف / ملاحظة</label>
+                <input
+                  value={txForm.description}
+                  onChange={(e) => setTxForm((f) => ({ ...f, description: e.target.value }))}
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none"
+                />
+              </div>
+              {(editingTransaction.type === 'payment' || editingTransaction.type === 'legacy_debt') && (
+                <div>
+                  <label className="block text-xs mb-1 text-gray-600">التاريخ</label>
+                  <input
+                    type="datetime-local"
+                    value={txForm.date}
+                    onChange={(e) => setTxForm((f) => ({ ...f, date: e.target.value }))}
+                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none"
+                  />
+                </div>
+              )}
+              <p className="text-[10px] text-gray-400">يُحدَّث رصيد العميل تلقائياً من مجموع الحركات بعد الحفظ.</p>
+            </div>
+            <div className="flex gap-2 mt-5">
+              <button
+                type="button"
+                onClick={() => deleteTransaction(editingTransaction)}
+                disabled={txSaving}
+                className="px-4 py-2.5 rounded-xl text-sm text-red-600 border border-red-200 hover:bg-red-50 disabled:opacity-50"
+              >
+                حذف
+              </button>
+              <button
+                type="button"
+                onClick={closeTxEditor}
+                className="flex-1 py-2.5 rounded-xl text-sm bg-gray-100 text-gray-600"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={saveEditedTransaction}
+                disabled={txSaving}
+                className="flex-1 py-2.5 rounded-xl text-sm text-white disabled:opacity-50"
+                style={{ backgroundColor: theme.primary }}
+              >
+                {txSaving ? 'جاري الحفظ…' : 'حفظ'}
+              </button>
             </div>
           </div>
         </div>

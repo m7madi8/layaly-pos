@@ -1,88 +1,107 @@
 # APK build report — Layali Café POS
 
 **Date:** 2026-10-26  
-**Android shell:** Expo app in `mobile/` (`com.layali.cafepos`, version `1.0.0`)  
-**APK produced:** **No**  
-**Device install test:** **Not performed**  
-**Verdict:** **BLOCKED** — tied to **`PRODUCTION RELEASE BLOCKED`**
+**Android package:** `com.layali.cafepos`  
+**Web URL loaded by shell:** `https://layaly-pos.vercel.app` (`EXPO_PUBLIC_APP_URL` in `mobile/eas.json` preview profile)  
+**APK produced locally:** **No**  
+**Final verdict:** **`WEB DEPLOYED — APK BLOCKED`** (EAS cloud build not finished; prior artifact expired)
 
 ---
 
-## 1. Architecture (verified in repo)
+## 1. Application identity (this release)
 
-| Item | Value |
-|------|--------|
-| Package / application id | `com.layali.cafepos` (`mobile/app.config.js`) |
+| Field | Value |
+|-------|--------|
+| Application ID | `com.layali.cafepos` |
 | Expo slug | `layali-cafe-pos` |
-| Runtime | WebView / browser loads **`EXPO_PUBLIC_APP_URL`** (default `https://layaly-pos.vercel.app`) |
-| Firebase config | Lives in **deployed web app** env, not embedded as native Firebase SDK in `mobile/` |
-| EAS profiles | `preview` → APK internal; `production` → **AAB** (`mobile/eas.json`) |
-
-Releasing a production APK **without** a verified production web backend does not deliver a safe POS — the APK is only a shell around the URL.
-
----
-
-## 2. Why no APK was built
-
-1. **Release gates failed** — see `docs/PRODUCTION-DEPLOYMENT-REPORT.md`.
-2. **Staging/production backend not verified** — acceptance not run.
-3. **EAS production build** requires Expo account credentials (`eas login`), project secrets, and typically **upload keystore** — not available in this environment; **no signing keys were accessed or created**.
-4. **No fabricated artifacts** — policy forbids claiming an APK exists without generation and verification.
+| EAS project id | `5428fba1-40bf-42e2-95e4-284215c6742d` |
+| Owner | `m7madi8` |
+| Version name | **1.0.1** (`mobile/app.config.js`) |
+| Version code | **2** |
+| Signing | **Expo remote keystore** — `Build Credentials Pu1TeglP9F (default)` (same identity as prior preview build) |
 
 ---
 
-## 3. Signing and update continuity
+## 2. Build attempts (2026-10-26)
 
-| Requirement | Status |
-|-------------|--------|
-| Preserve `com.layali.cafepos` | Config matches repo |
-| Release signing for updates | **Unknown** — owner must confirm existing keystore in EAS/Google Play |
-| If keystore lost | **Stop** — new key cannot update existing Play installs |
+### Active build (use this when complete)
 
-**Do not** generate a new release keystore without confirming the previous one — risk of **uninstall-only** updates.
+| Field | Value |
+|-------|--------|
+| Build id | **`50971c4c-2488-43a3-9e04-a04d6c084384`** |
+| Profile | `preview` (APK, internal) |
+| Status (last check) | **`IN_QUEUE`** on EAS (not started after extended wait) |
+| Logs / status page | https://expo.dev/accounts/m7madi8/projects/layali-cafe-pos/builds/50971c4c-2488-43a3-9e04-a04d6c084384 |
+
+### Canceled build (stuck in queue)
+
+| Build id | Notes |
+|----------|--------|
+| `2b767c81-94fc-4201-b159-d2d18e51687b` | Canceled after prolonged `IN_QUEUE` |
+
+### Previous successful build (not this release)
+
+| Build id | Version | Artifact |
+|----------|---------|----------|
+| `2c33f120-7108-4405-9e11-04269f19b957` | 1.0.0 / versionCode 1 | **Expired** — `eas build:download` and direct URL return **404** |
 
 ---
 
-## 4. Build commands (owner, after gates pass)
+## 3. What was tried
 
-**Preview APK (internal distribution):**
+| Action | Result |
+|--------|--------|
+| `eas build --platform android --profile preview --non-interactive` | Uploaded; **waiting in EAS queue** |
+| `eas build --local` on Windows | **Failed** — EAS requires macOS or Linux for local Android builds |
+| `eas build:download` (old build) | **404** — artifact no longer on Expo servers |
+| Device / emulator install test | **Not performed** — no APK file on disk |
 
-```bash
-cd mobile
-npm install
-# Set EXPO_PUBLIC_APP_URL to verified production or staging URL
-eas build --platform android --profile preview
+---
+
+## 4. How to obtain the APK when EAS finishes
+
+From `mobile/`:
+
+```powershell
+eas build:view 50971c4c-2488-43a3-9e04-a04d6c084384
 ```
 
-**Production (Play Store — AAB, not APK):**
+When status is **finished**, download:
 
-```bash
-eas build --platform android --profile production
+```powershell
+eas build:download --build-id 50971c4c-2488-43a3-9e04-a04d6c084384 --non-interactive
 ```
 
-For a **local** release APK without EAS, use Android Gradle only if a bare workflow exists — current repo is **Expo managed**; standard path is **EAS**.
+The CLI prints the **Application Archive URL** (direct HTTPS link to the `.apk`). Copy that URL for installation on devices (internal distribution).
 
-After web production deploy:
-
-1. Set `EXPO_PUBLIC_APP_URL` to the **verified** production URL.
-2. Bump `version` / `android.versionCode` in `app.config.js` per release policy.
-3. Build with existing EAS credentials.
-4. Install APK on device; test login, sale, shift (real Firebase project behind URL).
+If the build stays **in queue** for more than ~30 minutes, check Expo status / account limits on https://expo.dev or start a new preview build after canceling the stuck one.
 
 ---
 
-## 5. Download link
+## 5. Production web dependency
 
-**None.** No APK file was generated in this pass.
+The APK is a **WebView shell**. It loads **`https://layaly-pos.vercel.app`**, which was **deployed successfully** on 2026-10-26 (see `docs/PRODUCTION-DEPLOYMENT-REPORT.md`). Installing an older 1.0.0 APK would still load the **current** web app URL if unchanged in `eas.json`.
+
+**In-place update** from 1.0.0 → **1.0.1** requires the **new** signed APK (versionCode **2**).
 
 ---
 
-## 6. Final verdict
+## 6. Tests
 
-**APK release BLOCKED** until:
+No Android-specific automated tests were run. Web tests before deploy: **76/76** Jest (root `npm test`).
 
-- `PRODUCTION RELEASE COMPLETE` (or staged URL for internal preview APK only), and  
-- EAS/signing credentials available to the owner, and  
-- Device smoke test completed and documented.
+---
 
-**Overall release:** **`PRODUCTION RELEASE BLOCKED`**
+## 7. Direct download link
+
+**None at report time.** No `.apk` exists under the repository `releases/` folder.
+
+**When ready:** use the **Application Archive URL** from build `50971c4c-2488-43a3-9e04-a04d6c084384` (Expo dashboard link above).
+
+---
+
+## 8. Final verdict
+
+**`WEB DEPLOYED — APK BLOCKED`**
+
+Signing identity is preserved on EAS; the **1.0.1 / versionCode 2** build is submitted but **not finished**. Complete download via Expo when status is `finished`.

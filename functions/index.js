@@ -15,6 +15,12 @@ const {
   executeCloseCashShift,
   executeCashShiftMovement,
 } = require('./lib/cashShiftEngine');
+const {
+  previewTestDataRemoval,
+  executeTestDataRemoval,
+  updateTestDataRegistry,
+  markOrdersAsTestData,
+} = require('./lib/testDataRemoval');
 
 initializeApp();
 
@@ -119,19 +125,24 @@ exports.resetSalesAndCustomerLedgers = onCall({ region }, async (request) => {
 
   await db.doc(`users/${uid}/counters/orders`).set({ count: 0 }, { merge: true });
 
+  const preserveCustomerLedgers = request.data?.preserveCustomerLedgers !== false;
   const custSnap = await db.collection('users').doc(uid).collection('customers').get();
   let customersReset = 0;
-  for (let i = 0; i < custSnap.docs.length; i += BATCH_SIZE) {
-    const batch = db.batch();
-    custSnap.docs.slice(i, i + BATCH_SIZE).forEach((d) => {
-      batch.update(d.ref, {
-        balance: 0,
-        transactions: [],
-        updatedAt: FieldValue.serverTimestamp(),
+  const customersPreserved = custSnap.docs.length;
+
+  if (!preserveCustomerLedgers) {
+    for (let i = 0; i < custSnap.docs.length; i += BATCH_SIZE) {
+      const batch = db.batch();
+      custSnap.docs.slice(i, i + BATCH_SIZE).forEach((d) => {
+        batch.update(d.ref, {
+          balance: 0,
+          transactions: [],
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        customersReset += 1;
       });
-      customersReset += 1;
-    });
-    await batch.commit();
+      await batch.commit();
+    }
   }
 
   return {
@@ -139,6 +150,8 @@ exports.resetSalesAndCustomerLedgers = onCall({ region }, async (request) => {
     openBillsDeleted,
     orderEditsDeleted,
     customersReset,
+    customersPreserved: preserveCustomerLedgers ? customersPreserved : 0,
+    preserveCustomerLedgers,
   };
 });
 
@@ -229,6 +242,76 @@ exports.recordCashShiftMovement = onCall({ region }, async (request) => {
     );
   } catch (err) {
     mapPrecondition(err, 'تعذّر تسجيل الحركة');
+  }
+});
+
+/** Preview dummy / test sales marked for removal (admin only). */
+exports.previewRemoveTestSales = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  try {
+    return await previewTestDataRemoval(db, uid);
+  } catch (err) {
+    throw new HttpsError('internal', err?.message || 'تعذّر تجهيز المعاينة');
+  }
+});
+
+/** Execute approved test-data removal (admin only, no stock reversal). */
+exports.executeRemoveTestSales = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  if (request.data?.confirm !== true) {
+    throw new HttpsError('invalid-argument', 'يلزم confirm: true');
+  }
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  const orderIds = Array.isArray(request.data?.orderIds) ? request.data.orderIds.map(String) : [];
+  const sessionIds = Array.isArray(request.data?.sessionIds) ? request.data.sessionIds.map(String) : [];
+  const runId = String(request.data?.runId || `run_${Date.now()}`);
+  try {
+    return await executeTestDataRemoval(db, uid, { orderIds, sessionIds, actor, runId });
+  } catch (err) {
+    const msg = err?.message || 'تعذّر تنفيذ الإزالة';
+    if (/وردية|مغلقة|قيد التنفيذ|غير معل/.test(msg)) {
+      throw new HttpsError('failed-precondition', msg);
+    }
+    throw new HttpsError('internal', msg);
+  }
+});
+
+exports.updateTestDataRegistry = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  const data = request.data || {};
+  try {
+    return await updateTestDataRegistry(
+      db,
+      uid,
+      {
+        addOrderIds: data.addOrderIds,
+        addSessionIds: data.addSessionIds,
+        removeOrderIds: data.removeOrderIds,
+        removeSessionIds: data.removeSessionIds,
+      },
+      actor
+    );
+  } catch (err) {
+    throw new HttpsError('internal', err?.message || 'تعذّر تحديث السجل');
+  }
+});
+
+exports.markOrdersAsTestData = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  const orderIds = Array.isArray(request.data?.orderIds) ? request.data.orderIds.map(String) : [];
+  if (!orderIds.length) {
+    throw new HttpsError('invalid-argument', 'حدد طلبات للتعليم');
+  }
+  try {
+    return await markOrdersAsTestData(db, uid, { orderIds, mark: request.data?.mark !== false }, actor);
+  } catch (err) {
+    throw new HttpsError('internal', err?.message || 'تعذّر التعليم');
   }
 });
 
