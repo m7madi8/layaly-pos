@@ -71,3 +71,29 @@ export function isEmployeeBenefitForm(form) {
 export function isSupplierPaymentForm(form) {
   return form?.section === 'supplier_payment' || form?.category === 'SupplierPayment';
 }
+
+/** تاريخ المصروف للفلترة والعرض — يدعم Timestamp و dateMs والنص */
+export function parseExpenseDate(expense) {
+  if (!expense) return null;
+  if (expense.date?.toDate) {
+    const d = expense.date.toDate();
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (expense.dateMs != null && Number.isFinite(Number(expense.dateMs))) {
+    const d = new Date(Number(expense.dateMs));
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (expense.createdAtMs != null && Number.isFinite(Number(expense.createdAtMs))) {
+    const d = new Date(Number(expense.createdAtMs));
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (expense.date) {
+    const d = new Date(expense.date);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (expense.createdAt?.toDate) {
+    const d = expense.createdAt.toDate();
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}

@@ -39,6 +39,38 @@ export function isEmployeeBenefitExpense(expense) {
   return expense.category === EMPLOYEE_BENEFIT_CATEGORY;
 }
 
+/** يبني مستند مصروف Firestore من سجل استفادة موظف */
+export function buildEmployeeBenefitExpenseFields(benefit, { payDate, uid, benefitId }) {
+  const d = payDate instanceof Date && !Number.isNaN(payDate.getTime()) ? payDate : new Date();
+  const totalValue = roundMoney(benefit.totalValue);
+  const benefitType = benefit.benefitType;
+  const staffName = benefit.staffName || '';
+  const description =
+    benefitType === BENEFIT_TYPE_CASH
+      ? `استفادة موظف (كاش) — ${staffName}`
+      : `استفادة موظف (أصناف) — ${staffName}`;
+
+  return {
+    amount: totalValue,
+    date: d,
+    dateMs: d.getTime(),
+    section: EMPLOYEE_BENEFIT_SECTION,
+    category: EMPLOYEE_BENEFIT_CATEGORY,
+    description,
+    notes: String(benefit.notes || '').trim(),
+    staffMemberId: benefit.staffMemberId,
+    staffName,
+    benefitId: benefitId || benefit.id,
+    benefitNumber: benefit.benefitNumber,
+    benefitType,
+    paymentMethod: benefitType === BENEFIT_TYPE_CASH ? 'Cash' : 'Inventory',
+    recordedBy: benefit.recordedBy || null,
+    userId: uid,
+    cancelled: benefit.status === BENEFIT_STATUS_CANCELLED,
+    cancelReason: benefit.cancelReason || '',
+  };
+}
+
 export function buildBenefitReference(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);
   const y = d.getFullYear();

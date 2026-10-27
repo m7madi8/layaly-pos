@@ -6,6 +6,7 @@ import {
   OPERATING_EXPENSE_CATEGORIES,
   PURCHASE_CATEGORY,
   resolveExpenseSection,
+  parseExpenseDate,
   defaultExpenseForm,
   isSupplierPaymentForm,
   isEmployeeBenefitForm,
@@ -18,7 +19,7 @@ import {
   applySupplierPurchaseBalanceWrite,
   reconcileSupplierBalance,
 } from './services/supplierPaymentService';
-import { executeEmployeeBenefit, cancelEmployeeBenefit } from './services/employeeBenefitService';
+import { executeEmployeeBenefit, cancelEmployeeBenefit, syncEmployeeBenefitExpenses } from './services/employeeBenefitService';
 import { ensureDefaultStaffMembers, updateStaffBenefitLimit } from './services/staffMembersService';
 import {
   isEmployeeBenefitExpense,
@@ -305,6 +306,7 @@ const AppCore = () => {
   const [selectedSupplierId, setSelectedSupplierId] = useState(null);
   const supplierPaymentIdemRef = useRef(null);
   const employeeBenefitIdemRef = useRef(null);
+  const employeeBenefitExpenseSyncRef = useRef(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showRemoveTestSalesModal, setShowRemoveTestSalesModal] = useState(false);
   const [showRemoveOldPlaystationModal, setShowRemoveOldPlaystationModal] = useState(false);
@@ -496,6 +498,19 @@ const AppCore = () => {
     });
     return () => unsubscribe();
   }, [user]);
+
+  useEffect(() => {
+    if (activeView !== 'expenses' || !user?.uid || userRole !== 'admin') return;
+    if (employeeBenefitExpenseSyncRef.current) return;
+    employeeBenefitExpenseSyncRef.current = true;
+    syncEmployeeBenefitExpenses(user.uid)
+      .then((r) => {
+        if (r.created > 0) {
+          console.info(`مزامنة استفادة الموظفين: ${r.created} مصروف(ات) في Firestore`);
+        }
+      })
+      .catch((e) => console.error('Employee benefit expense sync failed:', e));
+  }, [activeView, user?.uid, userRole]);
 
   useEffect(() => {
     if (!user?.uid || userRole !== 'admin') return;
@@ -3439,8 +3454,8 @@ const AppCore = () => {
     lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
 
     return expenses.filter(expense => {
-      if (!expense.date) return false;
-      const expenseDate = expense.date.toDate ? expense.date.toDate() : new Date(expense.date);
+      const expenseDate = parseExpenseDate(expense);
+      if (!expenseDate) return false;
       
       switch (expenseFilter) {
         case 'today':
@@ -4442,8 +4457,8 @@ const AppCore = () => {
           const allTotal = sumReportExpenses(summaryExpenses);
           const monthTotal = sumReportExpenses(
             summaryExpenses.filter((e) => {
-              if (!e.date) return false;
-              const d = e.date.toDate ? e.date.toDate() : new Date(e.date);
+              const d = parseExpenseDate(e);
+              if (!d) return false;
               const now = new Date();
               return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
             })
@@ -4640,7 +4655,7 @@ const AppCore = () => {
                         {getFilteredExpenses().map((expense) => (
                           <tr key={expense.id} className="hover:bg-blue-50 transition-colors">
                             <td className="p-3 text-sm text-gray-900 border-r border-gray-200 font-medium">
-                              {expense.date && (expense.date.toDate ? expense.date.toDate().toLocaleDateString('ar') : new Date(expense.date).toLocaleDateString('ar'))}
+                              {parseExpenseDate(expense)?.toLocaleDateString('ar') || '—'}
                             </td>
                             {isOperatingView && (
                               <td className="p-3 text-sm text-gray-900 border-r border-gray-200">

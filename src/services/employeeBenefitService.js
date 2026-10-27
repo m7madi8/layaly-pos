@@ -1,4 +1,5 @@
-import { db, doc, collection, runTransaction, serverTimestamp } from '../firebaseClient';
+import { Timestamp } from 'firebase/firestore';
+import { db, doc, collection, runTransaction, serverTimestamp, getDocs, getDoc, writeBatch } from '../firebaseClient';
 import {
   readOpenCashShiftInTransaction,
   appendCashMovementInTransaction,
@@ -11,6 +12,7 @@ import {
   BENEFIT_STATUS_APPROVED,
   BENEFIT_STATUS_CANCELLED,
   buildBenefitReference,
+  buildEmployeeBenefitExpenseFields,
   dailyUsageDocId,
   validateBenefitInput,
   assertBenefitPermission,
@@ -184,27 +186,24 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
       cancelReason: '',
     };
 
-    const description =
-      benefitType === BENEFIT_TYPE_CASH
-        ? `استفادة موظف (كاش) — ${benefitPayload.staffName}`
-        : `استفادة موظف (أصناف) — ${benefitPayload.staffName}`;
+    const expenseFields = buildEmployeeBenefitExpenseFields(
+      {
+        ...benefitPayload,
+        id: benefitDocRef.id,
+        notes,
+        benefitNumber,
+        benefitType,
+        staffMemberId: staffMember.id,
+        recordedBy: actor || null,
+      },
+      { payDate, uid, benefitId: benefitDocRef.id }
+    );
 
     const expenseData = {
-      amount: totalValue,
-      date: payDate,
-      section: EMPLOYEE_BENEFIT_SECTION,
-      category: EMPLOYEE_BENEFIT_CATEGORY,
-      description,
-      notes,
-      staffMemberId: staffMember.id,
-      staffName: benefitPayload.staffName,
-      benefitId: benefitDocRef.id,
-      benefitNumber,
-      benefitType,
-      paymentMethod: benefitType === BENEFIT_TYPE_CASH ? 'Cash' : 'Inventory',
-      recordedBy: actor || null,
-      userId: uid,
+      ...expenseFields,
+      date: Timestamp.fromDate(payDate),
       createdAt: serverTimestamp(),
+      createdAtMs: Date.now(),
       updatedAt: serverTimestamp(),
     };
 
@@ -395,4 +394,68 @@ export async function cancelEmployeeBenefit(uid, benefitId, { actor, reason }) {
 
     return { benefitId, cashReversed, cancelled: true };
   });
+}
+
+/**
+ * يُنشئ مستندات expenses الناقصة لسجلات employeeBenefits (استعادة بعد تصفير أو أخطاء سابقة).
+ */
+export async function syncEmployeeBenefitExpenses(uid) {
+  const benefitsSnap = await getDocs(benefitsCol(uid));
+  let created = 0;
+  let linked = 0;
+  let alreadyOk = 0;
+
+  let batch = writeBatch(db);
+  let batchOps = 0;
+  const flush = async () => {
+    if (batchOps === 0) return;
+    await batch.commit();
+    batch = writeBatch(db);
+    batchOps = 0;
+  };
+
+  for (const bDoc of benefitsSnap.docs) {
+    const benefit = { id: bDoc.id, ...bDoc.data() };
+    const payDate = benefit.createdAtMs
+      ? new Date(benefit.createdAtMs)
+      : benefit.createdAt?.toDate
+        ? benefit.createdAt.toDate()
+        : new Date();
+
+    let expenseId = benefit.expenseId ? String(benefit.expenseId) : '';
+    if (expenseId) {
+      const eSnap = await getDoc(doc(db, 'users', uid, 'expenses', expenseId));
+      if (eSnap.exists()) {
+        alreadyOk += 1;
+        continue;
+      }
+    } else {
+      expenseId = doc(expensesCol(uid)).id;
+      batch.update(benefitRef(uid, benefit.id), { expenseId, updatedAt: serverTimestamp() });
+      batchOps += 1;
+      linked += 1;
+    }
+
+    const fields = buildEmployeeBenefitExpenseFields(benefit, {
+      payDate,
+      uid,
+      expenseId,
+      benefitId: benefit.id,
+    });
+    const expenseRef = doc(db, 'users', uid, 'expenses', expenseId);
+    batch.set(expenseRef, {
+      ...fields,
+      date: Timestamp.fromDate(payDate),
+      createdAt: serverTimestamp(),
+      createdAtMs: benefit.createdAtMs || payDate.getTime(),
+      updatedAt: serverTimestamp(),
+    });
+    batchOps += 1;
+    created += 1;
+
+    if (batchOps >= 400) await flush();
+  }
+
+  await flush();
+  return { created, linked, alreadyOk };
 }
