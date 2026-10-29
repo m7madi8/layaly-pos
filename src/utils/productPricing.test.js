@@ -126,4 +126,5 @@ describe('stock units', () => {
   test('standard uses quantity', () => expect(stockUnitsForItem({ quantity: 3 })).toBe(3));
   test('weight uses grams', () => expect(stockUnitsForItem({ productType: 'weight', weightGrams: 20, quantity: 1 })).toBe(20));
   test('time uses none', () => expect(stockUnitsForItem({ productType: 'time', quantity: 1 })).toBe(0));
+  test('service uses none', () => expect(stockUnitsForItem({ productType: 'service', quantity: 1 })).toBe(0));
 });

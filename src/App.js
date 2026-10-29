@@ -87,6 +87,7 @@ import CloudConfigRequired from './components/CloudConfigRequired';
 import { mapFirebaseAuthError } from './authErrors';
 import IosInstallHint from './components/IosInstallHint';
 import WeightEntryModal from './components/WeightEntryModal';
+import ServicePriceModal from './components/ServicePriceModal';
 import PlayStationPanel from './components/PlayStationPanel';
 import ExternalAssetsPanel from './components/ExternalAssetsPanel';
 import {
@@ -95,7 +96,7 @@ import {
   returnExternalAsset,
   assetMovementRef,
 } from './services/externalAssetsService';
-import { ensureStarterProducts, ensureStarterAssets, ensureTobaccoImage, ensurePlaystationPricing } from './services/starterProducts';
+import { ensureStarterProducts, ensureStarterAssets, ensureTobaccoImage, ensurePlaystationPricing, ensureSystemServiceProduct } from './services/starterProducts';
 import { ensureDrinkCategoriesSplit } from './services/drinkCategoriesMigration';
 import { effectiveDebt, debtDeltasByCustomer, replaceOrderDebtEntry, diffOrders } from './utils/orderAccounting';
 import { computeTodayCashSales, computeTodayDebtSales, getLocalCalendarDayStart } from './utils/dashboardCashSales';
@@ -335,6 +336,7 @@ const AppCore = () => {
   const [finalTotalForPayment, setFinalTotalForPayment] = useState(0);
 
   const [weightEntryProduct, setWeightEntryProduct] = useState(null);
+  const [serviceEntryProduct, setServiceEntryProduct] = useState(null);
   const [playstationSessions, setPlaystationSessions] = useState([]);
   const [playstationBusy, setPlaystationBusy] = useState(false);
   const playstationPanelRef = useRef(null);
@@ -613,11 +615,19 @@ const AppCore = () => {
         .then(() => ensurePlaystationPricing(user.uid, businessProfile))
         .then(() => ensureDrinkCategoriesSplit(user.uid, businessProfile)),
       ensureStarterAssets(user.uid, businessProfile),
+      ensureSystemServiceProduct(user.uid),
     ]).catch((error) => {
       starterSeededRef.current = false;
       console.error('Error adding starter products:', error);
     });
   }, [user, businessProfile, userRole]);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    ensureSystemServiceProduct(user.uid).catch((e) =>
+      console.error('System service product seed failed:', e)
+    );
+  }, [user?.uid]);
 
   // Load customers
   useEffect(() => {
@@ -1406,6 +1416,14 @@ const AppCore = () => {
           addOns: [],
           ingredients: [],
         });
+      } else if (type === 'service') {
+        Object.assign(productData, {
+          price: 0,
+          cost: 0,
+          stock: null,
+          addOns: [],
+          ingredients: [],
+        });
       }
 
       if (editingProductId) {
@@ -1794,6 +1812,10 @@ const AppCore = () => {
       setWeightEntryProduct(product);
       return;
     }
+    if (type === 'service') {
+      setServiceEntryProduct(product);
+      return;
+    }
     if (type === 'time') {
       setPosSection('playstation');
       setTimeout(() => playstationPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
@@ -1889,6 +1911,32 @@ const AppCore = () => {
     }));
     pingCartFeedback(cartItemId);
     setWeightEntryProduct(null);
+  };
+
+  const addServiceItemToCart = (product, { amount, serviceNote }) => {
+    const cartItemId = `svc-${product.id}-${Date.now()}`;
+    const note = String(serviceNote || '').trim();
+    const lineName = note ? `${product.name} — ${note}` : product.name;
+    setCurrentOrder((prev) => ({
+      ...prev,
+      items: [
+        ...prev.items,
+        {
+          ...product,
+          name: lineName,
+          productType: 'service',
+          cartItemId,
+          quantity: 1,
+          selectedAddons: [],
+          price: amount,
+          originalPrice: amount,
+          cost: 0,
+          serviceNote: note,
+        },
+      ],
+    }));
+    pingCartFeedback(cartItemId);
+    setServiceEntryProduct(null);
   };
 
   const playstationSettings = resolvePlaystationSettings(businessProfile);
@@ -2497,7 +2545,7 @@ const AppCore = () => {
         for (const pid of productIds) {
           const pRef = doc(db, 'users', user.uid, 'products', pid);
           const cached = productsById.get(pid);
-          if (cached && getProductType(cached) === 'time') {
+          if (cached && (getProductType(cached) === 'time' || getProductType(cached) === 'service')) {
             productDocs[pid] = { ref: pRef, data: { ...cached } };
             continue;
           }
@@ -2628,7 +2676,7 @@ const AppCore = () => {
 
         // Apply product updates (time-based products have no stock)
         for (const pid of productIds) {
-            if (productDocs[pid] && getProductType(productDocs[pid].data) !== 'time') {
+            if (productDocs[pid] && getProductType(productDocs[pid].data) !== 'time' && getProductType(productDocs[pid].data) !== 'service') {
                 transaction.update(productDocs[pid].ref, { stock: productDocs[pid].data.stock });
             }
         }
@@ -2674,6 +2722,12 @@ const AppCore = () => {
                 sessionId: i.sessionId || null,
                 durationMinutes: i.durationMinutes || 0,
                 billableMinutes: i.billableMinutes || 0,
+              });
+            } else if (type === 'service') {
+              Object.assign(line, {
+                productType: 'service',
+                lineId: i.cartItemId,
+                serviceNote: i.serviceNote || '',
               });
             }
             return line;
@@ -6302,6 +6356,15 @@ const AppCore = () => {
           fmtMoney={fmtMoney}
           onConfirm={(value) => addWeightItemToCart(weightEntryProduct, value)}
           onClose={() => setWeightEntryProduct(null)}
+        />
+      )}
+
+      {serviceEntryProduct && (
+        <ServicePriceModal
+          product={serviceEntryProduct}
+          fmtMoney={fmtMoney}
+          onConfirm={(value) => addServiceItemToCart(serviceEntryProduct, value)}
+          onClose={() => setServiceEntryProduct(null)}
         />
       )}
 

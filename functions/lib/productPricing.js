@@ -8,7 +8,7 @@ const roundMoney = (value) => roundTo(value, 2);
 
 function getProductType(product) {
   const t = product?.productType;
-  return t === 'weight' || t === 'time' ? t : 'standard';
+  return t === 'weight' || t === 'time' || t === 'service' ? t : 'standard';
 }
 
 function weightPricePerUnit(product) {
@@ -37,6 +37,7 @@ function stockUnitsForItem(item) {
   const type = getProductType(item);
   const qty = Number(item?.quantity) || 0;
   if (type === 'time') return 0;
+  if (type === 'service') return 0;
   if (type === 'weight') return (Number(item?.weightGrams) || 0) * qty;
   return qty;
 }

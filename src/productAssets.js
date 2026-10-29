@@ -6,11 +6,16 @@ export function productImageUrl(fileName) {
 }
 
 /** أقسام افتراضية — يمكن إضافة أقسام جديدة عند تعريف المنتج */
-export const MENU_CATEGORIES = ['الأرجيل', 'مشروبات باردة', 'مشروبات ساخنة', 'النثريات'];
+export const MENU_CATEGORIES = ['الأرجيل', 'مشروبات باردة', SERVICES_CATEGORY, 'مشروبات ساخنة', 'النثريات'];
 
 export const LEGACY_DRINKS_CATEGORY = 'المشروبات';
 export const DRINK_COLD_CATEGORY = 'مشروبات باردة';
 export const DRINK_HOT_CATEGORY = 'مشروبات ساخنة';
+/** صنف نظامي — سعر البيع يُدخل يدوياً عند كل إضافة */
+export const SERVICES_CATEGORY = 'خدمات';
+
+/** ترتيب تبويبات POS — «خدمات» بعد مشروبات باردة */
+const POS_TAB_ORDER = ['الأرجيل', DRINK_COLD_CATEGORY, SERVICES_CATEGORY, DRINK_HOT_CATEGORY, 'النثريات'];
 
 const HOT_DRINK_NAME_RE =
   /قهوة|اسبريسو|إسبريسو|espresso|لاتيه|latte|كابتش|cappuccino|شاي|tea|ساخن|hot|موكا|mocha|أمريكانو|americano|تركي|نقعه|كورتادو|flat\s*white/i;
@@ -52,5 +57,14 @@ export function mergeMenuCategories(products = []) {
 }
 
 export function buildPosMenuTabs(categoryList) {
-  return [{ id: 'all', label: 'الكل' }, ...categoryList.map((c) => ({ id: c, label: c }))];
+  const remaining = new Set(categoryList);
+  const ordered = [];
+  for (const id of POS_TAB_ORDER) {
+    if (remaining.has(id)) {
+      ordered.push({ id, label: id });
+      remaining.delete(id);
+    }
+  }
+  const rest = [...remaining].sort((a, b) => a.localeCompare(b, 'ar'));
+  return [{ id: 'all', label: 'الكل' }, ...ordered, ...rest.map((c) => ({ id: c, label: c }))];
 }

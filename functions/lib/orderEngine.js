@@ -350,7 +350,7 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
     }
 
     for (const pid of productIds) {
-      if (productDocs[pid] && getProductType(productDocs[pid].data) !== 'time') {
+      if (productDocs[pid] && getProductType(productDocs[pid].data) !== 'time' && getProductType(productDocs[pid].data) !== 'service') {
         tx.update(productDocs[pid].ref, { stock: productDocs[pid].data.stock });
       }
     }

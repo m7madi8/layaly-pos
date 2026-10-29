@@ -15,9 +15,11 @@ const chip =
 function PosProductCard({ product, qty = 0, onAdd }) {
   const type = getProductType(product);
   const isWeight = type === 'weight';
+  const isService = type === 'service';
   const hasAddons = type === 'standard' && Array.isArray(product.addOns) && product.addOns.length > 0;
   const stock = Number(product.stock);
   const out =
+    !isService &&
     type !== 'time' &&
     product.stock !== null &&
     product.stock !== undefined &&
@@ -68,6 +70,7 @@ function PosProductCard({ product, qty = 0, onAdd }) {
               <Scale size={10} /> بالوزن
             </span>
           )}
+          {isService && <span className={chip}>خدمة</span>}
           {hasAddons && (
             <span className={chip}>
               <Plus size={10} /> إضافات

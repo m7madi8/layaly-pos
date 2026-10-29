@@ -1,5 +1,6 @@
-import { db, doc, collection, addDoc, getDocs, query, updateDoc, serverTimestamp } from '../firebaseClient';
+import { db, doc, collection, addDoc, getDocs, query, updateDoc, serverTimestamp, where } from '../firebaseClient';
 import { getProductType } from '../utils/productPricing';
+import { SERVICES_CATEGORY } from '../productAssets';
 
 /** أصناف أساسية تُضاف مرة واحدة فقط لكل حساب، ولا تُعاد إذا حذفها المدير لاحقاً */
 const STARTER_FLAG = 'starterProductsV1';
@@ -112,5 +113,32 @@ export async function ensureStarterAssets(uid, profile) {
     }
   }
   await updateDoc(doc(db, 'users', uid), { [ASSETS_FLAG]: true });
+  return true;
+}
+
+const SYSTEM_SERVICE_NAME = 'خدمات';
+
+/** صنف «خدمات» ثابت — يُنشأ إذا غير موجود (حتى بعد حذف خطأ) */
+export async function ensureSystemServiceProduct(uid) {
+  if (!uid) return false;
+  const col = collection(db, 'users', uid, 'products');
+  const byFlag = await getDocs(query(col, where('systemService', '==', true)));
+  if (!byFlag.empty) return false;
+
+  await addDoc(col, {
+    name: SYSTEM_SERVICE_NAME,
+    category: SERVICES_CATEGORY,
+    productType: 'service',
+    price: 0,
+    cost: 0,
+    stock: null,
+    addOns: [],
+    ingredients: [],
+    image: '',
+    systemService: true,
+    userId: uid,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
   return true;
 }

@@ -3,6 +3,7 @@ export const PRODUCT_TYPES = [
   { id: 'standard', label: 'عادي' },
   { id: 'weight', label: 'بالوزن' },
   { id: 'time', label: 'بالوقت' },
+  { id: 'service', label: 'خدمة (سعر يدوي)' },
 ];
 
 export const TIME_ROUNDING_OPTIONS = [
@@ -12,7 +13,7 @@ export const TIME_ROUNDING_OPTIONS = [
 
 export function getProductType(product) {
   const t = product?.productType;
-  return t === 'weight' || t === 'time' ? t : 'standard';
+  return t === 'weight' || t === 'time' || t === 'service' ? t : 'standard';
 }
 
 function roundTo(value, decimals) {
@@ -122,6 +123,7 @@ export function stockUnitsForItem(item) {
   const type = getProductType(item);
   const qty = Number(item?.quantity) || 0;
   if (type === 'time') return 0;
+  if (type === 'service') return 0;
   if (type === 'weight') return (Number(item?.weightGrams) || 0) * qty;
   return qty;
 }
@@ -131,6 +133,7 @@ export function itemDetailLabel(item) {
   const type = getProductType(item);
   if (type === 'weight' && Number(item?.weightGrams) > 0) return `${roundWeight(item.weightGrams)} غ`;
   if (type === 'time' && item?.durationMinutes != null) return formatDuration(item.durationMinutes);
+  if (type === 'service' && item?.serviceNote) return String(item.serviceNote).trim();
   return '';
 }
 
@@ -201,6 +204,9 @@ export function productPriceLabel(product, fmtMoney) {
   if (type === 'time') {
     const tp = product.timePricing || {};
     return `${fmtMoney(tp.billingPrice || 0)} / ${tp.billingMinutes || 0} د`;
+  }
+  if (type === 'service') {
+    return 'سعر يدوي';
   }
   return fmtMoney(product.price || 0);
 }
