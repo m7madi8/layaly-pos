@@ -48,7 +48,7 @@ import RemoveOldPlaystationModal from './components/RemoveOldPlaystationModal';
 import SystemResetModal from './components/SystemResetModal';
 import { resolveDailyCashGate } from './utils/cashDayGate';
 import { externalHookahCartItemId, selectHookahExternalCheckoutProducts } from './utils/hookahExternalSale';
-import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory, SERVICES_CATEGORY, isSystemServiceProduct, buildSystemServiceProduct } from './productAssets';
+import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory, isSystemServiceProduct, buildSystemServiceProduct } from './productAssets';
 import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, Landmark, PauseCircle, Check } from 'lucide-react';
 import { friendlyError } from './utils/friendlyError';
 import { normalizeDocId } from './utils/firestoreIds';
