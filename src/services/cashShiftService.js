@@ -20,6 +20,15 @@ export async function findLastClosedCashShift(uid) {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() })).find((s) => s.status === 'closed') || null;
 }
 
+/** كل حركات وردية واحدة (لتفاصيل سجل الورديات). */
+export async function listCashMovementsForShift(uid, shiftId) {
+  if (!shiftId) return [];
+  const snap = await getDocs(query(movementsCol(uid), where('shiftId', '==', shiftId)));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => (Number(b.createdAtMs) || 0) - (Number(a.createdAtMs) || 0));
+}
+
 export async function openCashShift(uid, { openingBalance, actor, notes = '', shiftPeriod = 1, operatorName = '' }) {
   const existing = await findOpenCashShift(uid);
   if (existing) throw new Error('يوجد وردية كاش مفتوحة بالفعل — أغلقها أولاً');

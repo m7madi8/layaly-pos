@@ -45,6 +45,7 @@ import VaultPinScreen from './components/VaultPinScreen';
 import DailyCashOpenModal from './components/DailyCashOpenModal';
 import RemoveTestSalesModal from './components/RemoveTestSalesModal';
 import RemoveOldPlaystationModal from './components/RemoveOldPlaystationModal';
+import SystemResetModal from './components/SystemResetModal';
 import { resolveDailyCashGate } from './utils/cashDayGate';
 import { externalHookahCartItemId, selectHookahExternalCheckoutProducts } from './utils/hookahExternalSale';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory, SERVICES_CATEGORY, isSystemServiceProduct, buildSystemServiceProduct } from './productAssets';
@@ -314,6 +315,7 @@ const AppCore = () => {
   const completeOrderLockRef = useRef(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showRemoveTestSalesModal, setShowRemoveTestSalesModal] = useState(false);
+  const [showSystemResetModal, setShowSystemResetModal] = useState(false);
   const [showRemoveOldPlaystationModal, setShowRemoveOldPlaystationModal] = useState(false);
   const [appSettings, setAppSettings] = useState({
     tax: 0,
@@ -2294,6 +2296,14 @@ const AppCore = () => {
     } finally {
       setUploadProgress(false);
     }
+  };
+
+  const handleAfterSystemReset = () => {
+    setCurrentOrder({ items: [], customerId: '', customer: '' });
+    setEditingOrderId(null);
+    setActiveOpenBillId(null);
+    setDiscount(0);
+    setDiscountType('amount');
   };
 
   const exportCustomersLedgerPdf = async () => {
@@ -4523,6 +4533,25 @@ const AppCore = () => {
                 </div>
               </div>
             </div>
+
+            {!isEmployee && (
+              <div className="mt-6 bg-white rounded-xl p-5 shadow-md border border-red-200 bg-red-50/30">
+                <h3 className="text-base md:text-lg mb-2 text-red-800" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
+                  تهيئة النظام
+                </h3>
+                <p className="text-xs text-gray-600 mb-4 leading-relaxed" style={{ fontFamily: FONT_UI }}>
+                  حذف كل السجلات التشغيلية (مبيعات، صندوق، خزنة، عملاء، تجار، مصروفات…) مع الإبقاء على الأصناف وصورها دون أي تعديل.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowSystemResetModal(true)}
+                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-red-700 hover:bg-red-800 transition-colors"
+                  style={{ fontFamily: FONT_UI }}
+                >
+                  تهيئة النظام بالكامل…
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -5824,6 +5853,7 @@ const AppCore = () => {
 
         {activeView === 'cash' && (
           <CashShiftView
+            userId={user?.uid}
             openShift={openCashShiftDoc}
             lastClosedShift={lastClosedCashShift}
             shiftHistory={cashShifts}
@@ -7275,6 +7305,18 @@ const AppCore = () => {
                   حذف سجل المبيعات (ديون العملاء تبقى)
                 </button>
                 <button
+                  type="button"
+                  onClick={() => {
+                    setShowSettingsModal(false);
+                    setShowSystemResetModal(true);
+                  }}
+                  disabled={uploadProgress || isEmployee}
+                  className="w-full py-2.5 rounded-xl text-sm font-semibold text-white bg-red-700 hover:bg-red-800 transition-colors disabled:opacity-50"
+                  style={{ fontFamily: FONT_UI }}
+                >
+                  تهيئة النظام بالكامل (الأصناف تبقى)
+                </button>
+                <button
                   onClick={handleReindexOrders}
                   className="w-full py-2.5 rounded-xl text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 transition-colors"
                 >
@@ -7305,6 +7347,16 @@ const AppCore = () => {
         onClose={() => setShowRemoveOldPlaystationModal(false)}
         uid={user?.uid}
         fmtMoney={fmtMoney}
+      />
+
+      <SystemResetModal
+        open={showSystemResetModal}
+        onClose={() => setShowSystemResetModal(false)}
+        uid={user?.uid}
+        apis={{ db, collection, doc, getDocs, writeBatch, setDoc, serverTimestamp }}
+        FONT_UI={FONT_UI}
+        FONT_HEADING={FONT_HEADING}
+        onDone={handleAfterSystemReset}
       />
 
       {/* Discount Modal */}

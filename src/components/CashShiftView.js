@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
-import { Wallet, Plus, Minus, Lock, Unlock, CalendarDays } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Wallet, Plus, Minus, Lock, Unlock, CalendarDays, X, ChevronLeft } from 'lucide-react';
 import { computeExpectedCash } from '../utils/cashShiftMath';
 import { shiftPeriodLabel } from '../utils/cashDayGate';
+import { listCashMovementsForShift } from '../services/cashShiftService';
 
 function shiftDayLabel(shift) {
   const ms = Number(shift.closedAtMs) || Number(shift.openedAtMs) || 0;
@@ -19,6 +20,37 @@ function shiftTimeLabel(ms) {
   return new Date(ms).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
 }
 
+function movementTypeLabel(m) {
+  if (m.type === 'sale') return 'بيع كاش';
+  if (m.type === 'withdrawal') {
+    if (m.isClosingWithdrawal) return 'نقل للخزنة (إغلاق)';
+    return 'سحب';
+  }
+  if (m.type === 'deposit') return 'إيداع';
+  if (m.type === 'refund') return 'مرتجع';
+  return m.type || '—';
+}
+
+function MovementRow({ m, fmtMoney }) {
+  const out = m.type === 'withdrawal' || m.type === 'refund';
+  return (
+    <div className="flex justify-between gap-3 text-sm border-b border-gray-100 py-2.5 last:border-0">
+      <div className="min-w-0 flex-1">
+        <p className="font-medium text-primary">{movementTypeLabel(m)}</p>
+        <p className="text-xs text-gray-500 truncate">{m.reason || '—'}</p>
+        {m.orderNumber ? (
+          <p className="text-[11px] text-gray-400 mt-0.5">طلب #{m.orderNumber}</p>
+        ) : null}
+        <p className="text-[11px] text-gray-400 mt-0.5">{shiftTimeLabel(m.createdAtMs)}</p>
+      </div>
+      <p className={`font-semibold tabular-nums shrink-0 ${out ? 'text-red-700' : 'text-green-700'}`}>
+        {out ? '-' : '+'}
+        {fmtMoney(m.amount)}
+      </p>
+    </div>
+  );
+}
+
 function vaultTransferForShift(shift, movements) {
   if (shift.vaultTransferOnClose != null && shift.status === 'closed') {
     return Number(shift.vaultTransferOnClose) || 0;
@@ -29,7 +61,177 @@ function vaultTransferForShift(shift, movements) {
     .reduce((sum, m) => sum + (Number(m.amount) || 0), 0);
 }
 
+function ShiftDetailModal({
+  shift,
+  movements,
+  loading,
+  error,
+  movementsFallback,
+  fmtMoney,
+  theme,
+  FONT_UI,
+  FONT_HEADING,
+  onClose,
+}) {
+  const totals = useMemo(
+    () => ({
+      openingBalance: Number(shift.openingBalance) || 0,
+      cashSales: Number(shift.cashSales) || 0,
+      cashWithdrawals: Number(shift.cashWithdrawals) || 0,
+      cashDeposits: Number(shift.cashDeposits) || 0,
+      cashRefunds: Number(shift.cashRefunds) || 0,
+    }),
+    [shift]
+  );
+  const expected = computeExpectedCash(totals);
+  const toVault =
+    shift.vaultTransferOnClose != null
+      ? Number(shift.vaultTransferOnClose) || 0
+      : vaultTransferForShift(shift, movementsFallback);
+  const list =
+    movements.length > 0
+      ? movements
+      : (movementsFallback || []).filter((m) => m.shiftId === shift.id);
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] bg-black/45 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-lg max-h-[92vh] flex flex-col border border-gray-200 shadow-xl"
+        dir="rtl"
+      >
+        <div className="flex items-start justify-between gap-3 p-5 border-b border-gray-100 shrink-0">
+          <div>
+            <p className="text-xs text-gray-500 mb-1" style={{ fontFamily: FONT_UI }}>
+              {shiftDayLabel(shift)}
+            </p>
+            <h3 className="text-lg font-bold text-primary" style={{ fontFamily: FONT_HEADING }}>
+              {shiftPeriodLabel(shift.shiftPeriod)}
+            </h3>
+            <p className="text-sm text-gray-600 mt-1" style={{ fontFamily: FONT_UI }}>
+              المشغّل: <strong>{shift.operatorName || '—'}</strong>
+              {shift.status === 'open' ? (
+                <span className="text-amber-700 ms-2">· مفتوحة</span>
+              ) : (
+                <span className="text-gray-500 ms-2">
+                  · فتح {shiftTimeLabel(shift.openedAtMs)} — إغلاق {shiftTimeLabel(shift.closedAtMs)}
+                </span>
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-2 rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50 shrink-0"
+            aria-label="إغلاق"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto layali-scrollbar-none p-5 space-y-5 flex-1">
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              ['الافتتاح', totals.openingBalance],
+              ['مبيعات كاش', totals.cashSales],
+              ['سحوبات', totals.cashWithdrawals],
+              ['إيداعات', totals.cashDeposits],
+              ['مرتجعات', totals.cashRefunds],
+              ['المتوقع في الصندوق', expected],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-xl border border-gray-100 bg-[var(--color-bg-warm)]/40 px-3 py-2.5">
+                <p className="text-[11px] text-gray-500" style={{ fontFamily: FONT_UI }}>
+                  {label}
+                </p>
+                <p className="text-base font-bold tabular-nums" style={{ fontFamily: FONT_UI, color: theme.text }}>
+                  {fmtMoney(value)}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {shift.status === 'closed' && (
+            <div className="rounded-xl border border-gray-200 px-4 py-3 space-y-2">
+              <p className="text-sm font-semibold text-primary" style={{ fontFamily: FONT_UI }}>
+                ملخص الإغلاق
+              </p>
+              <div className="flex justify-between text-sm" style={{ fontFamily: FONT_UI }}>
+                <span className="text-gray-600">بقي في الصندوق</span>
+                <span className="font-semibold tabular-nums">
+                  {shift.actualClosingBalance != null ? fmtMoney(shift.actualClosingBalance) : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between text-sm" style={{ fontFamily: FONT_UI }}>
+                <span className="text-gray-600">نُقل للخزنة</span>
+                <span className="font-semibold tabular-nums text-green-700">{fmtMoney(toVault)}</span>
+              </div>
+              {shift.difference != null && Math.abs(Number(shift.difference)) > 0.009 && (
+                <div className="flex justify-between text-sm text-amber-800" style={{ fontFamily: FONT_UI }}>
+                  <span>فرق عدّ</span>
+                  <span className="font-semibold tabular-nums">{fmtMoney(shift.difference)}</span>
+                </div>
+              )}
+              {shift.closingNotes ? (
+                <p className="text-xs text-gray-600 pt-1 border-t border-gray-100" style={{ fontFamily: FONT_UI }}>
+                  ملاحظات: {shift.closingNotes}
+                </p>
+              ) : null}
+            </div>
+          )}
+
+          <div>
+            <p className="text-sm font-semibold mb-2 flex items-center gap-2" style={{ fontFamily: FONT_UI }}>
+              <Wallet size={16} /> كل الحركات
+            </p>
+            {loading && (
+              <p className="text-sm text-gray-500 py-8 text-center" style={{ fontFamily: FONT_UI }}>
+                جاري التحميل…
+              </p>
+            )}
+            {!loading && error && (
+              <p className="text-sm text-red-600 py-4 text-center" style={{ fontFamily: FONT_UI }}>
+                {error}
+              </p>
+            )}
+            {!loading && !error && list.length === 0 && (
+              <p className="text-sm text-gray-500 py-8 text-center" style={{ fontFamily: FONT_UI }}>
+                لا حركات مسجّلة لهذه الوردية
+              </p>
+            )}
+            {!loading && !error && list.length > 0 && (
+              <div className="rounded-xl border border-gray-100 px-3 max-h-64 overflow-y-auto layali-scrollbar-none">
+                {list.map((m) => (
+                  <MovementRow key={m.id} m={m} fmtMoney={fmtMoney} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-gray-100 shrink-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2 border border-gray-200"
+            style={{ fontFamily: FONT_UI }}
+          >
+            <ChevronLeft size={16} />
+            رجوع
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function CashShiftView({
+  userId,
   openShift,
   lastClosedShift,
   shiftHistory = [],
@@ -49,6 +251,37 @@ export default function CashShiftView({
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [actualCash, setActualCash] = useState('');
   const [closeNotes, setCloseNotes] = useState('');
+  const [detailShift, setDetailShift] = useState(null);
+  const [detailMovements, setDetailMovements] = useState([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+
+  useEffect(() => {
+    if (!detailShift?.id || !userId) {
+      setDetailMovements([]);
+      setDetailError('');
+      return undefined;
+    }
+    let cancelled = false;
+    setDetailLoading(true);
+    setDetailError('');
+    listCashMovementsForShift(userId, detailShift.id)
+      .then((list) => {
+        if (!cancelled) setDetailMovements(list);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setDetailMovements([]);
+          setDetailError(err.message || 'تعذّر تحميل الحركات');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detailShift?.id, userId]);
 
   const totals = useMemo(() => {
     if (!openShift) return null;
@@ -251,28 +484,7 @@ export default function CashShiftView({
                 <p className="text-sm text-gray-500 py-6 text-center">لا حركات بعد</p>
               )}
               {shiftMovements.map((m) => (
-                <div key={m.id} className="flex justify-between text-sm border-b border-gray-100 py-2">
-                  <div>
-                    <p style={{ fontFamily: FONT_UI }}>
-                      {m.type === 'sale'
-                        ? 'بيع كاش'
-                        : m.type === 'withdrawal'
-                          ? m.isClosingWithdrawal
-                            ? 'نقل للخزنة (إغلاق)'
-                            : 'سحب'
-                          : m.type === 'deposit'
-                            ? 'إيداع'
-                            : m.type === 'refund'
-                              ? 'مرتجع'
-                              : m.type}
-                    </p>
-                    <p className="text-xs text-gray-500">{m.reason || '—'}</p>
-                  </div>
-                  <p className="font-semibold" style={{ fontFamily: FONT_UI }}>
-                    {m.type === 'withdrawal' || m.type === 'refund' ? '-' : '+'}
-                    {fmtMoney(m.amount)}
-                  </p>
-                </div>
+                <MovementRow key={m.id} m={m} fmtMoney={fmtMoney} />
               ))}
             </div>
           </div>
@@ -301,8 +513,14 @@ export default function CashShiftView({
                 </tr>
               </thead>
               <tbody>
-                {dailyRows.map((row) => (
-                  <tr key={row.id} className="border-b border-gray-50 last:border-0">
+                {dailyRows.map((row) => {
+                  const fullShift = (shiftHistory || []).find((s) => s.id === row.id);
+                  return (
+                  <tr
+                    key={row.id}
+                    className="border-b border-gray-50 last:border-0 cursor-pointer hover:bg-[var(--color-bg-warm)]/60 transition-colors"
+                    onClick={() => fullShift && setDetailShift(fullShift)}
+                  >
                     <td className="py-3 pe-2 align-top">
                       <p className="font-medium text-primary">{row.day}</p>
                       <p className="text-[11px] text-gray-500 mt-0.5">
@@ -323,15 +541,31 @@ export default function CashShiftView({
                       {row.status === 'closed' ? fmtMoney(row.toVault) : '—'}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
         <p className="text-[11px] text-gray-400 mt-3" style={{ fontFamily: FONT_UI }}>
-          التسكير = المبلغ المتبقي في الصندوق. للخزنة = الفرق الذي يُنقل تلقائياً عند الإغلاق.
+          اضغط على أي وردية لعرض التفاصيل والحركات. التسكير = المتبقي في الصندوق. للخزنة = ما يُنقل عند الإغلاق.
         </p>
       </div>
+
+      {detailShift && (
+        <ShiftDetailModal
+          shift={detailShift}
+          movements={detailMovements}
+          loading={detailLoading}
+          error={detailError}
+          movementsFallback={movements}
+          fmtMoney={fmtMoney}
+          theme={theme}
+          FONT_UI={FONT_UI}
+          FONT_HEADING={FONT_HEADING}
+          onClose={() => setDetailShift(null)}
+        />
+      )}
 
       {showCloseModal && openShift && (
         <div className="fixed inset-0 z-[60] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4">
