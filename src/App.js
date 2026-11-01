@@ -4540,7 +4540,7 @@ const AppCore = () => {
                   تهيئة النظام
                 </h3>
                 <p className="text-xs text-gray-600 mb-4 leading-relaxed" style={{ fontFamily: FONT_UI }}>
-                  حذف كل السجلات التشغيلية (مبيعات، صندوق، خزنة، عملاء، تجار، مصروفات…) مع الإبقاء على الأصناف وصورها دون أي تعديل.
+                  حذف المبيعات والصندوق والخزنة والعملاء والمصروفات وسجل الاستفادات — مع الإبقاء على الأصناف وصورها وأسماء الموظفين وحد الاستفادة لكل موظف.
                 </p>
                 <button
                   type="button"
@@ -7314,7 +7314,7 @@ const AppCore = () => {
                   className="w-full py-2.5 rounded-xl text-sm font-semibold text-white bg-red-700 hover:bg-red-800 transition-colors disabled:opacity-50"
                   style={{ fontFamily: FONT_UI }}
                 >
-                  تهيئة النظام بالكامل (الأصناف تبقى)
+                  تهيئة النظام (الأصناف وحدود الموظفين تبقى)
                 </button>
                 <button
                   onClick={handleReindexOrders}

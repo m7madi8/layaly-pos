@@ -15,6 +15,8 @@ function summarizeWiped(wiped) {
     cashShifts: 'ورديات صندوق',
     cashMovements: 'حركات صندوق',
     vaultMovements: 'حركات خزنة',
+    employeeBenefits: 'استفادات موظفين',
+    staffBenefitDaily: 'عداد استفادة اليوم',
   };
   const parts = Object.entries(labels)
     .filter(([key]) => (wiped[key] || 0) > 0)
@@ -58,6 +60,8 @@ export default function SystemResetModal({
       alert(
         `تمت تهيئة النظام.\n\n` +
           `• الأصناف وصورها: لم تُمس\n` +
+          `• أسماء الموظفين وحدود الاستفادة: ${result.staffMembersPreserved ?? '—'} موظف (لم تُمس)\n` +
+          `• سجل الاستفادات وعداد اليوم: اُمسح\n` +
           `• الخزنة والصندوق: صُفّرت\n` +
           `• مكوّنات مخزونها صُفّر: ${result.ingredientsStockZeroed ?? 0}\n\n` +
           summarizeWiped(result.wiped)
@@ -95,14 +99,15 @@ export default function SystemResetModal({
           <p className="font-semibold text-amber-950">سيُحذف أو يُصفَّر:</p>
           <ul className="text-amber-900 text-xs list-disc list-inside space-y-0.5">
             <li>المبيعات، الفواتير المعلقة، العملاء والتجار</li>
-            <li>المصروفات، الاستفادات، المشتريات من السجل</li>
+            <li>المصروفات، سجل الاستفادات واستخدام اليوم، المشتريات من السجل</li>
             <li>ورديات الصندوق وحركاته، الخزنة وحركاتها</li>
             <li>جلسات البلايستيشن، الأراجيل الخارجية، حركاتها</li>
           </ul>
           <p className="font-semibold text-green-900 pt-1">يُبقى كما هو:</p>
           <ul className="text-green-900 text-xs list-disc list-inside">
             <li>كل الأصناف (الأسعار، الصور، المخزون، الوصفات)</li>
-            <li>إعدادات المتجر وموظفي المقهى</li>
+            <li>أسماء موظفي الاستفادة وحد كل موظف (₪/يوم) في الإعدادات</li>
+            <li>إعدادات المتجر</li>
           </ul>
         </div>
 

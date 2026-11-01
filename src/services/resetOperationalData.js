@@ -1,5 +1,8 @@
 const BATCH_SIZE = 450;
 
+/** لا تُحذف أبداً عند التهيئة (الأصناف + قائمة موظفي الاستفادة وحدودهم). */
+const PRESERVED_SUBCOLLECTIONS = ['products', 'staffMembers'];
+
 const SUBCOLLECTIONS_TO_WIPE = [
   'orders',
   'openBills',
@@ -13,6 +16,7 @@ const SUBCOLLECTIONS_TO_WIPE = [
   'playstationSessions',
   'externalAssets',
   'assetMovements',
+  /** سجل الاستفادات — staffMembers (الاسم + benefitLimitILS) يبقى */
   'employeeBenefits',
   'staffBenefitDaily',
   'employeeBenefitIdempotency',
@@ -58,9 +62,16 @@ async function zeroIngredientStocks(uid, apis) {
   return updated;
 }
 
+async function countSubcollectionDocs(uid, subcollection, apis) {
+  const { db, collection, getDocs } = apis;
+  const snap = await getDocs(collection(db, 'users', uid, subcollection));
+  return snap.size;
+}
+
 /**
  * تهيئة تشغيلية: حذف السجلات التشغيلية (مبيعات، صندوق، خزنة، عملاء، تجار، مصروفات…).
- * لا يحذف ولا يعدّل وثائق products (الأسماء، الأسعار، الصور، المخزون، الوصفات).
+ * لا يحذف ولا يعدّل products (الأسماء، الأسعار، الصور، المخزون، الوصفات).
+ * لا يحذف staffMembers — تبقى أسماء الموظفين وحد الاستفادة اليومي؛ يُمسح سجل الاستفادات وعداد اليوم فقط.
  * يصفّر مخزون المكوّنات (ingredients) فقط إن وُجد.
  */
 export async function resetOperationalData(uid, apis) {
@@ -68,8 +79,11 @@ export async function resetOperationalData(uid, apis) {
   const wiped = {};
 
   for (const sub of SUBCOLLECTIONS_TO_WIPE) {
+    if (PRESERVED_SUBCOLLECTIONS.includes(sub)) continue;
     wiped[sub] = await deleteAllInSubcollection(uid, sub, apis);
   }
+
+  const staffMembersPreserved = await countSubcollectionDocs(uid, 'staffMembers', apis);
 
   await setDoc(doc(db, 'users', uid, 'counters', 'orders'), { count: 0 }, { merge: true });
 
@@ -98,6 +112,7 @@ export async function resetOperationalData(uid, apis) {
   return {
     wiped,
     productsPreserved: true,
+    staffMembersPreserved,
     ingredientsStockZeroed,
   };
 }
