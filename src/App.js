@@ -47,7 +47,7 @@ import RemoveTestSalesModal from './components/RemoveTestSalesModal';
 import RemoveOldPlaystationModal from './components/RemoveOldPlaystationModal';
 import { resolveDailyCashGate } from './utils/cashDayGate';
 import { externalHookahCartItemId, selectHookahExternalCheckoutProducts } from './utils/hookahExternalSale';
-import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory } from './productAssets';
+import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory, SERVICES_CATEGORY, isSystemServiceProduct, buildSystemServiceProduct } from './productAssets';
 import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, Landmark, PauseCircle, Check } from 'lucide-react';
 import { friendlyError } from './utils/friendlyError';
 import { normalizeDocId } from './utils/firestoreIds';
@@ -628,6 +628,13 @@ const AppCore = () => {
       console.error('System service product seed failed:', e)
     );
   }, [user?.uid]);
+
+  useEffect(() => {
+    if (!user?.uid || currentView !== 'pos') return;
+    ensureSystemServiceProduct(user.uid).catch((e) =>
+      console.error('System service product (POS) failed:', e)
+    );
+  }, [user?.uid, currentView]);
 
   // Load customers
   useEffect(() => {
@@ -1813,7 +1820,18 @@ const AppCore = () => {
       return;
     }
     if (type === 'service') {
-      setServiceEntryProduct(product);
+      if (!user?.uid) return;
+      ensureSystemServiceProduct(user.uid)
+        .then(async () => {
+          const live =
+            products.find((p) => isSystemServiceProduct(p)) ||
+            buildSystemServiceProduct(user.uid);
+          setServiceEntryProduct({ ...live, productType: 'service' });
+        })
+        .catch((err) => {
+          console.error(err);
+          alert('تعذّر تجهيز صنف الخدمات. تحقق من الاتصال وحاول مرة أخرى.');
+        });
       return;
     }
     if (type === 'time') {
@@ -3312,7 +3330,12 @@ const AppCore = () => {
 
   // Computed values
   const menuCategoryList = useMemo(() => mergeMenuCategories(products), [products]);
-  const posProducts = useMemo(() => products.filter((p) => getProductType(p) !== 'time'), [products]);
+  const posProducts = useMemo(() => {
+    const base = products.filter((p) => getProductType(p) !== 'time');
+    if (!user?.uid) return base;
+    if (base.some((p) => isSystemServiceProduct(p))) return base;
+    return [...base, buildSystemServiceProduct(user.uid)];
+  }, [products, user?.uid]);
   const posCategoryList = useMemo(() => mergeMenuCategories(posProducts), [posProducts]);
   const posMenuTabs = useMemo(() => buildPosMenuTabs(posCategoryList), [posCategoryList]);
   const purchasableProducts = useMemo(

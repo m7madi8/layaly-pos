@@ -1,6 +1,10 @@
-import { db, doc, collection, addDoc, getDocs, query, updateDoc, serverTimestamp, where } from '../firebaseClient';
+import { db, doc, collection, addDoc, getDocs, getDoc, setDoc, query, updateDoc, serverTimestamp } from '../firebaseClient';
 import { getProductType } from '../utils/productPricing';
-import { SERVICES_CATEGORY } from '../productAssets';
+import {
+  SYSTEM_SERVICE_PRODUCT_ID,
+  isSystemServiceProduct,
+  buildSystemServiceProduct,
+} from '../productAssets';
 
 /** أصناف أساسية تُضاف مرة واحدة فقط لكل حساب، ولا تُعاد إذا حذفها المدير لاحقاً */
 const STARTER_FLAG = 'starterProductsV1';
@@ -116,29 +120,42 @@ export async function ensureStarterAssets(uid, profile) {
   return true;
 }
 
-const SYSTEM_SERVICE_NAME = 'خدمات';
-
-/** صنف «خدمات» ثابت — يُنشأ إذا غير موجود (حتى بعد حذف خطأ) */
+/** صنف «خدمات» ثابت — معرّف ثابت system-service */
 export async function ensureSystemServiceProduct(uid) {
-  if (!uid) return false;
-  const col = collection(db, 'users', uid, 'products');
-  const byFlag = await getDocs(query(col, where('systemService', '==', true)));
-  if (!byFlag.empty) return false;
+  if (!uid) return { created: false, id: SYSTEM_SERVICE_PRODUCT_ID };
 
-  await addDoc(col, {
-    name: SYSTEM_SERVICE_NAME,
-    category: SERVICES_CATEGORY,
-    productType: 'service',
-    price: 0,
-    cost: 0,
-    stock: null,
-    addOns: [],
-    ingredients: [],
-    image: '',
-    systemService: true,
-    userId: uid,
+  const fixedRef = doc(db, 'users', uid, 'products', SYSTEM_SERVICE_PRODUCT_ID);
+  const fixedSnap = await getDoc(fixedRef);
+  if (fixedSnap.exists()) {
+    return { created: false, id: fixedSnap.id };
+  }
+
+  const snap = await getDocs(collection(db, 'users', uid, 'products'));
+  const legacy = snap.docs.find((d) => isSystemServiceProduct({ id: d.id, ...d.data() }));
+  if (legacy) {
+    return { created: false, id: legacy.id };
+  }
+
+  const payload = {
+    ...buildSystemServiceProduct(uid),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-  });
-  return true;
+  };
+  delete payload.id;
+
+  await setDoc(fixedRef, payload);
+  return { created: true, id: SYSTEM_SERVICE_PRODUCT_ID };
+}
+
+export async function loadSystemServiceProduct(uid) {
+  if (!uid) return null;
+  const fixedRef = doc(db, 'users', uid, 'products', SYSTEM_SERVICE_PRODUCT_ID);
+  const fixedSnap = await getDoc(fixedRef);
+  if (fixedSnap.exists()) {
+    return { id: fixedSnap.id, ...fixedSnap.data() };
+  }
+  const snap = await getDocs(collection(db, 'users', uid, 'products'));
+  const legacy = snap.docs.find((d) => isSystemServiceProduct({ id: d.id, ...d.data() }));
+  if (legacy) return { id: legacy.id, ...legacy.data() };
+  return null;
 }

@@ -5,14 +5,15 @@ export function productImageUrl(fileName) {
   return `${BASE}/${encodeURI(fileName)}`;
 }
 
-/** أقسام افتراضية — يمكن إضافة أقسام جديدة عند تعريف المنتج */
-export const MENU_CATEGORIES = ['الأرجيل', 'مشروبات باردة', SERVICES_CATEGORY, 'مشروبات ساخنة', 'النثريات'];
-
 export const LEGACY_DRINKS_CATEGORY = 'المشروبات';
 export const DRINK_COLD_CATEGORY = 'مشروبات باردة';
 export const DRINK_HOT_CATEGORY = 'مشروبات ساخنة';
 /** صنف نظامي — سعر البيع يُدخل يدوياً عند كل إضافة */
 export const SERVICES_CATEGORY = 'خدمات';
+export const SYSTEM_SERVICE_PRODUCT_ID = 'system-service';
+
+/** أقسام افتراضية — يمكن إضافة أقسام جديدة عند تعريف المنتج */
+export const MENU_CATEGORIES = ['الأرجيل', 'مشروبات باردة', SERVICES_CATEGORY, 'مشروبات ساخنة', 'النثريات'];
 
 /** ترتيب تبويبات POS — «خدمات» بعد مشروبات باردة */
 const POS_TAB_ORDER = ['الأرجيل', DRINK_COLD_CATEGORY, SERVICES_CATEGORY, DRINK_HOT_CATEGORY, 'النثريات'];
@@ -47,17 +48,43 @@ export const POS_MENU_TABS = [
   ...MENU_CATEGORIES.map((c) => ({ id: c, label: c })),
 ];
 
-/** دمج الأقسام الافتراضية مع أقسام المنتجات الحالية */
+/** دمج الأقسام الافتراضية مع أقسام المنتجات الحالية — «خدمات» دائماً في POS */
 export function mergeMenuCategories(products = []) {
   const fromProducts = products.map((p) => (p.category || '').trim()).filter(Boolean);
   const normalized = fromProducts.map((c) => (c === LEGACY_DRINKS_CATEGORY ? DRINK_COLD_CATEGORY : c));
-  const merged = new Set([...MENU_CATEGORIES, ...normalized]);
+  const merged = new Set([...MENU_CATEGORIES, SERVICES_CATEGORY, ...normalized]);
   merged.delete(LEGACY_DRINKS_CATEGORY);
   return [...merged].sort((a, b) => a.localeCompare(b, 'ar'));
 }
 
+export function isSystemServiceProduct(product) {
+  if (!product) return false;
+  if (product.systemService) return true;
+  return (
+    String(product.name || '').trim() === 'خدمات' &&
+    String(product.category || '').trim() === SERVICES_CATEGORY
+  );
+}
+
+export function buildSystemServiceProduct(uid) {
+  return {
+    id: SYSTEM_SERVICE_PRODUCT_ID,
+    name: 'خدمات',
+    category: SERVICES_CATEGORY,
+    productType: 'service',
+    price: 0,
+    cost: 0,
+    stock: null,
+    addOns: [],
+    ingredients: [],
+    image: '',
+    systemService: true,
+    userId: uid,
+  };
+}
+
 export function buildPosMenuTabs(categoryList) {
-  const remaining = new Set(categoryList);
+  const remaining = new Set([...categoryList, SERVICES_CATEGORY]);
   const ordered = [];
   for (const id of POS_TAB_ORDER) {
     if (remaining.has(id)) {
