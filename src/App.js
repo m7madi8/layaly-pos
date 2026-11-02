@@ -22,7 +22,8 @@ import {
 import { executePurchase, reversePurchaseEffectsInTransaction } from './services/purchaseService';
 import { PURCHASE_PAYMENT_CASH, purchasePaymentMethodLabel } from './utils/purchasePayment';
 import { executeEmployeeBenefit, cancelEmployeeBenefit, syncEmployeeBenefitExpenses } from './services/employeeBenefitService';
-import { ensureDefaultStaffMembers, updateStaffBenefitLimit } from './services/staffMembersService';
+import { ensureDefaultStaffMembers, updateStaffBenefitLimit, uniqueStaffMembersByName } from './services/staffMembersService';
+import { findDuplicateCustomer, normalizeCustomerName } from './utils/customerIdentity';
 import {
   isEmployeeBenefitExpense,
   sumApprovedBenefitsUsage,
@@ -265,6 +266,7 @@ const AppCore = () => {
   const [vaultPinUnlocked, setVaultPinUnlocked] = useState(false);
   const [showQuickCustomerModal, setShowQuickCustomerModal] = useState(false);
   const [quickCustomerForm, setQuickCustomerForm] = useState({ name: '', phone: '', address: '', notes: '' });
+  const [quickCustomerSaving, setQuickCustomerSaving] = useState(false);
   const [customers, setCustomers] = useState([]);
   const [discount, setDiscount] = useState(0);
   const [discountType, setDiscountType] = useState('amount'); // new invoices use ₪ only; 'percentage' kept for old orders
@@ -313,6 +315,7 @@ const AppCore = () => {
   const employeeBenefitIdemRef = useRef(null);
   const employeeBenefitExpenseSyncRef = useRef(false);
   const completeOrderLockRef = useRef(false);
+  const customerSaveInFlightRef = useRef(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showRemoveTestSalesModal, setShowRemoveTestSalesModal] = useState(false);
   const [showSystemResetModal, setShowSystemResetModal] = useState(false);
@@ -530,7 +533,7 @@ const AppCore = () => {
   useEffect(() => {
     if (!user?.uid || userRole !== 'admin') return;
     ensureDefaultStaffMembers(user.uid)
-      .then(setStaffMembers)
+      .then((list) => setStaffMembers(uniqueStaffMembersByName(list)))
       .catch((e) => console.error('Staff seed failed:', e));
   }, [user?.uid, userRole]);
 
@@ -541,7 +544,10 @@ const AppCore = () => {
     const q = query(collection(db, 'users', user.uid, 'staffMembers'), orderBy('name', 'asc'));
     const unsubscribe = onSnapshot(
       q,
-      (snapshot) => setStaffMembers(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (snapshot) => {
+        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setStaffMembers(uniqueStaffMembersByName(list));
+      },
       (error) => console.error('Error loading staff:', error)
     );
     return () => unsubscribe();
@@ -2104,15 +2110,27 @@ const AppCore = () => {
   };
 
   const handleSaveCustomer = async (formData, editingId) => {
+    if (customerSaveInFlightRef.current) return null;
+    customerSaveInFlightRef.current = true;
     try {
+      const name = normalizeCustomerName(formData.name);
+      if (!name) {
+        alert('أدخل اسم العميل');
+        return null;
+      }
       const payload = {
-        name: formData.name,
-        phone: formData.phone || '',
-        address: formData.address || '',
-        notes: formData.notes || '',
+        name,
+        phone: String(formData.phone || '').trim(),
+        address: String(formData.address || '').trim(),
+        notes: String(formData.notes || '').trim(),
         updatedAt: serverTimestamp(),
       };
       if (editingId) {
+        const dup = findDuplicateCustomer(customers, { ...formData, name }, editingId);
+        if (dup) {
+          alert(`يوجد عميل آخر بنفس الاسم أو الهاتف: «${dup.name}»`);
+          return null;
+        }
         const existing = customers.find((c) => c.id === editingId);
         await updateDoc(doc(db, 'users', user.uid, 'customers', editingId), {
           ...payload,
@@ -2120,6 +2138,11 @@ const AppCore = () => {
           transactions: existing?.transactions ?? [],
         });
         return editingId;
+      }
+      const dup = findDuplicateCustomer(customers, { ...formData, name });
+      if (dup) {
+        alert(`العميل «${dup.name}» مسجّل مسبقاً — لم يُنشأ ملف جديد.`);
+        return dup.id;
       }
       const openingDebt = Math.max(0, Number(formData.openingDebt) || 0);
       const transactions = [];
@@ -2145,6 +2168,8 @@ const AppCore = () => {
     } catch (error) {
       alert(error.message);
       return null;
+    } finally {
+      customerSaveInFlightRef.current = false;
     }
   };
 
@@ -6673,24 +6698,32 @@ const AppCore = () => {
             />
             <button
               type="button"
-              disabled={!quickCustomerForm.name.trim() || uploadProgress}
+              disabled={!quickCustomerForm.name.trim() || uploadProgress || quickCustomerSaving}
               onClick={async () => {
-                const id = await handleSaveCustomer(
-                  { ...quickCustomerForm, name: quickCustomerForm.name.trim(), openingDebt: 0 },
-                  null
-                );
-                if (!id) return;
-                setCurrentOrder((prev) => ({
-                  ...prev,
-                  customerId: id,
-                  customer: quickCustomerForm.name.trim(),
-                }));
-                setShowQuickCustomerModal(false);
+                if (quickCustomerSaving) return;
+                setQuickCustomerSaving(true);
+                try {
+                  const id = await handleSaveCustomer(
+                    { ...quickCustomerForm, name: quickCustomerForm.name.trim(), openingDebt: 0 },
+                    null
+                  );
+                  if (!id) return;
+                  const picked = customers.find((c) => c.id === id);
+                  setCurrentOrder((prev) => ({
+                    ...prev,
+                    customerId: id,
+                    customer: picked?.name || quickCustomerForm.name.trim(),
+                  }));
+                  setShowQuickCustomerModal(false);
+                  setQuickCustomerForm({ name: '', phone: '', address: '', notes: '' });
+                } finally {
+                  setQuickCustomerSaving(false);
+                }
               }}
               className="w-full py-3 rounded-xl text-white text-sm font-medium disabled:opacity-50"
               style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
             >
-              حفظ واختيار العميل
+              {quickCustomerSaving ? 'جاري الحفظ…' : 'حفظ واختيار العميل'}
             </button>
           </div>
         </div>

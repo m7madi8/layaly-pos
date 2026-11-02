@@ -33,6 +33,7 @@ export default function CustomersView({
   allowOpeningDebt = true,
 }) {
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [customerFormSaving, setCustomerFormSaving] = useState(false);
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -333,10 +334,15 @@ export default function CustomersView({
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!onSaveCustomer || !form.name.trim()) return;
-    await onSaveCustomer({ ...form, name: form.name.trim() }, editingId);
-    setShowForm(false);
-    setEditingId(null);
+    if (customerFormSaving || !onSaveCustomer || !form.name.trim()) return;
+    setCustomerFormSaving(true);
+    try {
+      await onSaveCustomer({ ...form, name: form.name.trim() }, editingId);
+      setShowForm(false);
+      setEditingId(null);
+    } finally {
+      setCustomerFormSaving(false);
+    }
   };
 
   return (
@@ -1109,10 +1115,11 @@ export default function CustomersView({
               </div>
               <button
                 type="submit"
-                className="w-full py-2.5 rounded-xl text-white text-sm font-medium"
+                disabled={customerFormSaving}
+                className="w-full py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50"
                 style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
               >
-                {editingId ? 'حفظ التعديلات' : 'إضافة العميل'}
+                {customerFormSaving ? 'جاري الحفظ…' : editingId ? 'حفظ التعديلات' : 'إضافة العميل'}
               </button>
             </form>
           </div>

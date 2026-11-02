@@ -33,6 +33,37 @@ export function staffNameKey(name) {
   return normalizeStaffName(name).toLowerCase();
 }
 
+function staffCreatedMs(staff) {
+  if (staff?.createdAt?.toMillis) return staff.createdAt.toMillis();
+  if (staff?.createdAtMs) return Number(staff.createdAtMs) || 0;
+  return 0;
+}
+
+/** عرض/اختيار موظف واحد لكل اسم (حماية من التكرار في Firestore). */
+export function uniqueStaffMembersByName(list) {
+  const byKey = new Map();
+  for (const s of list || []) {
+    if (s.active === false) continue;
+    const key = staffNameKey(s.name);
+    if (!key) continue;
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, s);
+      continue;
+    }
+    const prevHasLimit = prev.benefitLimitILS != null && prev.benefitLimitILS !== '';
+    const nextHasLimit = s.benefitLimitILS != null && s.benefitLimitILS !== '';
+    let keep = prev;
+    if (!prevHasLimit && nextHasLimit) keep = s;
+    else if (prevHasLimit && !nextHasLimit) keep = prev;
+    else if (staffCreatedMs(s) < staffCreatedMs(prev)) keep = s;
+    byKey.set(key, keep);
+  }
+  return [...byKey.values()].sort((a, b) =>
+    String(a.name || '').localeCompare(String(b.name || ''), 'ar')
+  );
+}
+
 export function isEmployeeBenefitExpense(expense) {
   if (!expense) return false;
   if (expense.section === EMPLOYEE_BENEFIT_SECTION) return true;

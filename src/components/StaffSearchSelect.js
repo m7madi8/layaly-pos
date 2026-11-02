@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { fmtMoney } from '../i18n';
-import { roundMoney } from '../utils/employeeBenefitAccounting';
+import { roundMoney, uniqueStaffMembersByName } from '../utils/employeeBenefitAccounting';
 
 export default function StaffSearchSelect({
   staffMembers,
@@ -14,12 +14,12 @@ export default function StaffSearchSelect({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = (staffMembers || []).filter((s) => s.active !== false);
+    const list = uniqueStaffMembersByName(staffMembers);
     if (!q) return list;
     return list.filter((s) => String(s.name || '').toLowerCase().includes(q));
   }, [staffMembers, query]);
 
-  const selected = (staffMembers || []).find((s) => s.id === value);
+  const selected = uniqueStaffMembersByName(staffMembers).find((s) => s.id === value);
   const lim = roundMoney(selected?.benefitLimitILS ?? limit ?? 0);
   const used = roundMoney(usedToday ?? 0);
   const remaining = roundMoney(Math.max(0, lim - used));
