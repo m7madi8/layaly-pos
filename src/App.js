@@ -10,9 +10,11 @@ import {
   defaultExpenseForm,
   isSupplierPaymentForm,
   isEmployeeBenefitForm,
+  isPayrollStaffLinkedCategory,
 } from './expenseConfig';
 import SupplierTraderDetailModal, { SupplierPaymentFields } from './components/SupplierTraderDetailModal';
 import EmployeeBenefitFields from './components/EmployeeBenefitFields';
+import PayrollAdvanceExpenseFields, { PAYROLL_NEW_ACCRUAL_OPTION } from './components/PayrollAdvanceExpenseFields';
 import PurchasePaymentFields from './components/PurchasePaymentFields';
 import EmployeeBenefitsPanel from './components/EmployeeBenefitsPanel';
 import {
@@ -185,6 +187,11 @@ import {
   gatewayAddVaultCapital,
   gatewayDepositVaultManual,
 } from './services/operationalGateway';
+import {
+  gatewayCreatePayrollAccrual,
+  gatewayRecordPayrollPayment,
+  gatewayRecordEmployeeAdvance,
+} from './services/financialGateway';
 import {
   openCashShift,
   recordCashSaleInTransaction,
@@ -1135,6 +1142,87 @@ const AppCore = () => {
       }
       return;
     }
+
+    if (isPayrollStaffLinkedCategory(expenseForm.category)) {
+      if (editingExpenseId) {
+        alert('لا يمكن تعديل سلفة أو راتب مربوط بسجل موظف من هنا — راجع قسم الموظفين أو احذف السجل.');
+        return;
+      }
+      if (!expenseForm.staffMemberId) {
+        alert('اختر الموظف');
+        return;
+      }
+      const staffMember = staffMembers.find((s) => s.id === expenseForm.staffMemberId);
+      if (!staffMember) {
+        alert('الموظف غير موجود');
+        return;
+      }
+      const payAmount = parseFloat(expenseForm.amount);
+      if (!(payAmount > 0)) {
+        alert('أدخل المبلغ');
+        return;
+      }
+      setUploadProgress(true);
+      try {
+        const openShift = cashShifts.find((s) => s.status === 'open');
+        const note = String(expenseForm.notes || expenseForm.description || '').trim();
+        if (expenseForm.category === 'Advance') {
+          await gatewayRecordEmployeeAdvance(
+            user.uid,
+            {
+              staffMemberId: staffMember.id,
+              staffName: staffMember.name,
+              amount: payAmount,
+              note,
+              paymentMethod: expenseForm.paymentMethod || 'Cash',
+            },
+            { actor: sessionActor(), idempotencyKey: newIdempotencyKey('exp_adv') },
+            businessProfile
+          );
+          alert(`تم تسجيل السلفة وربطها بسجل ${staffMember.name}`);
+        } else {
+          let accrualId = expenseForm.payrollAccrualId;
+          if (accrualId === PAYROLL_NEW_ACCRUAL_OPTION) {
+            accrualId = await gatewayCreatePayrollAccrual(
+              user.uid,
+              {
+                staffMemberId: staffMember.id,
+                staffName: staffMember.name,
+                amount: payAmount,
+                periodLabel: expenseForm.periodLabel || 'راتب',
+              },
+              businessProfile
+            );
+          }
+          if (!accrualId) {
+            alert('اختر مستحق راتب أو «صرف راتب جديد»');
+            return;
+          }
+          await gatewayRecordPayrollPayment(
+            user.uid,
+            {
+              accrualId,
+              amount: payAmount,
+              note,
+              paymentMethod: expenseForm.paymentMethod || 'Cash',
+              shiftId: openShift?.id || null,
+            },
+            { actor: sessionActor(), idempotencyKey: newIdempotencyKey('exp_pay') },
+            businessProfile
+          );
+          alert(`تم تسجيل دفعة الراتب وربطها بسجل ${staffMember.name}`);
+        }
+        setShowExpenseModal(false);
+        setExpenseForm(defaultExpenseForm('operating'));
+        setExpenseReceiptFile(null);
+      } catch (error) {
+        alert(error.message || 'تعذّر حفظ العملية');
+      } finally {
+        setUploadProgress(false);
+      }
+      return;
+    }
+
     if (section === 'purchase' && !expenseForm.supplierId) {
       alert('يرجى اختيار التاجر للمشتريات');
       return;
@@ -7494,6 +7582,11 @@ const AppCore = () => {
                           ...expenseForm,
                           category: cat,
                           section: 'operating',
+                          staffMemberId: isPayrollStaffLinkedCategory(cat)
+                            ? expenseForm.staffMemberId || ''
+                            : '',
+                          payrollAccrualId: cat === 'Salaries' ? expenseForm.payrollAccrualId || '' : '',
+                          periodLabel: expenseForm.periodLabel || 'راتب الشهر',
                         });
                       }
                     }}
@@ -7526,6 +7619,17 @@ const AppCore = () => {
                   disabled={Boolean(editingExpenseId) || uploadProgress}
                 />
               )}
+              {isPayrollStaffLinkedCategory(expenseForm.category) &&
+                !isEmployeeBenefitForm(expenseForm) &&
+                !isSupplierPaymentForm(expenseForm) && (
+                  <PayrollAdvanceExpenseFields
+                    expenseForm={expenseForm}
+                    setExpenseForm={setExpenseForm}
+                    staffMembers={staffMembers}
+                    uid={user?.uid}
+                    disabled={Boolean(editingExpenseId) || uploadProgress}
+                  />
+                )}
               {!isEmployeeBenefitForm(expenseForm) && (
                 <div>
                   <label className="block text-xs mb-1.5 font-medium text-gray-600">البيان</label>

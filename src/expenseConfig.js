@@ -61,7 +61,18 @@ export function defaultExpenseForm(section = 'operating') {
       overrideReason: '',
     };
   }
-  return { ...base, category: 'Salaries' };
+  return {
+    ...base,
+    category: 'Salaries',
+    staffMemberId: '',
+    payrollAccrualId: '',
+    periodLabel: 'راتب الشهر',
+  };
+}
+
+/** رواتب أو سلف — يجب اختيار موظف وربط العملية بسجله المالي */
+export function isPayrollStaffLinkedCategory(category) {
+  return category === 'Salaries' || category === 'Advance';
 }
 
 export function isEmployeeBenefitForm(form) {

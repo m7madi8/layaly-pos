@@ -9,6 +9,7 @@ export default function StaffSearchSelect({
   disabled,
   usedToday,
   limit,
+  showBenefitQuota = true,
 }) {
   const [query, setQuery] = useState('');
 
@@ -44,11 +45,13 @@ export default function StaffSearchSelect({
         <option value="">اختر الموظف</option>
         {filtered.map((s) => (
           <option key={s.id} value={s.id}>
-            {s.name} — حد {fmtMoney(s.benefitLimitILS)}
+            {showBenefitQuota
+              ? `${s.name} — حد ${fmtMoney(s.benefitLimitILS)}`
+              : s.name}
           </option>
         ))}
       </select>
-      {selected && (
+      {selected && showBenefitQuota && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-3 text-xs space-y-1" style={{ fontFamily: 'inherit' }}>
           <div className="flex justify-between">
             <span className="text-gray-600">الحد اليومي (يوم الكاش)</span>

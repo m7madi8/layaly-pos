@@ -1,4 +1,4 @@
-import { parseExpenseDate } from './expenseConfig';
+import { parseExpenseDate, isPayrollStaffLinkedCategory } from './expenseConfig';
 
 describe('parseExpenseDate', () => {
   test('uses dateMs when present', () => {
@@ -9,5 +9,13 @@ describe('parseExpenseDate', () => {
 
   test('returns null when no date fields', () => {
     expect(parseExpenseDate({ amount: 10 })).toBeNull();
+  });
+});
+
+describe('isPayrollStaffLinkedCategory', () => {
+  test('matches salaries and advance only', () => {
+    expect(isPayrollStaffLinkedCategory('Salaries')).toBe(true);
+    expect(isPayrollStaffLinkedCategory('Advance')).toBe(true);
+    expect(isPayrollStaffLinkedCategory('Rent')).toBe(false);
   });
 });
