@@ -36,6 +36,22 @@ export async function callVerifyEmployeePin(pin) {
   return result.data;
 }
 
+/** Callable missing or blocked (404/CORS/network) — safe to fall back to legacy Firestore paths. */
+export function isCloudCallableUnavailableError(error) {
+  const code = String(error?.code || '');
+  const msg = String(error?.message || error || '').toLowerCase();
+  return (
+    code === 'functions/unavailable' ||
+    code === 'functions/internal' ||
+    code === 'functions/not-found' ||
+    code === 'functions/deadline-exceeded' ||
+    msg.includes('failed to fetch') ||
+    msg.includes('network') ||
+    msg.includes('cors') ||
+    msg.includes('cloudfunctions.net')
+  );
+}
+
 export function isTrustedOrdersEnabled() {
   return (
     process.env.REACT_APP_TRUSTED_ORDERS === 'true' &&

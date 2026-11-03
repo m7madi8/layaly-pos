@@ -223,6 +223,7 @@ import {
   callRefreshAdminSession,
   isTrustedCashShiftsEnabled,
   isTrustedOrdersEnabled,
+  isCloudCallableUnavailableError,
 } from './services/secureFunctions';
 import { newIdempotencyKey } from './utils/idempotencyKey';
 import { gatewayPartialOrderReturn } from './services/financialGateway';
@@ -911,9 +912,16 @@ const AppCore = () => {
         if (pinResult?.customToken) {
           await signInWithCustomToken(auth, pinResult.customToken);
         }
-      } catch {
-        alert('كلمة مرور الموظف غير صحيحة');
-        return;
+      } catch (pinErr) {
+        if (isCloudCallableUnavailableError(pinErr)) {
+          if (password !== getEmployeeLoginPassword()) {
+            alert('كلمة مرور الموظف غير صحيحة');
+            return;
+          }
+        } else {
+          alert('كلمة مرور الموظف غير صحيحة');
+          return;
+        }
       } finally {
         setUploadProgress(false);
       }
@@ -2038,8 +2046,12 @@ const AppCore = () => {
     if (window.confirm('هل تريد إلغاء هذا الطلب؟')) {
       try {
         if (isTrustedOrdersEnabled()) {
-          await callCancelOrder(orderId);
-          return;
+          try {
+            await callCancelOrder(orderId);
+            return;
+          } catch (callErr) {
+            if (!isCloudCallableUnavailableError(callErr)) throw callErr;
+          }
         }
         await runTransaction(db, async (transaction) => {
           const orderRef = doc(db, 'users', user.uid, 'orders', orderId);
@@ -2874,6 +2886,7 @@ const AppCore = () => {
         }
       }
 
+      let usedTrustedOrderPath = false;
       if (isTrustedOrdersEnabled()) {
         let priorOrderForAudit = null;
         if (editingOrderId) {
@@ -2896,25 +2909,31 @@ const AppCore = () => {
           status: finalStatus === 'unpaid' ? 'unpaid' : 'paid',
           editingOrderId,
         });
-        const trustedResult = await callCompleteOrder(trustedPayload);
-        createdOrderId = trustedResult.orderId;
-        createdOrderNumber = trustedResult.orderNumber;
-        if (editingOrderId && priorOrderForAudit && !trustedResult.auditRecorded) {
-          const afterSnap = await getDoc(doc(db, 'users', user.uid, 'orders', editingOrderId));
-          if (!afterSnap.exists()) throw new Error('تعذّر توثيق التعديل — الطلب غير موجود بعد الحفظ');
-          const afterData = { id: afterSnap.id, ...afterSnap.data() };
-          await addDoc(collection(db, 'users', user.uid, 'orderEdits'), {
-            orderId: editingOrderId,
-            orderNumber: createdOrderNumber,
-            orderDate: priorOrderForAudit.timestamp || null,
-            editedAt: serverTimestamp(),
-            editedAtMs: Date.now(),
-            editedBy: sessionActor(),
-            changes: diffOrders(priorOrderForAudit, afterData),
-            source: trustedResult.auditRecorded ? 'trusted_engine' : 'trusted_client_fallback',
-          });
+        try {
+          const trustedResult = await callCompleteOrder(trustedPayload);
+          usedTrustedOrderPath = true;
+          createdOrderId = trustedResult.orderId;
+          createdOrderNumber = trustedResult.orderNumber;
+          if (editingOrderId && priorOrderForAudit && !trustedResult.auditRecorded) {
+            const afterSnap = await getDoc(doc(db, 'users', user.uid, 'orders', editingOrderId));
+            if (!afterSnap.exists()) throw new Error('تعذّر توثيق التعديل — الطلب غير موجود بعد الحفظ');
+            const afterData = { id: afterSnap.id, ...afterSnap.data() };
+            await addDoc(collection(db, 'users', user.uid, 'orderEdits'), {
+              orderId: editingOrderId,
+              orderNumber: createdOrderNumber,
+              orderDate: priorOrderForAudit.timestamp || null,
+              editedAt: serverTimestamp(),
+              editedAtMs: Date.now(),
+              editedBy: sessionActor(),
+              changes: diffOrders(priorOrderForAudit, afterData),
+              source: trustedResult.auditRecorded ? 'trusted_engine' : 'trusted_client_fallback',
+            });
+          }
+        } catch (callErr) {
+          if (!isCloudCallableUnavailableError(callErr)) throw callErr;
         }
-      } else {
+      }
+      if (!usedTrustedOrderPath) {
       const cost = currentOrder.items.reduce((sum, i) => sum + ((i.cost || 0) * i.quantity), 0);
 
       await runTransaction(db, async (transaction) => {
@@ -3380,19 +3399,8 @@ const AppCore = () => {
           : `بدء الشفت الأول — متوقع ${expectedOpeningBalance}`;
       const actor = sessionActor();
       const roster = buildOnDutyRosterInitial(staffMembers, duty, actor);
-      if (isTrustedCashShiftsEnabled()) {
-        await callOpenCashShift({
-          openingBalance: countedAmount,
-          expectedOpeningBalance,
-          onDutyStaffIds: duty,
-          onDutyStaffRoster: roster,
-          shiftPeriod: period,
-          operatorName: String(operatorName).trim(),
-          notes: note,
-          idempotencyKey: newIdempotencyKey('open_shift'),
-        });
-      } else {
-        await openCashShift(user.uid, {
+      const legacyOpen = () =>
+        openCashShift(user.uid, {
           openingBalance: countedAmount,
           expectedOpeningBalance,
           onDutyStaffIds: duty,
@@ -3403,6 +3411,24 @@ const AppCore = () => {
           notes: note,
           actor,
         });
+      if (isTrustedCashShiftsEnabled()) {
+        try {
+          await callOpenCashShift({
+            openingBalance: countedAmount,
+            expectedOpeningBalance,
+            onDutyStaffIds: duty,
+            onDutyStaffRoster: roster,
+            shiftPeriod: period,
+            operatorName: String(operatorName).trim(),
+            notes: note,
+            idempotencyKey: newIdempotencyKey('open_shift'),
+          });
+        } catch (callErr) {
+          if (!isCloudCallableUnavailableError(callErr)) throw callErr;
+          await legacyOpen();
+        }
+      } else {
+        await legacyOpen();
       }
     } catch (error) {
       alert(error.message);
@@ -3498,21 +3524,28 @@ const AppCore = () => {
     if (cashBusy) return;
     setCashBusy(true);
     try {
-      if (isTrustedCashShiftsEnabled()) {
-        await callRecordCashShiftMovement({
-          shiftId: openShift.id,
-          type: 'withdrawal',
-          amount,
-          reason,
-          idempotencyKey: newIdempotencyKey('shift_wd'),
-        });
-      } else {
-        await recordCashWithdrawal(user.uid, {
+      const legacyWithdraw = () =>
+        recordCashWithdrawal(user.uid, {
           shiftId: openShift.id,
           amount,
           reason,
           actor: sessionActor(),
         });
+      if (isTrustedCashShiftsEnabled()) {
+        try {
+          await callRecordCashShiftMovement({
+            shiftId: openShift.id,
+            type: 'withdrawal',
+            amount,
+            reason,
+            idempotencyKey: newIdempotencyKey('shift_wd'),
+          });
+        } catch (callErr) {
+          if (!isCloudCallableUnavailableError(callErr)) throw callErr;
+          await legacyWithdraw();
+        }
+      } else {
+        await legacyWithdraw();
       }
     } catch (error) {
       alert(error.message);
@@ -3530,20 +3563,27 @@ const AppCore = () => {
     if (cashBusy) return;
     setCashBusy(true);
     try {
-      if (isTrustedCashShiftsEnabled()) {
-        await callRecordCashShiftMovement({
-          shiftId: openShift.id,
-          type: 'deposit',
-          amount,
-          reason: 'إيداع في الصندوق',
-          idempotencyKey: newIdempotencyKey('shift_dep'),
-        });
-      } else {
-        await recordCashDeposit(user.uid, {
+      const legacyDeposit = () =>
+        recordCashDeposit(user.uid, {
           shiftId: openShift.id,
           amount,
           actor: sessionActor(),
         });
+      if (isTrustedCashShiftsEnabled()) {
+        try {
+          await callRecordCashShiftMovement({
+            shiftId: openShift.id,
+            type: 'deposit',
+            amount,
+            reason: 'إيداع في الصندوق',
+            idempotencyKey: newIdempotencyKey('shift_dep'),
+          });
+        } catch (callErr) {
+          if (!isCloudCallableUnavailableError(callErr)) throw callErr;
+          await legacyDeposit();
+        }
+      } else {
+        await legacyDeposit();
       }
     } catch (error) {
       alert(error.message);
@@ -3562,20 +3602,27 @@ const AppCore = () => {
     setCashBusy(true);
     try {
       let meta = null;
-      if (isTrustedCashShiftsEnabled()) {
-        const res = await callCloseCashShift({
-          shiftId: openShift.id,
-          actualClosingBalance,
-          notes,
-        });
-        meta = res || null;
-      } else {
-        meta = await closeCashShift(user.uid, {
+      const legacyClose = () =>
+        closeCashShift(user.uid, {
           shiftId: openShift.id,
           actualClosingBalance,
           notes,
           actor: sessionActor(),
         });
+      if (isTrustedCashShiftsEnabled()) {
+        try {
+          const res = await callCloseCashShift({
+            shiftId: openShift.id,
+            actualClosingBalance,
+            notes,
+          });
+          meta = res || null;
+        } catch (callErr) {
+          if (!isCloudCallableUnavailableError(callErr)) throw callErr;
+          meta = await legacyClose();
+        }
+      } else {
+        meta = await legacyClose();
       }
       const period = Number(openShift.shiftPeriod) === 2 ? 2 : 1;
       if (period === 2 && meta?.shiftPeriod === 2 && user?.uid) {
