@@ -40,6 +40,11 @@ export function isFinanceRole(role) {
   return role === 'admin' || role === 'employee';
 }
 
+/** إدارة ملفات التجار (إضافة / تعديل / رصيد افتتاحي / أرشفة) — مدير وموظف */
+export function canManageMerchantProfiles(role) {
+  return role === 'admin' || role === 'employee';
+}
+
 const ROLE_KEY = 'layali-user-role';
 
 /** الدور محفوظ على الجهاز (localStorage) ليبقى الدخول بعد التحديث أو إغلاق التطبيق، حتى تسجيل الخروج */

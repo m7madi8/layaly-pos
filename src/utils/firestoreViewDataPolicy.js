@@ -45,6 +45,14 @@ export function needsSuppliersListener(userRole, currentView) {
   return ['purchases', 'traders', 'expenses'].includes(currentView);
 }
 
+/** Expense snapshot limit — traders/purchases need full ledger for merchant balances. */
+export function expensesListenerLimit(currentView) {
+  if (currentView === 'reports' || currentView === 'cash') return 800;
+  if (currentView === 'expenses') return 400;
+  if (currentView === 'purchases' || currentView === 'traders') return 800;
+  return 120;
+}
+
 export const CUSTOMER_LIST_VIEWS = ['pos', 'customers', 'orders'];
 
 export function needsCustomersListener(currentView) {

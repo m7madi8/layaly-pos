@@ -28,6 +28,9 @@ export default function SupplierTraderDetailModal({
   onClose,
   onReconcile,
   onSubmitPayment,
+  onUpdateProfile,
+  onRemoveProfile,
+  canManageProfile = true,
   uploadProgress,
   userId,
   openShiftId,
@@ -45,6 +48,21 @@ export default function SupplierTraderDetailModal({
   const [obNature, setObNature] = useState('payable');
   const [obNote, setObNote] = useState('');
   const [obBusy, setObBusy] = useState(false);
+  const [profileForm, setProfileForm] = useState(null);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileEditing, setProfileEditing] = useState(false);
+
+  useEffect(() => {
+    if (!supplier) return;
+    setProfileForm({
+      name: supplier.name || '',
+      contactPerson: supplier.contactPerson || '',
+      phone: supplier.phone || '',
+      email: supplier.email || '',
+      address: supplier.address || '',
+    });
+    setProfileEditing(false);
+  }, [supplier]);
 
   useEffect(() => {
     if (supplier?.id && onReconcile) onReconcile(supplier.id);
@@ -95,6 +113,10 @@ export default function SupplierTraderDetailModal({
 
   const handleOpeningBalance = async (e) => {
     e.preventDefault();
+    if (!canManageProfile) {
+      alert('لا تملك صلاحية تسجيل الرصيد الافتتاحي.');
+      return;
+    }
     if (!userId || !supplier?.id) return;
     const parsed = Math.round((Number(obAmount) || 0) * 100) / 100;
     if (!(parsed > 0)) {
@@ -126,6 +148,45 @@ export default function SupplierTraderDetailModal({
     }
   };
 
+  const handleSaveProfile = async (e) => {
+    e.preventDefault();
+    if (!canManageProfile || !onUpdateProfile || !profileForm) {
+      alert('لا تملك صلاحية تعديل ملف التاجر.');
+      return;
+    }
+    setProfileBusy(true);
+    try {
+      await onUpdateProfile(supplier.id, profileForm);
+      setProfileEditing(false);
+      alert('تم حفظ بيانات التاجر');
+      onReconcile?.(supplier.id);
+    } catch (err) {
+      alert(err?.message || 'تعذّر حفظ البيانات');
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const handleRemoveProfile = async () => {
+    if (!canManageProfile || !onRemoveProfile) {
+      alert('لا تملك صلاحية حذف ملف التاجر.');
+      return;
+    }
+    if (!window.confirm('حذف أو أرشفة ملف هذا التاجر؟ إن وُجدت حركات مالية سيتم الأرشفة فقط مع الإبقاء على السجل.')) {
+      return;
+    }
+    setProfileBusy(true);
+    try {
+      const result = await onRemoveProfile(supplier);
+      alert(result.message);
+      onClose();
+    } catch (err) {
+      alert(err?.message || 'تعذّر إزالة التاجر');
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
       <div
@@ -147,6 +208,94 @@ export default function SupplierTraderDetailModal({
         </div>
 
         <div className="overflow-y-auto flex-1 p-5 space-y-5">
+          {canManageProfile && profileForm && (
+            <div className="rounded-xl border border-gray-200 p-4 space-y-3 bg-white">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-primary" style={{ fontFamily: FONT_UI }}>
+                  بيانات التاجر
+                </p>
+                {!profileEditing ? (
+                  <button
+                    type="button"
+                    onClick={() => setProfileEditing(true)}
+                    className="text-xs text-primary underline"
+                  >
+                    تعديل
+                  </button>
+                ) : null}
+              </div>
+              {profileEditing ? (
+                <form onSubmit={handleSaveProfile} className="space-y-2">
+                  <input
+                    type="text"
+                    value={profileForm.name}
+                    onChange={(e) => setProfileForm((f) => ({ ...f, name: e.target.value }))}
+                    placeholder="اسم التاجر *"
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm"
+                    required
+                  />
+                  <input
+                    type="text"
+                    value={profileForm.contactPerson}
+                    onChange={(e) => setProfileForm((f) => ({ ...f, contactPerson: e.target.value }))}
+                    placeholder="جهة الاتصال"
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm"
+                  />
+                  <input
+                    type="tel"
+                    value={profileForm.phone}
+                    onChange={(e) => setProfileForm((f) => ({ ...f, phone: e.target.value }))}
+                    placeholder="الجوال"
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm"
+                  />
+                  <input
+                    type="email"
+                    value={profileForm.email}
+                    onChange={(e) => setProfileForm((f) => ({ ...f, email: e.target.value }))}
+                    placeholder="البريد"
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm"
+                  />
+                  <textarea
+                    value={profileForm.address}
+                    onChange={(e) => setProfileForm((f) => ({ ...f, address: e.target.value }))}
+                    placeholder="العنوان"
+                    rows={2}
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm resize-none"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setProfileEditing(false)}
+                      className="flex-1 py-2 rounded-xl border text-sm"
+                    >
+                      إلغاء
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={profileBusy || uploadProgress}
+                      className="flex-1 py-2 rounded-xl text-white text-sm disabled:opacity-50"
+                      style={{ backgroundColor: theme.primary }}
+                    >
+                      {profileBusy ? 'جاري الحفظ…' : 'حفظ'}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <p className="text-xs text-gray-600">
+                  {profileForm.contactPerson || '—'} · {profileForm.phone || '—'}
+                </p>
+              )}
+              <button
+                type="button"
+                disabled={profileBusy || uploadProgress}
+                onClick={handleRemoveProfile}
+                className="w-full py-2 rounded-xl text-sm font-medium text-red-700 bg-red-50 border border-red-100 hover:bg-red-100 disabled:opacity-50"
+              >
+                حذف / أرشفة ملف التاجر
+              </button>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-xl border border-gray-100 bg-red-50/50 p-4">
               <p className="text-[10px] text-gray-500 mb-1">الرصيد المستحق للتاجر</p>
@@ -258,6 +407,14 @@ export default function SupplierTraderDetailModal({
 
           <div className="rounded-xl border border-gray-200 p-4 space-y-3 bg-slate-50/80">
             <p className="text-sm font-semibold text-primary" style={{ fontFamily: FONT_UI }}>رصيد افتتاحي للتاجر</p>
+            {!canManageProfile ? (
+              <p className="text-xs text-gray-500">لا تملك صلاحية تسجيل الرصيد الافتتاحي.</p>
+            ) : supplier.openingBalanceRecorded ? (
+              <p className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg p-2">
+                تم تسجيل رصيد افتتاحي لهذا التاجر مسبقاً.
+              </p>
+            ) : (
+            <>
             <p className="text-[10px] text-gray-500" style={{ fontFamily: FONT_UI }}>
               بدون فاتورة مشتريات — يُستخدم لترحيل رصيد سابق (مستحق للتاجر أو لصالحنا).
             </p>
@@ -295,6 +452,8 @@ export default function SupplierTraderDetailModal({
                 {obBusy ? 'جاري الحفظ...' : 'تسجيل الرصيد الافتتاحي'}
               </button>
             </form>
+            </>
+            )}
           </div>
 
           <div className="flex gap-1 p-1 rounded-xl bg-gray-100">

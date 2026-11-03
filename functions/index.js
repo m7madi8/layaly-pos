@@ -460,9 +460,9 @@ exports.returnCheck = onCall({ region }, async (request) => {
 });
 
 exports.recordSupplierOpeningBalance = onCall({ region }, async (request) => {
-  const uid = requireAdminClaim(request);
   const db = getFirestore();
-  const actor = buildCallableActor(request, 'admin');
+  const { uid, role } = await requireOrderCaller(request, db);
+  const actor = buildCallableActor(request, role);
   const supplierId = String(request.data?.supplierId || '').trim();
   if (!supplierId) throw new HttpsError('invalid-argument', 'معرّف التاجر مطلوب');
   try {

@@ -21,6 +21,11 @@ import {
   executeSupplierPayment,
   reconcileSupplierBalance,
 } from './services/supplierPaymentService';
+import {
+  listActiveSuppliers,
+  removeSupplierProfile,
+  updateSupplierProfile,
+} from './services/supplierProfileService';
 import { executePurchase, reversePurchaseEffectsInTransaction } from './services/purchaseService';
 import { PURCHASE_PAYMENT_CASH, purchasePaymentMethodLabel } from './utils/purchasePayment';
 import { syncEmployeeBenefitExpenses } from './services/employeeBenefitService';
@@ -124,6 +129,7 @@ import {
   needsExpensesListener,
   needsSuppliersListener,
   needsCustomersListener,
+  expensesListenerLimit,
 } from './utils/firestoreViewDataPolicy';
 import { fileToStoredDataUrl } from './utils/fileToDataUrl';
 import {
@@ -180,6 +186,7 @@ import {
   canManageOpenBills,
   canEditOrders,
   canDeleteOrders,
+  canManageMerchantProfiles,
   isFinanceRole,
   normalizeLoginPassword,
   readSessionRole,
@@ -651,8 +658,7 @@ const AppCore = () => {
   // Load expenses
   useEffect(() => {
     if (!user || !needsExpensesListener(userRole, currentView)) return undefined;
-    const expenseLimit =
-      currentView === 'reports' || currentView === 'cash' ? 800 : currentView === 'expenses' ? 400 : 120;
+    const expenseLimit = expensesListenerLimit(currentView);
     const q = query(collection(db, 'users', user.uid, 'expenses'), orderBy('date', 'desc'), limit(expenseLimit));
     const unsubscribe = onSnapshot(q, snapshot => {
       setExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -1455,6 +1461,10 @@ const AppCore = () => {
 
   const handleAddSupplier = async (e) => {
     e.preventDefault();
+    if (!canManageMerchantProfiles(userRole)) {
+      alert('لا تملك صلاحية إدارة ملفات التجار.');
+      return;
+    }
     setUploadProgress(true);
     try {
       await addDoc(collection(db, 'users', user.uid, 'suppliers'), {
@@ -1471,6 +1481,22 @@ const AppCore = () => {
       setUploadProgress(false);
     }
   };
+
+  const handleUpdateSupplierProfile = async (supplierId, patch) => {
+    if (!canManageMerchantProfiles(userRole)) {
+      throw new Error('لا تملك صلاحية تعديل ملفات التجار.');
+    }
+    await updateSupplierProfile(user.uid, supplierId, patch, { actor: sessionActor() });
+  };
+
+  const handleRemoveSupplierProfile = async (supplier) => {
+    if (!canManageMerchantProfiles(userRole)) {
+      throw new Error('لا تملك صلاحية حذف ملفات التجار.');
+    }
+    return removeSupplierProfile(user.uid, supplier, expenses, { actor: sessionActor() });
+  };
+
+  const activeSuppliers = useMemo(() => listActiveSuppliers(suppliers), [suppliers]);
 
   const handleSaveSettings = async (e) => {
     e.preventDefault();
@@ -5407,7 +5433,7 @@ const AppCore = () => {
                       <div className="p-2 bg-blue-50 rounded-xl text-blue-500"><Users size={20} /></div>
                       <p className="text-sm text-gray-500 font-medium">عدد التجار</p>
                     </div>
-                    <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>{suppliers.length}</p>
+                    <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>{activeSuppliers.length}</p>
                   </div>
                   <div className="bg-white rounded-2xl p-6 shadow-md border border-gray-100">
                     <div className="flex items-center gap-3 mb-2">
@@ -5432,7 +5458,7 @@ const AppCore = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-200">
-                        {suppliers.map((s) => {
+                        {activeSuppliers.map((s) => {
                           const due = resolveSupplierOutstandingBalance(s, expenses, s.id);
                           return (
                           <tr
@@ -5448,7 +5474,7 @@ const AppCore = () => {
                           </tr>
                           );
                         })}
-                        {suppliers.length === 0 && (
+                        {activeSuppliers.length === 0 && (
                           <tr>
                             <td colSpan={5} className="p-8 text-center text-gray-500 text-sm bg-gray-50">لا يوجد تجار — أضف تاجراً لتسجيل المشتريات والدفعات</td>
                           </tr>
@@ -7866,7 +7892,7 @@ const AppCore = () => {
       {selectedSupplierId && (
         <SupplierTraderDetailModal
           supplier={suppliers.find((s) => s.id === selectedSupplierId)}
-          suppliers={suppliers}
+          suppliers={activeSuppliers}
           expenses={expenses}
           theme={theme}
           uploadProgress={uploadProgress}
@@ -7874,9 +7900,12 @@ const AppCore = () => {
           openShiftId={openCashShiftDoc?.id}
           actor={sessionActor()}
           businessProfile={businessProfile}
+          canManageProfile={canManageMerchantProfiles(userRole)}
           onClose={() => setSelectedSupplierId(null)}
           onReconcile={handleReconcileSupplier}
           onSubmitPayment={handleSupplierPaymentSubmit}
+          onUpdateProfile={handleUpdateSupplierProfile}
+          onRemoveProfile={handleRemoveSupplierProfile}
         />
       )}
 
