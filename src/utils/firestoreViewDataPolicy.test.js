@@ -16,9 +16,10 @@ describe('firestoreViewDataPolicy', () => {
     expect(needsExpensesListener('admin', 'cash')).toBe(true);
   });
 
-  it('loads customers only on pos/customers/orders', () => {
+  it('loads customers on pos, customers, orders, and reports', () => {
     expect(needsCustomersListener('dashboard')).toBe(false);
     expect(needsCustomersListener('pos')).toBe(true);
+    expect(needsCustomersListener('reports')).toBe(true);
   });
 
   it('loads enough expenses on traders for ledgers', () => {

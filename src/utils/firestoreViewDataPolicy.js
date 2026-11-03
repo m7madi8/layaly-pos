@@ -53,7 +53,7 @@ export function expensesListenerLimit(currentView) {
   return 120;
 }
 
-export const CUSTOMER_LIST_VIEWS = ['pos', 'customers', 'orders'];
+export const CUSTOMER_LIST_VIEWS = ['pos', 'customers', 'orders', 'reports'];
 
 export function needsCustomersListener(currentView) {
   return CUSTOMER_LIST_VIEWS.includes(currentView);

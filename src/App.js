@@ -156,6 +156,10 @@ import {
 import { ensureStarterProducts, ensureStarterAssets, ensureTobaccoImage, ensurePlaystationPricing, ensureSystemServiceProduct } from './services/starterProducts';
 import { ensureDrinkCategoriesSplit } from './services/drinkCategoriesMigration';
 import { effectiveDebt, debtDeltasByCustomer, replaceOrderDebtEntry, diffOrders } from './utils/orderAccounting';
+import {
+  computeTotalOutstandingCustomerDebt,
+  countCustomersWithOutstandingDebt,
+} from './utils/customerAccounting';
 import { computeTodayCashSales, computeTodayDebtSales, getLocalCalendarDayStart } from './utils/dashboardCashSales';
 import { computeBalanceFromTransactions } from './utils/customerStatementData';
 import {
@@ -4063,6 +4067,15 @@ const AppCore = () => {
     return 'operating';
   }, [currentView]);
 
+  const totalOutstandingCustomerDebt = useMemo(
+    () => computeTotalOutstandingCustomerDebt(customers),
+    [customers]
+  );
+  const customersWithDebtCount = useMemo(
+    () => countCustomersWithOutstandingDebt(customers),
+    [customers]
+  );
+
   useEffect(() => {
     if (!suspendFeedback) return undefined;
     const t = setTimeout(() => setSuspendFeedback(''), 2600);
@@ -5991,7 +6004,27 @@ const AppCore = () => {
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4 mb-8">
+                    <div
+                      className="bg-gradient-to-br from-rose-50 via-white to-white rounded-xl p-4 shadow-md border border-rose-100/80 relative overflow-hidden"
+                      role="status"
+                      aria-label={`إجمالي ديون العملاء ${fmtMoney(totalOutstandingCustomerDebt)}`}
+                    >
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <p className="text-xs font-semibold text-rose-900/90" style={{ fontFamily: FONT_UI }}>
+                          إجمالي ديون العملاء
+                        </p>
+                        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-rose-100/80 text-rose-600 shrink-0">
+                          <Users size={16} aria-hidden />
+                        </span>
+                      </div>
+                      <p className="text-2xl md:text-3xl font-bold text-rose-700 tabular-nums" style={{ fontFamily: FONT_UI }}>
+                        {fmtMoney(totalOutstandingCustomerDebt)}
+                      </p>
+                      <p className="text-[10px] text-gray-500 mt-2 leading-relaxed" style={{ fontFamily: FONT_UI }}>
+                        رصيد مستحق حالياً على {customersWithDebtCount} عميل — لا يتأثر بفلتر التقرير
+                      </p>
+                    </div>
                     <div className="bg-white rounded-xl p-4 shadow-md border border-gray-200">
                       <p className="text-xs mb-1 text-gray-500">إجمالي المبيعات</p>
                       <p className="text-2xl font-bold text-primary">
