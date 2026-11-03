@@ -7,6 +7,7 @@ import {
 import {
   BENEFIT_TYPE_CASH,
   BENEFIT_TYPE_INVENTORY,
+  BENEFIT_TYPE_PERSONAL,
   BENEFIT_STATUS_APPROVED,
   BENEFIT_STATUS_CANCELLED,
   buildBenefitReference,
@@ -17,6 +18,8 @@ import {
   roundMoney,
 } from '../utils/employeeBenefitAccounting';
 import { getProductType, stockUnitsForItem } from '../utils/productPricing';
+import { consumeInventoryLayersFifo, legacyProductCogs, restoreInventoryLayersLifo } from './inventoryLayerService';
+import { assertStaffOnDutyForShift } from '../utils/shiftOnDuty';
 
 const benefitsCol = (uid) => collection(db, 'users', uid, 'employeeBenefits');
 const benefitRef = (uid, id) => doc(db, 'users', uid, 'employeeBenefits', id);
@@ -87,24 +90,29 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
     const staffSnap = await tx.get(sRef);
     if (!staffSnap.exists()) throw new Error('سجل الموظف غير موجود');
 
+    let cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, input.shiftId || null);
+    if (!cashShiftCtx) {
+      throw new Error('لا توجد وردية كاش مفتوحة لتسجيل الاستفادة');
+    }
+    assertStaffOnDutyForShift(
+      { status: 'open', onDutyStaffIds: cashShiftCtx.shiftSnap.data().onDutyStaffIds },
+      staffMember.id
+    );
+
     const dailyRef = doc(dailyCol(uid), dailyUsageDocId(staffMember.id, cashDayKey));
     const dailySnap = await tx.get(dailyRef);
     const usedInTx = dailySnap.exists() ? roundMoney(dailySnap.data().usedTotal) : 0;
     const limit = roundMoney(staffSnap.data().benefitLimitILS ?? staffMember.benefitLimitILS);
 
     const quotaCheck = roundMoney(usedInTx + totalValue);
-    if (quotaCheck > limit + 0.001 && !validated.override) {
+    if (
+      benefitType !== BENEFIT_TYPE_PERSONAL &&
+      quotaCheck > limit + 0.001 &&
+      !validated.override
+    ) {
       throw new Error(
         `تجاوز حد الاستفادة (مستخدم اليوم ${usedInTx} ₪ — المتبقي ${roundMoney(limit - usedInTx)} ₪)`
       );
-    }
-
-    let cashShiftCtx = null;
-    if (benefitType === BENEFIT_TYPE_CASH) {
-      cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, input.shiftId || null);
-      if (!cashShiftCtx) {
-        throw new Error('لا توجد وردية كاش مفتوحة لتسجيل الاستفادة النقدية');
-      }
     }
 
     const lines = validated.lines || [];
@@ -127,7 +135,22 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
       }
     }
 
-    if (benefitType === BENEFIT_TYPE_INVENTORY) {
+    let benefitCogs = 0;
+    const stockBenefitTypes = [BENEFIT_TYPE_INVENTORY, BENEFIT_TYPE_PERSONAL];
+    if (stockBenefitTypes.includes(benefitType)) {
+      for (const line of lines) {
+        const units = line.stockUnits;
+        if (!(units > 0)) continue;
+        const fifo = await consumeInventoryLayersFifo(tx, uid, line.productId, units);
+        benefitCogs += fifo.cogs || 0;
+        if (fifo.shortfall > 0) {
+          benefitCogs += legacyProductCogs(productDocs[line.productId]?.data, fifo.shortfall);
+        }
+      }
+      benefitCogs = roundMoney(benefitCogs);
+    }
+
+    if (stockBenefitTypes.includes(benefitType)) {
       for (const line of lines) {
         const p = productDocs[line.productId];
         if (!p) throw new Error(`الصنف «${line.name}» غير موجود`);
@@ -165,8 +188,10 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
       staffName: staffSnap.data().name || staffMember.name,
       benefitType,
       cashAmount: benefitType === BENEFIT_TYPE_CASH ? totalValue : 0,
-      inventoryLines: benefitType === BENEFIT_TYPE_INVENTORY ? lines : [],
+      inventoryLines:
+        benefitType === BENEFIT_TYPE_INVENTORY || benefitType === BENEFIT_TYPE_PERSONAL ? lines : [],
       totalValue,
+      cogsAmount: benefitCogs,
       cashDayKey,
       shiftId: input.shiftId || cashShiftCtx?.shiftId || null,
       status: BENEFIT_STATUS_APPROVED,
@@ -208,19 +233,21 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
     tx.set(benefitDocRef, benefitPayload);
     tx.set(expenseRef, expenseData);
 
-    tx.set(
-      dailyRef,
-      {
-        staffMemberId: staffMember.id,
-        cashDayKey,
-        usedTotal: roundMoney(usedInTx + totalValue),
-        updatedAt: serverTimestamp(),
-        updatedAtMs: Date.now(),
-      },
-      { merge: true }
-    );
+    if (benefitType !== BENEFIT_TYPE_PERSONAL) {
+      tx.set(
+        dailyRef,
+        {
+          staffMemberId: staffMember.id,
+          cashDayKey,
+          usedTotal: roundMoney(usedInTx + totalValue),
+          updatedAt: serverTimestamp(),
+          updatedAtMs: Date.now(),
+        },
+        { merge: true }
+      );
+    }
 
-    if (benefitType === BENEFIT_TYPE_INVENTORY) {
+    if (stockBenefitTypes.includes(benefitType)) {
       for (const pid of productIds) {
         const p = productDocs[pid];
         if (p && getProductType(p.data) !== 'time') {
@@ -319,7 +346,15 @@ export async function cancelEmployeeBenefit(uid, benefitId, { actor, reason }) {
       cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, benefit.shiftId || null);
     }
 
-    if (benefit.benefitType === BENEFIT_TYPE_INVENTORY) {
+    const stockBenefitTypes = [BENEFIT_TYPE_INVENTORY, BENEFIT_TYPE_PERSONAL];
+
+    if (stockBenefitTypes.includes(benefit.benefitType)) {
+      for (const line of lines) {
+        const units = line.stockUnits ?? stockUnitsForItem(line);
+        if (units > 0) {
+          await restoreInventoryLayersLifo(tx, uid, line.productId, units);
+        }
+      }
       for (const line of lines) {
         const p = productDocs[line.productId];
         if (!p) continue;
@@ -368,15 +403,17 @@ export async function cancelEmployeeBenefit(uid, benefitId, { actor, reason }) {
       });
     }
 
-    tx.set(
-      dailyRef,
-      {
-        usedTotal: roundMoney(Math.max(0, used - totalValue)),
-        updatedAt: serverTimestamp(),
-        updatedAtMs: Date.now(),
-      },
-      { merge: true }
-    );
+    if (benefit.benefitType !== BENEFIT_TYPE_PERSONAL) {
+      tx.set(
+        dailyRef,
+        {
+          usedTotal: roundMoney(Math.max(0, used - totalValue)),
+          updatedAt: serverTimestamp(),
+          updatedAtMs: Date.now(),
+        },
+        { merge: true }
+      );
+    }
 
     let cashReversed = false;
     if (benefit.benefitType === BENEFIT_TYPE_CASH && totalValue > 0 && cashShiftCtx) {

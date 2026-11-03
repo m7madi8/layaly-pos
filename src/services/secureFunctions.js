@@ -125,3 +125,38 @@ export async function callRecordCashShiftMovement(payload) {
   const result = await fn(payload);
   return result.data;
 }
+
+export async function callRefreshAdminSession() {
+  const fns = functionsInstance();
+  if (!fns) throw new Error('الدوال السحابية غير متاحة');
+  const fn = httpsCallable(fns, 'refreshAdminSession');
+  const result = await fn({});
+  return result.data;
+}
+
+async function callFinancial(name, payload) {
+  const fns = functionsInstance();
+  if (!fns) throw new Error('الدوال السحابية غير متاحة — فعّل Cloud Functions');
+  const fn = httpsCallable(fns, name);
+  const result = await fn(payload);
+  return result.data;
+}
+
+export const callPartialOrderReturn = (payload) => callFinancial('partialOrderReturn', payload);
+export const callCreatePayrollAccrual = (payload) => callFinancial('createPayrollAccrual', payload);
+export const callRecordPayrollPayment = (payload) => callFinancial('recordPayrollPayment', payload);
+export const callRecordEmployeeAdvance = (payload) => callFinancial('recordEmployeeAdvance', payload);
+export const callRecordAdvanceRepayment = (payload) => callFinancial('recordAdvanceRepayment', payload);
+export const callRegisterCheck = (payload) => callFinancial('registerCheck', payload);
+export const callCollectCheck = (payload) => callFinancial('collectCheck', payload);
+export const callReturnCheck = (payload) => callFinancial('returnCheck', payload);
+export const callRecordSupplierOpeningBalance = (payload) =>
+  callFinancial('recordSupplierOpeningBalance', payload);
+
+export const callSuspendOpenBill = (payload) => callFinancial('suspendOpenBill', payload);
+export const callCloseOpenBill = (payload) => callFinancial('closeOpenBill', payload);
+export const callCancelOpenBill = (payload) => callFinancial('cancelOpenBill', payload);
+export const callRecordEmployeeBenefit = (payload) => callFinancial('recordEmployeeBenefit', payload);
+export const callCancelEmployeeBenefit = (payload) => callFinancial('cancelEmployeeBenefit', payload);
+export const callVaultAddCapital = (payload) => callFinancial('vaultAddCapital', payload);
+export const callVaultManualDeposit = (payload) => callFinancial('vaultManualDeposit', payload);

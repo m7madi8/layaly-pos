@@ -1,6 +1,15 @@
 import { db, doc, collection, addDoc, getDocs, query, orderBy, where, limit, runTransaction, serverTimestamp } from '../firebaseClient';
 import { computeExpectedCash } from '../utils/cashShiftMath';
 import { vaultDocRef, applyVaultCredit } from './vaultService';
+import {
+  appendOnDutyRosterEntry,
+  buildOnDutyRosterInitial,
+  buildWorkedStaffSnapshot,
+  ensureRosterFromShift,
+  getActiveOnDutyIdsFromShift,
+  markOnDutyRosterRemoved,
+  rosterFromLegacyIds,
+} from '../utils/shiftOnDutyRoster';
 
 export { computeExpectedCash, summarizeMovements } from '../utils/cashShiftMath';
 
@@ -29,11 +38,31 @@ export async function listCashMovementsForShift(uid, shiftId) {
     .sort((a, b) => (Number(b.createdAtMs) || 0) - (Number(a.createdAtMs) || 0));
 }
 
-export async function openCashShift(uid, { openingBalance, actor, notes = '', shiftPeriod = 1, operatorName = '' }) {
+export async function openCashShift(uid, {
+  openingBalance,
+  expectedOpeningBalance,
+  onDutyStaffIds = [],
+  onDutyStaffRoster = null,
+  actor,
+  notes = '',
+  shiftPeriod = 1,
+  operatorName = '',
+  staffMembersForSnapshot = [],
+}) {
   const existing = await findOpenCashShift(uid);
   if (existing) throw new Error('يوجد وردية كاش مفتوحة بالفعل — أغلقها أولاً');
 
+  const expected = Math.max(0, Number(expectedOpeningBalance ?? openingBalance) || 0);
   const opening = Math.max(0, Number(openingBalance) || 0);
+  const openingDifference = Math.round((opening - expected) * 100) / 100;
+  const duty = Array.isArray(onDutyStaffIds) ? [...new Set(onDutyStaffIds.filter(Boolean))] : [];
+  if (duty.length === 0) throw new Error('اختر موظفاً واحداً على الأقل مداوماً في الشفت');
+
+  const roster =
+    Array.isArray(onDutyStaffRoster) && onDutyStaffRoster.length > 0
+      ? onDutyStaffRoster
+      : buildOnDutyRosterInitial(staffMembersForSnapshot, duty, actor);
+
   const nowMs = Date.now();
   const period = Number(shiftPeriod) === 2 ? 2 : 1;
   const ref = await addDoc(shiftsCol(uid), {
@@ -41,6 +70,10 @@ export async function openCashShift(uid, { openingBalance, actor, notes = '', sh
     shiftPeriod: period,
     operatorName: String(operatorName || '').trim(),
     openingBalance: opening,
+    expectedOpeningBalance: expected,
+    openingDifference,
+    onDutyStaffIds: duty,
+    onDutyStaffRoster: roster,
     cashSales: 0,
     cashWithdrawals: 0,
     cashDeposits: 0,
@@ -58,6 +91,78 @@ export async function openCashShift(uid, { openingBalance, actor, notes = '', sh
     closedBy: null,
   });
   return ref.id;
+}
+
+/** Assign on-duty staff to legacy open shift only (does not touch closed shifts). */
+export async function assignOnDutyStaffToOpenShift(uid, { shiftId, onDutyStaffIds, actor, staffMembers = [] }) {
+  const duty = Array.isArray(onDutyStaffIds) ? [...new Set(onDutyStaffIds.filter(Boolean))] : [];
+  if (duty.length === 0) throw new Error('اختر موظفاً واحداً على الأقل');
+
+  await runTransaction(db, async (tx) => {
+    const sRef = cashShiftRef(uid, shiftId);
+    const snap = await tx.get(sRef);
+    if (!snap.exists()) throw new Error('وردية الكاش غير موجودة');
+    const shift = snap.data();
+    if (shift.status !== 'open') throw new Error('يمكن تعيين المداومين للوردية المفتوحة فقط');
+    const roster = rosterFromLegacyIds(staffMembers, duty, actor, 'legacy_assign');
+    tx.update(sRef, {
+      onDutyStaffIds: duty,
+      onDutyStaffRoster: roster,
+      onDutyAssignedAtMs: Date.now(),
+      onDutyAssignedBy: actor || null,
+      updatedAt: serverTimestamp(),
+    });
+  });
+}
+
+function updateOpenShiftOnDutyInTx(tx, sRef, shift, nextRoster) {
+  const activeIds = getActiveOnDutyIdsFromShift({ ...shift, onDutyStaffRoster: nextRoster });
+  if (activeIds.length === 0) throw new Error('يجب أن يبقى موظف واحد على الأقل مداوماً');
+  tx.update(sRef, {
+    onDutyStaffRoster: nextRoster,
+    onDutyStaffIds: activeIds,
+    onDutyUpdatedAtMs: Date.now(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/** Add one staff member to open shift (no cash / new shift). */
+export async function addOnDutyStaffToOpenShift(uid, { shiftId, staffId, staffName, actor, staffMembers = [] }) {
+  const id = String(staffId || '').trim();
+  if (!id) throw new Error('معرف الموظف غير صالح');
+
+  await runTransaction(db, async (tx) => {
+    const sRef = cashShiftRef(uid, shiftId);
+    const snap = await tx.get(sRef);
+    if (!snap.exists()) throw new Error('وردية الكاش غير موجودة');
+    const shift = snap.data();
+    if (shift.status !== 'open') throw new Error('يمكن إضافة مداومين للوردية المفتوحة فقط');
+    let roster = ensureRosterFromShift(shift, staffMembers, actor);
+    roster = appendOnDutyRosterEntry(roster, {
+      staffId: id,
+      staffName,
+      actor,
+      source: 'mid_shift_add',
+    });
+    updateOpenShiftOnDutyInTx(tx, sRef, shift, roster);
+  });
+}
+
+/** Remove staff from active on-duty list (keeps historical roster entry). */
+export async function removeOnDutyStaffFromOpenShift(uid, { shiftId, staffId, actor, staffMembers = [] }) {
+  const id = String(staffId || '').trim();
+  if (!id) throw new Error('معرف الموظف غير صالح');
+
+  await runTransaction(db, async (tx) => {
+    const sRef = cashShiftRef(uid, shiftId);
+    const snap = await tx.get(sRef);
+    if (!snap.exists()) throw new Error('وردية الكاش غير موجودة');
+    const shift = snap.data();
+    if (shift.status !== 'open') throw new Error('يمكن تعديل المداومين للوردية المفتوحة فقط');
+    let roster = ensureRosterFromShift(shift, staffMembers, actor);
+    roster = markOnDutyRosterRemoved(roster, id, actor);
+    updateOpenShiftOnDutyInTx(tx, sRef, shift, roster);
+  });
 }
 
 /** Read open shift inside a transaction — must run before any writes in the same transaction. */
@@ -196,6 +301,25 @@ export async function recordCashRefundInTransaction(tx, uid, { amount, orderId, 
   return shiftDocId;
 }
 
+export async function recordCashDepositInTransaction(tx, uid, { amount, reason, actor, shiftId, shiftSnap }) {
+  if (!(Number(amount) > 0)) return null;
+  let shiftDocId = shiftId;
+  let snap = shiftSnap;
+  if (!snap) {
+    const ctx = await readOpenCashShiftInTransaction(tx, uid, shiftId || null);
+    if (!ctx) return null;
+    shiftDocId = ctx.shiftId;
+    snap = ctx.shiftSnap;
+  }
+  await appendMovementInTx(tx, uid, shiftDocId, snap, {
+    type: 'deposit',
+    amount,
+    reason: reason || 'إيداع في الصندوق',
+    actor,
+  });
+  return shiftDocId;
+}
+
 export async function recordCashSale(uid, { shiftId, amount, orderId, orderNumber, actor }) {
   if (!(Number(amount) > 0)) return null;
   let targetShiftId = shiftId;
@@ -236,11 +360,12 @@ export async function recordCashDeposit(uid, { shiftId, amount, reason, actor })
   await runTransaction(db, async (tx) => {
     const sRef = cashShiftRef(uid, shiftId);
     const snap = await tx.get(sRef);
-    await appendMovementInTx(tx, uid, shiftId, snap, {
-      type: 'deposit',
+    await recordCashDepositInTransaction(tx, uid, {
       amount,
-      reason: reason || 'إيداع في الصندوق',
+      reason,
       actor,
+      shiftId,
+      shiftSnap: snap,
     });
   });
 }
@@ -253,6 +378,8 @@ export async function recordCashDeposit(uid, { shiftId, amount, reason, actor })
 export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes = '', actor }) {
   const actual = Math.max(0, Number(actualClosingBalance));
   if (!Number.isFinite(actual)) throw new Error('أدخل المبلغ الفعلي في الصندوق');
+
+  let meta = { shiftId, shiftPeriod: 1, closedAtMs: Date.now() };
 
   await runTransaction(db, async (tx) => {
     const sRef = cashShiftRef(uid, shiftId);
@@ -315,6 +442,9 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
     }
 
     const difference = Math.round((actual - finalExpected) * 100) / 100;
+    const closedAtMs = Date.now();
+    const workedSnapshot = buildWorkedStaffSnapshot({ ...shift, onDutyStaffRoster: shift.onDutyStaffRoster });
+    meta = { shiftId, shiftPeriod: period, closedAtMs };
     tx.update(sRef, {
       status: 'closed',
       cashWithdrawals: finalWithdrawals,
@@ -324,10 +454,13 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
       difference,
       closingNotes: String(notes || '').trim(),
       closedAt: serverTimestamp(),
-      closedAtMs: Date.now(),
+      closedAtMs,
       closedBy: actor || null,
+      onDutyStaffWorkedSnapshot: workedSnapshot,
+      dutyClosedAtMs: closedAtMs,
       updatedAt: serverTimestamp(),
       updatedAtMs: Date.now(),
     });
   });
+  return meta;
 }

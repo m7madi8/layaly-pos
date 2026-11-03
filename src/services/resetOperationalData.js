@@ -83,8 +83,6 @@ export async function resetOperationalData(uid, apis) {
     wiped[sub] = await deleteAllInSubcollection(uid, sub, apis);
   }
 
-  const staffMembersPreserved = await countSubcollectionDocs(uid, 'staffMembers', apis);
-
   await setDoc(doc(db, 'users', uid, 'counters', 'orders'), { count: 0 }, { merge: true });
 
   await setDoc(
@@ -112,7 +110,7 @@ export async function resetOperationalData(uid, apis) {
   return {
     wiped,
     productsPreserved: true,
-    staffMembersPreserved,
+    staffMembersPreserved: await countSubcollectionDocs(uid, 'staffMembers', apis),
     ingredientsStockZeroed,
   };
 }

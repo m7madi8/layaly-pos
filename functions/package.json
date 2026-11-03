@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "serve": "firebase emulators:start --only functions",
     "shell": "firebase functions:shell",
-    "deploy": "echo \"Deploy disabled in Phase 1 — see docs/SECURITY-REMEDIATION-PLAN.md\" && exit 1"
+    "deploy": "firebase deploy --only functions"
   },
   "dependencies": {
     "firebase-admin": "^12.7.0",

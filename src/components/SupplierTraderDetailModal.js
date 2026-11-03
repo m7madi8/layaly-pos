@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, Wallet, FileText } from 'lucide-react';
+import { X, Wallet, FileText, Landmark, BookOpen } from 'lucide-react';
 import { fmtMoney, supplierPaymentMethodLabel } from '../i18n';
 import { FONT_HEADING, FONT_UI } from '../branding';
 import {
@@ -10,7 +10,9 @@ import {
   validateSupplierPaymentInput,
 } from '../utils/supplierAccounting';
 import { newIdempotencyKey } from '../utils/idempotencyKey';
+import { gatewayRecordSupplierOpeningBalance } from '../services/financialGateway';
 import SupplierSearchSelect from './SupplierSearchSelect';
+import ChecksPanel from './ChecksPanel';
 
 function formatLedgerDate(entry) {
   if (!entry?.date) return '—';
@@ -27,6 +29,10 @@ export default function SupplierTraderDetailModal({
   onReconcile,
   onSubmitPayment,
   uploadProgress,
+  userId,
+  openShiftId,
+  actor,
+  businessProfile,
 }) {
   const [showPayForm, setShowPayForm] = useState(false);
   const [amount, setAmount] = useState('');
@@ -34,6 +40,11 @@ export default function SupplierTraderDetailModal({
   const [paymentMethod, setPaymentMethod] = useState('Cash');
   const [notes, setNotes] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [detailTab, setDetailTab] = useState('ledger');
+  const [obAmount, setObAmount] = useState('');
+  const [obNature, setObNature] = useState('payable');
+  const [obNote, setObNote] = useState('');
+  const [obBusy, setObBusy] = useState(false);
 
   useEffect(() => {
     if (supplier?.id && onReconcile) onReconcile(supplier.id);
@@ -79,6 +90,39 @@ export default function SupplierTraderDetailModal({
       setAmount('');
       setNotes('');
       alert(`تم تسجيل الدفعة بنجاح.\nرقم السند: ${result.paymentRef}`);
+    }
+  };
+
+  const handleOpeningBalance = async (e) => {
+    e.preventDefault();
+    if (!userId || !supplier?.id) return;
+    const parsed = Math.round((Number(obAmount) || 0) * 100) / 100;
+    if (!(parsed > 0)) {
+      alert('أدخل مبلغ الرصيد');
+      return;
+    }
+    setObBusy(true);
+    try {
+      await gatewayRecordSupplierOpeningBalance(
+        userId,
+        supplier.id,
+        {
+          amount: parsed,
+          nature: obNature,
+          note: obNote,
+          asOfDateMs: Date.now(),
+        },
+        { actor, idempotencyKey: newIdempotencyKey('sup_ob') },
+        businessProfile
+      );
+      setObAmount('');
+      setObNote('');
+      alert('تم تسجيل الرصيد الافتتاحي');
+      onReconcile?.(supplier.id);
+    } catch (err) {
+      alert(err?.message || 'تعذّر حفظ الرصيد الافتتاحي');
+    } finally {
+      setObBusy(false);
     }
   };
 
@@ -212,45 +256,124 @@ export default function SupplierTraderDetailModal({
             </div>
           )}
 
-          <div>
-            <h4 className="text-sm font-bold text-primary mb-3 flex items-center gap-2" style={{ fontFamily: FONT_HEADING }}>
-              <FileText size={16} />
-              سجل المشتريات والدفعات
-            </h4>
-            <div className="rounded-xl border border-gray-100 overflow-hidden">
-              {ledger.length === 0 ? (
-                <p className="text-xs text-gray-400 text-center py-6">لا توجد حركات مالية بعد</p>
-              ) : (
-                <div className="max-h-72 overflow-y-auto divide-y divide-gray-100">
-                  {ledger.map((row) => (
-                    <div key={row.id} className="px-3 py-2.5 text-xs flex justify-between gap-2 hover:bg-gray-50">
-                      <div className="min-w-0">
-                        <span className={`font-semibold ${row.kind === 'payment' ? 'text-green-700' : 'text-orange-700'}`}>
-                          {row.kind === 'payment' ? 'دفعة' : 'مشتريات'}
-                        </span>
-                        <span className="text-gray-400"> · {formatLedgerDate(row)}</span>
-                        {row.kind === 'payment' && row.paymentRef && (
-                          <span className="block text-[10px] text-gray-500 mt-0.5">سند: {row.paymentRef}</span>
-                        )}
-                        {row.notes && (
-                          <span className="block text-[10px] text-gray-500 truncate">{row.notes}</span>
-                        )}
-                        {row.recordedBy?.role && (
-                          <span className="block text-[10px] text-gray-400">بواسطة: {row.recordedBy.role === 'admin' ? 'مدير' : 'موظف'}</span>
-                        )}
-                      </div>
-                      <div className="text-left shrink-0">
-                        <span className="font-bold text-gray-900">{fmtMoney(row.amount)}</span>
-                        {row.kind === 'payment' && row.paymentMethod && (
-                          <span className="block text-[10px] text-gray-500">{supplierPaymentMethodLabel(row.paymentMethod)}</span>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+          <div className="rounded-xl border border-gray-200 p-4 space-y-3 bg-slate-50/80">
+            <p className="text-sm font-semibold text-primary" style={{ fontFamily: FONT_UI }}>رصيد افتتاحي للتاجر</p>
+            <p className="text-[10px] text-gray-500" style={{ fontFamily: FONT_UI }}>
+              بدون فاتورة مشتريات — يُستخدم لترحيل رصيد سابق (مستحق للتاجر أو لصالحنا).
+            </p>
+            <form onSubmit={handleOpeningBalance} className="space-y-2">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={obAmount}
+                onChange={(e) => setObAmount(e.target.value)}
+                placeholder="المبلغ (₪)"
+                className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm bg-white"
+              />
+              <select
+                value={obNature}
+                onChange={(e) => setObNature(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm bg-white"
+              >
+                <option value="payable">مستحق للتاجر (علينا)</option>
+                <option value="receivable">لصالحنا (التاجر مدين)</option>
+              </select>
+              <input
+                type="text"
+                value={obNote}
+                onChange={(e) => setObNote(e.target.value)}
+                placeholder="ملاحظة"
+                className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm bg-white"
+              />
+              <button
+                type="submit"
+                disabled={obBusy || uploadProgress}
+                className="w-full py-2.5 rounded-xl text-white text-sm disabled:opacity-50"
+                style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
+              >
+                {obBusy ? 'جاري الحفظ...' : 'تسجيل الرصيد الافتتاحي'}
+              </button>
+            </form>
           </div>
+
+          <div className="flex gap-1 p-1 rounded-xl bg-gray-100">
+            <button
+              type="button"
+              onClick={() => setDetailTab('ledger')}
+              className={`flex-1 py-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1 ${
+                detailTab === 'ledger' ? 'bg-white shadow text-primary' : 'text-gray-600'
+              }`}
+              style={{ fontFamily: FONT_UI }}
+            >
+              <BookOpen size={14} />
+              السجل
+            </button>
+            <button
+              type="button"
+              onClick={() => setDetailTab('checks')}
+              className={`flex-1 py-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1 ${
+                detailTab === 'checks' ? 'bg-white shadow text-primary' : 'text-gray-600'
+              }`}
+              style={{ fontFamily: FONT_UI }}
+            >
+              <Landmark size={14} />
+              الشيكات
+            </button>
+          </div>
+
+          {detailTab === 'ledger' ? (
+            <div>
+              <h4 className="text-sm font-bold text-primary mb-3 flex items-center gap-2" style={{ fontFamily: FONT_HEADING }}>
+                <FileText size={16} />
+                سجل المشتريات والدفعات
+              </h4>
+              <div className="rounded-xl border border-gray-100 overflow-hidden">
+                {ledger.length === 0 ? (
+                  <p className="text-xs text-gray-400 text-center py-6">لا توجد حركات مالية بعد</p>
+                ) : (
+                  <div className="max-h-72 overflow-y-auto divide-y divide-gray-100">
+                    {ledger.map((row) => (
+                      <div key={row.id} className="px-3 py-2.5 text-xs flex justify-between gap-2 hover:bg-gray-50">
+                        <div className="min-w-0">
+                          <span className={`font-semibold ${row.kind === 'payment' ? 'text-green-700' : 'text-orange-700'}`}>
+                            {row.kind === 'payment' ? 'دفعة' : 'مشتريات'}
+                          </span>
+                          <span className="text-gray-400"> · {formatLedgerDate(row)}</span>
+                          {row.kind === 'payment' && row.paymentRef && (
+                            <span className="block text-[10px] text-gray-500 mt-0.5">سند: {row.paymentRef}</span>
+                          )}
+                          {row.notes && (
+                            <span className="block text-[10px] text-gray-500 truncate">{row.notes}</span>
+                          )}
+                          {row.recordedBy?.role && (
+                            <span className="block text-[10px] text-gray-400">بواسطة: {row.recordedBy.role === 'admin' ? 'مدير' : 'موظف'}</span>
+                          )}
+                        </div>
+                        <div className="text-left shrink-0">
+                          <span className="font-bold text-gray-900">{fmtMoney(row.amount)}</span>
+                          {row.kind === 'payment' && row.paymentMethod && (
+                            <span className="block text-[10px] text-gray-500">{supplierPaymentMethodLabel(row.paymentMethod)}</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <ChecksPanel
+              uid={userId}
+              partyId={supplier.id}
+              partyType="supplier"
+              openShiftId={openShiftId}
+              actor={actor}
+              businessProfile={businessProfile}
+              fmtMoney={fmtMoney}
+              theme={theme}
+            />
+          )}
         </div>
       </div>
     </div>

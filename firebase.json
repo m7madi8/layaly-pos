@@ -16,7 +16,13 @@
   "emulators": {
     "auth": { "port": 9099 },
     "firestore": { "port": 8080 },
-    "functions": { "port": 5001 },
+    "functions": {
+      "port": 5001,
+      "env": {
+        "EMPLOYEE_PIN": "gate-emulator-pin-7291",
+        "VAULT_PIN": "gate-vault-8291"
+      }
+    },
     "ui": { "enabled": true, "port": 4000 },
     "singleProjectMode": true
   }

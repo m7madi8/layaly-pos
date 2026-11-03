@@ -10,7 +10,7 @@ export function getEmployeeLoginPassword() {
 }
 
 /** الصفحات المسموحة للموظف */
-export const EMPLOYEE_VIEWS = ['pos', 'customers', 'cash'];
+export const EMPLOYEE_VIEWS = ['pos', 'customers', 'cash', 'expenses', 'purchases', 'traders', 'orders'];
 
 /** إضافة وتعديل عميل — مسموح للمدير والموظف */
 export function canCreateCustomers(role) {
@@ -23,6 +23,20 @@ export function canEditCustomers(role) {
 
 /** فتح وتعديل الفواتير المعلقة — مسموح للمدير والموظف */
 export function canManageOpenBills(role) {
+  return role === 'admin' || role === 'employee';
+}
+
+/** تعديل الطلبات المحفوظة — مسموح للمدير والموظف */
+export function canEditOrders(role) {
+  return role === 'admin' || role === 'employee';
+}
+
+/** حذف الطلبات من السجل — مدير فقط (استخدم الإلغاء لاسترجاع المخزون) */
+export function canDeleteOrders(role) {
+  return role === 'admin';
+}
+
+export function isFinanceRole(role) {
   return role === 'admin' || role === 'employee';
 }
 

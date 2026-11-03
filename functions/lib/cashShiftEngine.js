@@ -2,6 +2,37 @@ const admin = require('firebase-admin');
 const { computeExpectedCash } = require('./cashShiftMath');
 const { applyVaultCreditInTx, roundMoney } = require('./vaultAccounting');
 
+function buildWorkedStaffSnapshot(shift) {
+  if (Array.isArray(shift?.onDutyStaffWorkedSnapshot) && shift.onDutyStaffWorkedSnapshot.length > 0) {
+    return shift.onDutyStaffWorkedSnapshot;
+  }
+  const byId = new Map();
+  for (const e of shift?.onDutyStaffRoster || []) {
+    if (!e?.staffId) continue;
+    byId.set(e.staffId, { staffId: e.staffId, name: e.nameSnapshot || '—' });
+  }
+  if (byId.size === 0) {
+    for (const id of shift?.onDutyStaffIds || []) {
+      if (id) byId.set(id, { staffId: id, name: '—' });
+    }
+  }
+  return [...byId.values()];
+}
+
+function buildOnDutyRosterInitial(staffIds, actor, rosterFromClient) {
+  if (Array.isArray(rosterFromClient) && rosterFromClient.length > 0) return rosterFromClient;
+  const atMs = Date.now();
+  return staffIds.map((staffId) => ({
+    staffId,
+    nameSnapshot: '—',
+    addedAtMs: atMs,
+    addedBy: actor || null,
+    source: 'shift_open',
+    removedAtMs: null,
+    removedBy: null,
+  }));
+}
+
 function serverTimestamp(db) {
   const FV = db?.constructor?.FieldValue || admin.firestore.FieldValue;
   return FV.serverTimestamp();
@@ -76,7 +107,18 @@ function appendCashMovementInTx(tx, db, uid, shiftSnap, {
   return mRef.id;
 }
 
-async function getOpenShiftDocInTx(tx, db, uid) {
+function docExists(snap) {
+  if (!snap) return false;
+  return typeof snap.exists === 'function' ? snap.exists() : Boolean(snap.exists);
+}
+
+async function getOpenShiftDocInTx(tx, db, uid, preferredShiftId = null) {
+  if (preferredShiftId) {
+    const ref = db.doc(`users/${uid}/cashShifts/${preferredShiftId}`);
+    const doc = await tx.get(ref);
+    if (docExists(doc) && doc.data().status === 'open') return doc;
+    return null;
+  }
   const q = db.collection(`users/${uid}/cashShifts`).where('status', '==', 'open').limit(1);
   const snap = await tx.get(q);
   if (snap.empty) return null;
@@ -87,10 +129,21 @@ async function executeOpenCashShift(db, uid, payload, { actor }) {
   const rawOpening = Number(payload.openingBalance);
   if (!Number.isFinite(rawOpening) || rawOpening < 0) throw new Error('رصيد فتح غير صالح');
   const opening = roundMoney(rawOpening);
+  const rawExpected = payload.expectedOpeningBalance;
+  const expected =
+    rawExpected !== undefined && rawExpected !== null
+      ? roundMoney(Math.max(0, Number(rawExpected) || 0))
+      : opening;
+  const openingDifference = roundMoney(opening - expected);
+  const duty = Array.isArray(payload.onDutyStaffIds)
+    ? [...new Set(payload.onDutyStaffIds.filter(Boolean))]
+    : [];
+  if (duty.length === 0) throw new Error('اختر موظفاً واحداً على الأقل مداوماً في الشفت');
   const notes = String(payload.notes || '').trim();
   const period = Number(payload.shiftPeriod) === 2 ? 2 : 1;
   const operatorName = String(payload.operatorName || '').trim();
   const idempotencyKey = String(payload.idempotencyKey || '').trim();
+  const roster = buildOnDutyRosterInitial(duty, actor, payload.onDutyStaffRoster);
 
   let result = null;
 
@@ -114,6 +167,10 @@ async function executeOpenCashShift(db, uid, payload, { actor }) {
       shiftPeriod: period,
       operatorName,
       openingBalance: opening,
+      expectedOpeningBalance: expected,
+      openingDifference,
+      onDutyStaffIds: duty,
+      onDutyStaffRoster: roster,
       cashSales: 0,
       cashWithdrawals: 0,
       cashDeposits: 0,
@@ -150,6 +207,8 @@ async function executeCloseCashShift(db, uid, { shiftId, actualClosingBalance, n
   if (!sid) throw new Error('معرّف الوردية مطلوب');
   const actual = Math.max(0, Number(actualClosingBalance));
   if (!Number.isFinite(actual)) throw new Error('أدخل المبلغ الفعلي في الصندوق');
+
+  let meta = { shiftId: sid, shiftPeriod: 1, closedAtMs: Date.now(), closed: true };
 
   await db.runTransaction(async (tx) => {
     const sRef = db.doc(`users/${uid}/cashShifts/${sid}`);
@@ -204,6 +263,9 @@ async function executeCloseCashShift(db, uid, { shiftId, actualClosingBalance, n
     }
 
     const difference = roundMoney(actual - finalExpected);
+    const closedAtMs = Date.now();
+    const workedSnapshot = buildWorkedStaffSnapshot(shift);
+    meta = { shiftId: sid, shiftPeriod: period, closedAtMs, closed: true };
     tx.update(sRef, {
       status: 'closed',
       cashWithdrawals: finalWithdrawals,
@@ -213,14 +275,16 @@ async function executeCloseCashShift(db, uid, { shiftId, actualClosingBalance, n
       difference,
       closingNotes: String(notes || '').trim(),
       closedAt: serverTimestamp(db),
-      closedAtMs: Date.now(),
+      closedAtMs,
       closedBy: actor || null,
+      onDutyStaffWorkedSnapshot: workedSnapshot,
+      dutyClosedAtMs: closedAtMs,
       updatedAt: serverTimestamp(db),
       updatedAtMs: Date.now(),
     });
   });
 
-  return { shiftId: sid, closed: true };
+  return meta;
 }
 
 async function executeCashShiftMovement(

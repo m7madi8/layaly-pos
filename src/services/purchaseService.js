@@ -19,6 +19,7 @@ import {
   appendCashMovementInTransaction,
 } from './cashShiftService';
 import { vaultDocRef, applyVaultCredit, applyVaultDebit } from './vaultService';
+import { appendInventoryLayerInTransaction } from './inventoryLayerService';
 
 /**
  * @returns {Promise<{ expenseId: string, paymentMethod: string, cashRecorded: boolean, vaultRecorded: boolean }>}
@@ -104,9 +105,18 @@ export async function executePurchase(uid, input, { actor, shiftId = null }) {
       const unitCost = purchaseUnitCost(productData, amount, quantityBought);
       tx.update(productRef, {
         stock: (Number(productData.stock) || 0) + quantityBought,
-        ...(unitCost > 0 ? { cost: unitCost } : {}),
+        ...(unitCost > 0 ? { lastPurchaseUnitCost: unitCost } : {}),
         updatedAt: serverTimestamp(),
       });
+      if (quantityBought > 0 && unitCost > 0) {
+        appendInventoryLayerInTransaction(tx, uid, {
+          productId: input.linkedProductId,
+          purchaseExpenseId: expenseRef.id,
+          quantity: quantityBought,
+          unitCost,
+          purchasedAtMs: payDate.getTime(),
+        });
+      }
     }
 
     if (

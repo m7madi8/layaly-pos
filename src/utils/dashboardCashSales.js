@@ -4,13 +4,13 @@
  */
 
 import { effectiveDebt } from './orderAccounting';
+import { getBusinessCalendarDayStart } from './businessTimezone';
 
 const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
-/** نفس بداية اليوم المستخدمة في لوحة التحكم والتقارير (تقويم محلي، منتصف الليل). */
+/** بداية اليوم التقويمي في Asia/Hebron (لوحة التحكم والاستعلامات). */
 export function getLocalCalendarDayStart(reference = new Date()) {
-  const d = reference instanceof Date ? reference : new Date(reference);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  return getBusinessCalendarDayStart(reference);
 }
 
 export function orderTimestampDate(order) {
@@ -30,7 +30,8 @@ export function orderCashCollected(order) {
   if (order.paymentMethod === 'Compliment' || order.paymentType === 'compliment') return 0;
   const cash = Number(order.cashPaid);
   if (!Number.isFinite(cash) || cash <= 0) return 0;
-  return money(cash);
+  const returns = Number(order.returnCashTotal) || 0;
+  return money(Math.max(0, cash - returns));
 }
 
 export function computeTodayCashSales(orders, dayStart) {

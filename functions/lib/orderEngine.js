@@ -12,7 +12,7 @@ const {
   costFromWeight,
   stockUnitsForItem,
 } = require('./productPricing');
-const { money, effectiveDebt, debtDeltasByCustomer, replaceOrderDebtEntry } = require('./orderAccounting');
+const { money, effectiveDebt, debtDeltasByCustomer, replaceOrderDebtEntry, diffOrders } = require('./orderAccounting');
 const { externalHookahUnitPrice } = require('./hookahExternalSale');
 const {
   appendCashMovementInTx,
@@ -405,6 +405,20 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
 
     tx.set(orderRef, orderPayload, { merge: true });
 
+    if (existingOrderData) {
+      const editRef = db.collection(`users/${uid}/orderEdits`).doc();
+      tx.set(editRef, {
+        orderId: orderRef.id,
+        orderNumber,
+        orderDate: existingOrderData.timestamp || null,
+        editedAt: serverTimestamp(db),
+        editedAtMs,
+        editedBy: actor || null,
+        changes: diffOrders(existingOrderData, orderPayload),
+        source: 'trusted_engine',
+      });
+    }
+
     for (const sessionId of newSessionIds) {
       tx.update(db.doc(`users/${uid}/playstationSessions/${sessionId}`), {
         billed: true,
@@ -468,7 +482,13 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
       });
     }
 
-    result = { orderId: orderRef.id, orderNumber, total, duplicate: false };
+    result = {
+      orderId: orderRef.id,
+      orderNumber,
+      total,
+      duplicate: false,
+      auditRecorded: Boolean(existingOrderData),
+    };
   });
 
   return result;

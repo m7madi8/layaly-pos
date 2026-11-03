@@ -43,8 +43,17 @@ service cloud.firestore {
     function financialSubpath(sub) {
       return sub in [
         'orders', 'orderEdits', 'openBills', 'cashShifts', 'cashMovements',
-        'vault', 'vaultMovements', 'counters', 'idempotency', 'cashShiftIdempotency'
+        'vault', 'vaultMovements', 'counters', 'idempotency', 'cashShiftIdempotency',
+        'orderReturns', 'orderReturnAudits', 'checks', 'payrollAccruals', 'payrollPayments',
+        'employeeAdvances', 'advanceRepayments', 'supplierOpeningBalances', 'employeeBenefits',
+        'employeeBenefitIdempotency', 'openBills'
       ];
+    }
+
+    function sensitiveExpenseCreate() {
+      return request.resource.data.keys().hasAny([
+        'payrollAccrualId', 'employeeAdvanceId', 'advanceRepaymentId', 'isAdvanceRepayment'
+      ]);
     }
 
     match /users/{userId} {
@@ -64,6 +73,12 @@ service cloud.firestore {
           && securityMode(userId)
           && !financialSubpath(subCollection)
           && hardenedCatalogWrite(userId);
+
+        allow create: if isOwner(userId)
+          && securityMode(userId)
+          && subCollection == 'expenses'
+          && isCashierOrAdmin()
+          && !sensitiveExpenseCreate();
       }
 
       match /vault/{docId} {

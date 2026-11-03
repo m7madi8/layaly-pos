@@ -69,7 +69,7 @@ describe('financial concurrency (Firestore emulator)', () => {
 
   test('parallel sale + close: sale fails or succeeds atomically without orphan cash', async () => {
     if (!emulatorUp) return;
-    const { shiftId } = await executeOpenCashShift(db, uid, { openingBalance: 50 }, { actor });
+    const { shiftId } = await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 50 }, { actor });
     const salePromise = executeCompleteOrder(
       db,
       uid,
@@ -120,7 +120,7 @@ describe('financial concurrency (Firestore emulator)', () => {
 
   test('duplicate idempotency key under retry does not duplicate orders', async () => {
     if (!emulatorUp) return;
-    await executeOpenCashShift(db, uid, { openingBalance: 0 }, { actor });
+    await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 0 }, { actor });
     const key = `idem_retry_${Date.now()}`;
     const payload = {
       idempotencyKey: key,

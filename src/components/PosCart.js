@@ -241,6 +241,9 @@ export default function PosCart({
   onCancelBill,
   onExitBill,
   busy,
+  posEmployeeStaffId = '',
+  onPosEmployeeStaffIdChange,
+  employeeStaffOptions = [],
 }) {
   const [notesToggle, setNotesToggle] = useState(false);
 
@@ -295,6 +298,25 @@ export default function PosCart({
               </button>
             </div>
           </div>
+
+          {employeeStaffOptions.length > 0 && onPosEmployeeStaffIdChange && (
+            <div className="mb-3">
+              <label className="text-[11px] text-[var(--color-text-muted)] block mb-1">بيع بسعر موظف (مداوم فقط)</label>
+              <select
+                value={posEmployeeStaffId}
+                onChange={(e) => onPosEmployeeStaffIdChange(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-xl border border-[var(--color-border)] text-sm bg-white"
+                disabled={busy}
+              >
+                <option value="">بيع عادي للزبائن</option>
+                {employeeStaffOptions.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <CustomerSearch
             customers={customers}

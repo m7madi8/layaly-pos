@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
 import { createPortal } from 'react-dom';
 import { APP_NAME, APP_TAGLINE, APP_LOGO, resolveAppLogo, FONT_UI, FONT_HEADING, theme } from './branding';
 import { fmtMoney, fmtMoneyPlain, orderFilterLabel, orderStatusLabel, categoryLabel, paymentMethodLabel, paymentTypeLabel, expenseCategoryLabel, expenseFilterLabel, reportFilterLabel } from './i18n';
@@ -21,7 +21,7 @@ import {
 } from './services/supplierPaymentService';
 import { executePurchase, reversePurchaseEffectsInTransaction } from './services/purchaseService';
 import { PURCHASE_PAYMENT_CASH, purchasePaymentMethodLabel } from './utils/purchasePayment';
-import { executeEmployeeBenefit, cancelEmployeeBenefit, syncEmployeeBenefitExpenses } from './services/employeeBenefitService';
+import { syncEmployeeBenefitExpenses } from './services/employeeBenefitService';
 import { ensureDefaultStaffMembers, updateStaffBenefitLimit, uniqueStaffMembersByName } from './services/staffMembersService';
 import { findDuplicateCustomer, normalizeCustomerName } from './utils/customerIdentity';
 import {
@@ -29,6 +29,7 @@ import {
   sumApprovedBenefitsUsage,
 } from './utils/employeeBenefitAccounting';
 import { getCashDayKey } from './utils/cashDayPeriod';
+import { resolveDailyCashGate } from './utils/cashDayGate';
 import {
   isSupplierPaymentExpense,
   roundMoney,
@@ -44,10 +45,18 @@ import CashShiftView from './components/CashShiftView';
 import VaultView from './components/VaultView';
 import VaultPinScreen from './components/VaultPinScreen';
 import DailyCashOpenModal from './components/DailyCashOpenModal';
+import DailyArchivePanel from './components/DailyArchivePanel';
+import { closeBusinessDay, recordBusinessDayAdjustment } from './services/businessDayService';
+import { migrateEmployeeProfilesV1 } from './services/migrateEmployeeProfiles';
+import { useShiftOverdueWarning } from './hooks/useShiftOverdueWarning';
+import { consumeInventoryLayersFifo, legacyProductCogs, restoreInventoryLayersLifo } from './services/inventoryLayerService';
 import RemoveTestSalesModal from './components/RemoveTestSalesModal';
 import RemoveOldPlaystationModal from './components/RemoveOldPlaystationModal';
 import SystemResetModal from './components/SystemResetModal';
-import { resolveDailyCashGate } from './utils/cashDayGate';
+import { computeEmployeeUnitPrice } from './utils/employeePricing';
+import { assertStaffOnDutyForShift } from './utils/shiftOnDuty';
+import { openShiftNeedsOnDutyAssignment, filterStaffByOnDuty } from './utils/shiftOnDuty';
+import OnDutyAssignmentModal from './components/OnDutyAssignmentModal';
 import { externalHookahCartItemId, selectHookahExternalCheckoutProducts } from './utils/hookahExternalSale';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory, isSystemServiceProduct, buildSystemServiceProduct } from './productAssets';
 import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, Landmark, PauseCircle, Check } from 'lucide-react';
@@ -64,12 +73,15 @@ import {
   collection,
   addDoc,
   getDocs,
+  getDoc,
   updateDoc,
   deleteDoc,
   doc,
   query,
   orderBy,
+  where,
   limit,
+  startAfter,
   serverTimestamp,
   onSnapshot,
   setDoc,
@@ -77,8 +89,29 @@ import {
   writeBatch,
   onAuthStateChanged,
   signInWithAdminPassword,
+  signInWithCustomToken,
   signOut,
+  setFirestoreMetricsPage,
+  getFirestoreReadMetrics,
+  getActiveSharedListenerCount,
 } from './firebaseClient';
+import { clearFirestoreClientSessionState } from './services/firestoreSessionCleanup';
+import { Timestamp } from 'firebase/firestore';
+import { sharedOnSnapshot } from './services/firestoreSharedListeners';
+import {
+  resolveOrdersQuerySpec,
+  mapOrderSnapshot,
+  ORDERS_PAGE_SIZE,
+  ORDERS_DASHBOARD_LIMIT,
+} from './utils/firestoreOrderQueries';
+import { shouldWarnReportsPartialTotals } from './utils/reportsOrdersCoverage';
+import {
+  needsProductsListener,
+  needsStaffListener,
+  needsExpensesListener,
+  needsSuppliersListener,
+  needsCustomersListener,
+} from './utils/firestoreViewDataPolicy';
 import { fileToStoredDataUrl } from './utils/fileToDataUrl';
 import {
   hasLocalDemoData,
@@ -131,16 +164,25 @@ import {
   EMPLOYEE_VIEWS,
   canCreateCustomers,
   canManageOpenBills,
+  canEditOrders,
+  canDeleteOrders,
+  isFinanceRole,
   normalizeLoginPassword,
   readSessionRole,
   saveSessionRole,
 } from './adminAuth';
 import {
-  suspendOpenBill,
-  closeOpenBill,
-  cancelOpenBill,
   restoreCartItem,
 } from './services/openBillsService';
+import {
+  gatewaySuspendOpenBill,
+  gatewayCloseOpenBill,
+  gatewayCancelOpenBill,
+  gatewayExecuteEmployeeBenefit,
+  gatewayCancelEmployeeBenefit,
+  gatewayAddVaultCapital,
+  gatewayDepositVaultManual,
+} from './services/operationalGateway';
 import {
   openCashShift,
   recordCashSaleInTransaction,
@@ -149,8 +191,14 @@ import {
   recordCashWithdrawal,
   recordCashDeposit,
   closeCashShift,
+  assignOnDutyStaffToOpenShift,
+  addOnDutyStaffToOpenShift,
+  removeOnDutyStaffFromOpenShift,
 } from './services/cashShiftService';
-import { addVaultCapital, depositVaultManual, vaultDocRef } from './services/vaultService';
+import { createEmployee, updateEmployee } from './services/employeeService';
+import { buildOnDutyRosterInitial } from './utils/shiftOnDutyRoster';
+import { vaultDocRef } from './services/vaultService';
+import { resolveVaultPin } from './config/authSecrets';
 import { printReceiptViaBrowser } from './utils/printReceiptBrowser';
 import { downloadBusinessReportPdf } from './utils/businessReportPdf';
 import { resetSalesAndCustomerLedgers } from './services/resetSalesAndLedgers';
@@ -163,10 +211,15 @@ import {
   callOpenCashShift,
   callRecordCashShiftMovement,
   callVerifyEmployeePin,
+  callRefreshAdminSession,
   isTrustedCashShiftsEnabled,
   isTrustedOrdersEnabled,
 } from './services/secureFunctions';
 import { newIdempotencyKey } from './utils/idempotencyKey';
+import { gatewayPartialOrderReturn } from './services/financialGateway';
+import OrderPartialReturnModal from './components/OrderPartialReturnModal';
+
+const EmployeesView = lazy(() => import('./components/EmployeesView'));
 
 const LOW_STOCK_THRESHOLD = 10;
 
@@ -243,6 +296,10 @@ const AppCore = () => {
   const [currentView, setCurrentView] = useState('pos');
   const [products, setProducts] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [ordersHasMore, setOrdersHasMore] = useState(false);
+  const [ordersLoadMoreBusy, setOrdersLoadMoreBusy] = useState(false);
+  const ordersQueryModeRef = useRef('none');
+  const [settingsOrdersCount, setSettingsOrdersCount] = useState(null);
   const [, setIngredients] = useState([]);
   const [currentOrder, setCurrentOrder] = useState({ items: [], customer: '', customerId: '', notes: '', assetMovementIds: [] });
   const [activeOpenBillId, setActiveOpenBillId] = useState(null);
@@ -260,6 +317,9 @@ const AppCore = () => {
   const [cashShifts, setCashShifts] = useState([]);
   const [cashMovements, setCashMovements] = useState([]);
   const [cashBusy, setCashBusy] = useState(false);
+  const [onDutyAssignBusy, setOnDutyAssignBusy] = useState(false);
+  const [onDutyAssignDismissed, setOnDutyAssignDismissed] = useState(false);
+  const [staffFormBusy, setStaffFormBusy] = useState(false);
   const [vaultSummary, setVaultSummary] = useState(null);
   const [vaultMovements, setVaultMovements] = useState([]);
   const [vaultBusy, setVaultBusy] = useState(false);
@@ -270,6 +330,7 @@ const AppCore = () => {
   const [customers, setCustomers] = useState([]);
   const [discount, setDiscount] = useState(0);
   const [discountType, setDiscountType] = useState('amount'); // new invoices use ₪ only; 'percentage' kept for old orders
+  const [posEmployeeStaffId, setPosEmployeeStaffId] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [showProductModal, setShowProductModal] = useState(false);
@@ -358,6 +419,7 @@ const AppCore = () => {
   const [mixedCashAmount, setMixedCashAmount] = useState('');
   const [showDiscountModal, setShowDiscountModal] = useState(false);
   const [expandedOrderIds, setExpandedOrderIds] = useState([]);
+  const [partialReturnOrder, setPartialReturnOrder] = useState(null);
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [bluetoothDevice, setBluetoothDevice] = useState(null);
@@ -400,9 +462,16 @@ const AppCore = () => {
     };
   }, [showNotifications]);
 
+  useEffect(() => {
+    setFirestoreMetricsPage(currentView || 'app');
+  }, [currentView]);
+
   // Auth listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (!currentUser) {
+        clearFirestoreClientSessionState();
+      }
       setUser(currentUser);
       if (!currentUser) {
         setLoading(false);
@@ -444,10 +513,12 @@ const AppCore = () => {
     }
   }, [user]);
 
-  // Load products
+  // Load products (view-scoped — POS/inventory/reports; not on traders/vault/cash-only screens)
   useEffect(() => {
-    if (!user) return;
-    
+    if (!user || !needsProductsListener(userRole, currentView)) {
+      return undefined;
+    }
+
     const unsubscribe = onSnapshot(
       collection(db, 'users', user.uid, 'products'),
       (snapshot) => {
@@ -461,32 +532,88 @@ const AppCore = () => {
         console.error("Error loading products:", error);
       }
     );
-    
-    return () => unsubscribe();
-  }, [user]);
 
-  // Load orders (admin + شاشات تحتاج السجل — آخر 500 طلب لتوفير الحصة)
+    return () => unsubscribe();
+  }, [user, userRole, currentView]);
+
+  // Load orders (scoped queries — dashboard today-only, paginated list, etc.)
   useEffect(() => {
-    if (!user || userRole !== 'admin') return;
-    const needsOrders = ['dashboard', 'orders', 'reports', 'settings'].includes(currentView);
-    if (!needsOrders) return;
+    if (!user || !userRole) return undefined;
+
+    const spec = resolveOrdersQuerySpec({
+      uid: user.uid,
+      userRole,
+      currentView,
+      orderFilter,
+      reportFilter,
+      reportCustomDates,
+      customDateRange,
+      Timestamp,
+      collection,
+      query,
+      orderBy,
+      where,
+      limit,
+      db,
+    });
+
+    if (!spec) {
+      ordersQueryModeRef.current = 'none';
+      setOrdersHasMore(false);
+      return undefined;
+    }
+
+    ordersQueryModeRef.current = spec.mode;
 
     const unsubscribe = onSnapshot(
-      query(collection(db, 'users', user.uid, 'orders'), orderBy('timestamp', 'desc'), limit(500)),
+      spec.q,
       (snapshot) => {
-        const ordersData = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setOrders(ordersData);
+        const pageModes = new Set(['orders-page', 'orders-custom-open']);
+        const next = mapOrderSnapshot(snapshot);
+        setOrders((prev) => {
+          if (!pageModes.has(spec.mode)) return next;
+          const headIds = new Set(next.map((o) => o.id));
+          const tail = prev.filter((o) => !headIds.has(o.id));
+          return [...next, ...tail];
+        });
+        setOrdersHasMore(pageModes.has(spec.mode) && snapshot.size >= ORDERS_PAGE_SIZE);
       },
       (error) => {
         console.error("Error loading orders:", error);
       }
     );
-    
+
     return () => unsubscribe();
-  }, [user, userRole, currentView]);
+  }, [
+    user,
+    userRole,
+    currentView,
+    orderFilter,
+    customDateRange.start,
+    customDateRange.end,
+    reportFilter,
+    reportCustomDates.start,
+    reportCustomDates.end,
+  ]);
+
+  useEffect(() => {
+    if (!user?.uid || currentView !== 'settings' || userRole !== 'admin') {
+      setSettingsOrdersCount(null);
+      return undefined;
+    }
+    let cancelled = false;
+    getDoc(doc(db, 'users', user.uid, 'counters', 'orders'))
+      .then((snap) => {
+        if (cancelled) return;
+        setSettingsOrdersCount(snap.exists() ? Number(snap.data()?.count) || 0 : orders.length);
+      })
+      .catch(() => {
+        if (!cancelled) setSettingsOrdersCount(orders.length);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid, currentView, userRole, orders.length]);
 
   // Load ingredients
   useEffect(() => {
@@ -502,10 +629,10 @@ const AppCore = () => {
 
   // Load expenses
   useEffect(() => {
-    if (!user || userRole !== 'admin') return;
-    const needsExpenses = ['expenses', 'purchases', 'traders', 'reports', 'dashboard'].includes(currentView);
-    if (!needsExpenses) return;
-    const q = query(collection(db, 'users', user.uid, 'expenses'), orderBy('date', 'desc'), limit(800));
+    if (!user || !needsExpensesListener(userRole, currentView)) return undefined;
+    const expenseLimit =
+      currentView === 'reports' || currentView === 'cash' ? 800 : currentView === 'expenses' ? 400 : 120;
+    const q = query(collection(db, 'users', user.uid, 'expenses'), orderBy('date', 'desc'), limit(expenseLimit));
     const unsubscribe = onSnapshot(q, snapshot => {
       setExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     }, (error) => {
@@ -535,27 +662,36 @@ const AppCore = () => {
     ensureDefaultStaffMembers(user.uid)
       .then((list) => setStaffMembers(uniqueStaffMembersByName(list)))
       .catch((e) => console.error('Staff seed failed:', e));
+    migrateEmployeeProfilesV1(user.uid).catch((e) => console.error('Employee profile migration:', e));
   }, [user?.uid, userRole]);
 
   useEffect(() => {
-    if (!user || userRole !== 'admin') return;
-    const needsStaff = ['expenses', 'settings'].includes(currentView);
-    if (!needsStaff) return;
+    if (!user?.uid || !needsStaffListener(userRole, currentView)) return undefined;
     const q = query(collection(db, 'users', user.uid, 'staffMembers'), orderBy('name', 'asc'));
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-        setStaffMembers(uniqueStaffMembersByName(list));
-      },
+    return sharedOnSnapshot(
+      `staff:${user.uid}`,
+      (deliver, onError) =>
+        onSnapshot(
+          q,
+          (snapshot) => {
+            const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+            deliver(uniqueStaffMembersByName(list));
+          },
+          onError
+        ),
+      null,
+      (list) => setStaffMembers(list),
       (error) => console.error('Error loading staff:', error)
     );
-    return () => unsubscribe();
-  }, [user, userRole, currentView]);
+  }, [user?.uid, userRole, currentView]);
 
   useEffect(() => {
-    if (!user || userRole !== 'admin') return;
-    if (!['expenses', 'settings'].includes(currentView)) return;
+    if (!user?.uid || !isFinanceRole(userRole)) return undefined;
+    const needsBenefits =
+      userRole === 'admin'
+        ? ['expenses', 'settings'].includes(currentView)
+        : currentView === 'expenses';
+    if (!needsBenefits) return;
     const unsubscribe = onSnapshot(
       collection(db, 'users', user.uid, 'employeeBenefits'),
       (snapshot) => {
@@ -570,9 +706,7 @@ const AppCore = () => {
 
   // Load suppliers
   useEffect(() => {
-    if (!user || userRole !== 'admin') return;
-    const needsSuppliers = ['purchases', 'traders', 'expenses', 'dashboard'].includes(currentView);
-    if (!needsSuppliers) return;
+    if (!user || !needsSuppliersListener(userRole, currentView)) return undefined;
     const q = query(collection(db, 'users', user.uid, 'suppliers'), orderBy('name', 'asc'));
     const unsubscribe = onSnapshot(q, snapshot => {
       setSuppliers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -646,8 +780,7 @@ const AppCore = () => {
 
   // Load customers
   useEffect(() => {
-    if (!user) return;
-    if (!['pos', 'customers', 'orders', 'dashboard', 'reports'].includes(currentView)) return;
+    if (!user || !needsCustomersListener(currentView)) return undefined;
     const q = query(collection(db, 'users', user.uid, 'customers'), orderBy('name', 'asc'));
     const unsubscribe = onSnapshot(
       q,
@@ -674,7 +807,10 @@ const AppCore = () => {
   // Cash shifts (خفيف) + حركات الصندوق فقط على شاشة الكاش
   useEffect(() => {
     if (!user) return;
-    const needsCash = ['pos', 'cash', 'dashboard'].includes(currentView);
+    const needsCash =
+      userRole === 'employee'
+        ? ['pos', 'cash', 'expenses'].includes(currentView)
+        : ['pos', 'cash', 'dashboard'].includes(currentView);
     if (!needsCash) return;
 
     const unsubShifts = onSnapshot(
@@ -738,6 +874,14 @@ const AppCore = () => {
     setUploadProgress(true);
     try {
       await signInWithAdminPassword(auth, password);
+      try {
+        const session = await callRefreshAdminSession();
+        if (session?.customToken) {
+          await signInWithCustomToken(auth, session.customToken);
+        }
+      } catch {
+        /* Cloud Functions غير منشورة — legacy JWT */
+      }
       startRoleSession('admin');
     } catch (error) {
       alert(mapFirebaseAuthError(error));
@@ -753,7 +897,10 @@ const AppCore = () => {
     if (process.env.REACT_APP_VERIFY_EMPLOYEE_PIN_ON_SERVER === 'true') {
       setUploadProgress(true);
       try {
-        await callVerifyEmployeePin(password);
+        const pinResult = await callVerifyEmployeePin(password);
+        if (pinResult?.customToken) {
+          await signInWithCustomToken(auth, pinResult.customToken);
+        }
       } catch {
         alert('كلمة مرور الموظف غير صحيحة');
         return;
@@ -783,6 +930,7 @@ const AppCore = () => {
       saveSessionRole(null);
       setUserRole(null);
       await signOut(auth);
+      clearFirestoreClientSessionState();
     } catch (error) {
       alert(error.message);
     }
@@ -863,10 +1011,12 @@ const AppCore = () => {
     if (!user?.uid || uploadProgress) return;
     setUploadProgress(true);
     try {
-      const result = await cancelEmployeeBenefit(user.uid, benefitId, {
-        actor: sessionActor(),
-        reason,
-      });
+      const result = await gatewayCancelEmployeeBenefit(
+        user.uid,
+        benefitId,
+        { actor: sessionActor(), reason },
+        businessProfile
+      );
       if (result.cashReversed === false && result.cancelled) {
         alert('تم الإلغاء. لم تُعاد حركة الكاش (لا توجد وردية مفتوحة أو العملية أصناف فقط).');
       } else {
@@ -905,7 +1055,7 @@ const AppCore = () => {
         const cashDayKey = getCashDayKey();
         const usedToday = sumApprovedBenefitsUsage(employeeBenefits, staffMember.id, cashDayKey);
         const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
-        const result = await executeEmployeeBenefit(
+        const result = await gatewayExecuteEmployeeBenefit(
           user.uid,
           {
             staffMember,
@@ -920,7 +1070,8 @@ const AppCore = () => {
             overrideReason: expenseForm.overrideReason,
             productsById,
           },
-          { actor: sessionActor(), idempotencyKey: idem }
+          { actor: sessionActor(), idempotencyKey: idem },
+          businessProfile
         );
         if (!result.duplicate) {
           alert(`تم تسجيل استفادة الموظف بنجاح.\nرقم العملية: ${result.benefitRef}`);
@@ -1501,22 +1652,53 @@ const AppCore = () => {
   };
 
   const handleDeleteOrder = async (orderId) => {
-    if (window.confirm('حذف هذا الطلب من السجل؟ لا يمكن التراجع.')) {
-      setLoading(true);
-      try {
-        // Note: Re-indexing was removed from here. It's a heavy operation
-        // and should be done manually from settings if needed.
-        // The transaction to restore stock and delete the order is now handled
-        // by a cloud function or should be added back if essential for your workflow.
-        // For now, we just delete the document.
-        await deleteDoc(doc(db, 'users', user.uid, 'orders', orderId));
-        alert('تم حذف الطلب. لم يُسترجَع المخزون تلقائياً.');
-      } catch (error) {
-        console.error("Error deleting order:", error);
-        alert("تعذّر حذف الطلب");
-      } finally {
-        setLoading(false);
-      }
+    if (!canDeleteOrders(userRole)) {
+      alert('حذف الفاتورة غير مسموح — استخدم «إلغاء» لاسترجاع المخزون أو «تعديل» لتصحيحها.');
+      return;
+    }
+    if (
+      !window.confirm(
+        'حذف هذا الطلب من السجل؟ لا يُسترجَع المخزون أو الكاش تلقائياً — يُفضّل الإلغاء بدلاً من الحذف.'
+      )
+    ) {
+      return;
+    }
+    setLoading(true);
+    try {
+      await deleteDoc(doc(db, 'users', user.uid, 'orders', orderId));
+      alert('تم حذف الطلب. لم يُسترجَع المخزون تلقائياً.');
+    } catch (error) {
+      console.error('Error deleting order:', error);
+      alert('تعذّر حذف الطلب');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLoadMoreOrders = async () => {
+    if (!user?.uid || ordersLoadMoreBusy || !ordersHasMore) return;
+    const last = orders[orders.length - 1];
+    if (!last?.timestamp) return;
+    setOrdersLoadMoreBusy(true);
+    try {
+      const col = collection(db, 'users', user.uid, 'orders');
+      const q = query(col, orderBy('timestamp', 'desc'), startAfter(last.timestamp), limit(ORDERS_PAGE_SIZE));
+      const snap = await getDocs(q);
+      const more = mapOrderSnapshot(snap);
+      setOrders((prev) => {
+        const seen = new Set(prev.map((o) => o.id));
+        const merged = [...prev];
+        more.forEach((o) => {
+          if (!seen.has(o.id)) merged.push(o);
+        });
+        return merged;
+      });
+      setOrdersHasMore(snap.size >= ORDERS_PAGE_SIZE);
+    } catch (error) {
+      console.error('Load more orders failed:', error);
+      alert('تعذّر تحميل المزيد من الطلبات');
+    } finally {
+      setOrdersLoadMoreBusy(false);
     }
   };
 
@@ -1635,15 +1817,19 @@ const AppCore = () => {
           (b) => b.status === 'open' && b.customerId === currentOrder.customerId
         );
       const wasUpdate = !!activeOpenBillId || !!existingForCustomer;
-      await suspendOpenBill(user.uid, {
-        billId: activeOpenBillId || null,
-        knownOpenBillId: existingForCustomer?.id || null,
-        currentOrder,
-        discountAmount: cartDiscountAmount,
-        subtotal: cartSubtotal,
-        total: appSettings.rounding ? Math.round(cartTotal) : cartTotal,
-        actor: sessionActor(),
-      });
+      await gatewaySuspendOpenBill(
+        user.uid,
+        {
+          billId: activeOpenBillId || null,
+          knownOpenBillId: existingForCustomer?.id || null,
+          currentOrder,
+          discountAmount: cartDiscountAmount,
+          subtotal: cartSubtotal,
+          total: appSettings.rounding ? Math.round(cartTotal) : cartTotal,
+          actor: sessionActor(),
+        },
+        businessProfile
+      );
       clearPosCart();
       setShowOpenBillsPanel(false);
       setIsMobileCartOpen(false);
@@ -1671,7 +1857,7 @@ const AppCore = () => {
     if (!user || !activeOpenBillId || openBillBusy) return;
     setOpenBillBusy(true);
     try {
-      await cancelOpenBill(user.uid, activeOpenBillId, { actor: sessionActor() });
+      await gatewayCancelOpenBill(user.uid, activeOpenBillId, { actor: sessionActor() }, businessProfile);
       clearPosCart();
       setShowCancelOpenBillConfirm(false);
       setIsMobileCartOpen(false);
@@ -1820,6 +2006,26 @@ const AppCore = () => {
     }
   };
 
+  const handlePartialReturnSubmit = async (payload) => {
+    if (!user?.uid) throw new Error('يجب تسجيل الدخول');
+    const idem = newIdempotencyKey('ord_ret');
+    const result = await gatewayPartialOrderReturn(
+      user.uid,
+      {
+        ...payload,
+        shiftId: cashShifts.find((s) => s.status === 'open')?.id || null,
+      },
+      { actor: sessionActor(), idempotencyKey: idem },
+      businessProfile
+    );
+    if (result.duplicate) {
+      alert('تم تنفيذ هذا الاسترجاع مسبقاً');
+    } else {
+      alert('تم تسجيل الاسترجاع الجزئي');
+    }
+    return result;
+  };
+
   // Order handlers
   const addToOrder = (product) => {
     const type = getProductType(product);
@@ -1879,8 +2085,26 @@ const AppCore = () => {
   const addItemToCart = (product, selectedAddons, cartItemIdOverride = null) => {
     const addonsPrice = selectedAddons.reduce((sum, addon) => sum + (parseFloat(addon.price) || 0), 0);
     const addonsCost = selectedAddons.reduce((sum, addon) => sum + (parseFloat(addon.cost) || 0), 0);
-    const finalPrice = product.price + addonsPrice;
-    const finalCost = (product.cost || 0) + addonsCost;
+    let basePrice = product.price;
+    let baseCost = product.cost || 0;
+    if (posEmployeeStaffId) {
+      const openShift = cashShifts.find((s) => s.status === 'open');
+      try {
+        assertStaffOnDutyForShift(openShift, posEmployeeStaffId);
+      } catch (e) {
+        alert(e.message);
+        return;
+      }
+      const ep = computeEmployeeUnitPrice(product);
+      if (!ep) {
+        alert(`تعذّر حساب سعر الموظف للصنف «${product.name}»`);
+        return;
+      }
+      basePrice = ep.employeePrice;
+      baseCost = ep.cost;
+    }
+    const finalPrice = basePrice + addonsPrice;
+    const finalCost = baseCost + addonsCost;
     
     // Create a unique ID for cart item based on product ID and selected add-ons
     const cartItemId = cartItemIdOverride ?? (selectedAddons.length > 0 
@@ -1906,7 +2130,9 @@ const AppCore = () => {
           selectedAddons, 
           price: finalPrice,
           originalPrice: product.price,
-          cost: finalCost
+          cost: finalCost,
+          employeeSaleStaffId: posEmployeeStaffId || null,
+          pricingMode: posEmployeeStaffId ? 'employee' : 'retail',
         }]
       }));
     }
@@ -2531,6 +2757,13 @@ const AppCore = () => {
       }
 
       if (isTrustedOrdersEnabled()) {
+        let priorOrderForAudit = null;
+        if (editingOrderId) {
+          priorOrderForAudit = orders.find((o) => o.id === editingOrderId) || null;
+          if (!priorOrderForAudit) {
+            throw new Error('تعذّر تعديل الطلب — حمّل سجل الطلبات ثم أعد المحاولة (مطلوب للتدقيق)');
+          }
+        }
         const trustedPayload = buildTrustedCompleteOrderPayload({
           currentOrder,
           discount: finalDiscount,
@@ -2548,6 +2781,21 @@ const AppCore = () => {
         const trustedResult = await callCompleteOrder(trustedPayload);
         createdOrderId = trustedResult.orderId;
         createdOrderNumber = trustedResult.orderNumber;
+        if (editingOrderId && priorOrderForAudit && !trustedResult.auditRecorded) {
+          const afterSnap = await getDoc(doc(db, 'users', user.uid, 'orders', editingOrderId));
+          if (!afterSnap.exists()) throw new Error('تعذّر توثيق التعديل — الطلب غير موجود بعد الحفظ');
+          const afterData = { id: afterSnap.id, ...afterSnap.data() };
+          await addDoc(collection(db, 'users', user.uid, 'orderEdits'), {
+            orderId: editingOrderId,
+            orderNumber: createdOrderNumber,
+            orderDate: priorOrderForAudit.timestamp || null,
+            editedAt: serverTimestamp(),
+            editedAtMs: Date.now(),
+            editedBy: sessionActor(),
+            changes: diffOrders(priorOrderForAudit, afterData),
+            source: trustedResult.auditRecorded ? 'trusted_engine' : 'trusted_client_fallback',
+          });
+        }
       } else {
       const cost = currentOrder.items.reduce((sum, i) => sum + ((i.cost || 0) * i.quantity), 0);
 
@@ -2681,15 +2929,40 @@ const AppCore = () => {
           }
         }
 
+        let orderCogsTotal = 0;
+        const itemFifoConsumption = new Map();
+        for (const item of currentOrder.items) {
+          const pid = normalizeDocId(item.id);
+          const p = productDocs[pid];
+          if (!p) continue;
+          const pType = getProductType(p.data);
+          if (pType === 'time' || pType === 'service') continue;
+          const units = stockUnitsForItem(item);
+          if (!(units > 0)) continue;
+          const fifo = await consumeInventoryLayersFifo(transaction, user.uid, pid, units);
+          itemFifoConsumption.set(item.cartItemId || item.id, fifo.layers || []);
+          let lineCogs = fifo.cogs || 0;
+          if (fifo.shortfall > 0) {
+            lineCogs += legacyProductCogs(p.data, fifo.shortfall);
+          }
+          orderCogsTotal += lineCogs;
+        }
+        orderCogsTotal = roundMoney(orderCogsTotal);
+
         // 2. LOGIC & WRITES
         
         // Restore stock if editing
         if (existingOrderData && existingOrderData.status !== 'cancelled') {
             for (const item of existingOrderData.items) {
                 const units = stockUnitsForItem(item);
-                if (productDocs[item.id] && units > 0) {
-                    const p = productDocs[item.id];
+                const pid = normalizeDocId(item.id);
+                if (productDocs[pid] && units > 0) {
+                    const p = productDocs[pid];
                     p.data.stock = (p.data.stock || 0) + units;
+                    const pType = getProductType(p.data);
+                    if (pType !== 'time' && pType !== 'service') {
+                      await restoreInventoryLayersLifo(transaction, user.uid, pid, units);
+                    }
                 }
             }
         }
@@ -2776,13 +3049,15 @@ const AppCore = () => {
                 durationMinutes: i.durationMinutes || 0,
                 billableMinutes: i.billableMinutes || 0,
               });
-            } else if (type === 'service') {
+            } else             if (type === 'service') {
               Object.assign(line, {
                 productType: 'service',
                 lineId: i.cartItemId,
                 serviceNote: i.serviceNote || '',
               });
             }
+            const cons = itemFifoConsumption.get(i.cartItemId || i.id);
+            if (cons?.length) line.inventoryConsumption = cons;
             return line;
           }),
           status: finalStatus,
@@ -2799,8 +3074,9 @@ const AppCore = () => {
           taxAmount: 0,
           serviceChargeAmount: 0,
           total,
-          cost,
-          profit: total - cost,
+          cost: orderCogsTotal > 0 ? orderCogsTotal : cost,
+          cogsTotal: orderCogsTotal,
+          profit: total - (orderCogsTotal > 0 ? orderCogsTotal : cost),
           userId: user.uid,
           ...(existingOrderData
             ? {
@@ -2899,11 +3175,16 @@ const AppCore = () => {
 
       if (billIdToClose) {
         try {
-          await closeOpenBill(user.uid, billIdToClose, {
-            orderId: createdOrderId,
-            orderNumber: createdOrderNumber,
-            actor: sessionActor(),
-          });
+          await gatewayCloseOpenBill(
+            user.uid,
+            billIdToClose,
+            {
+              orderId: createdOrderId,
+              orderNumber: createdOrderNumber,
+              actor: sessionActor(),
+            },
+            businessProfile
+          );
         } catch (closeError) {
           alert(`تم حفظ الطلب لكن تعذّر إغلاق الفاتورة المعلقة: ${closeError.message}`);
         }
@@ -2912,6 +3193,14 @@ const AppCore = () => {
       if (wasEditing) {
         setCurrentView('orders');
         alert('تم تحديث الطلب بنجاح');
+        if (user?.uid && createdOrderId) {
+          recordBusinessDayAdjustment(user.uid, {
+            businessDayId: getCashDayKey(new Date()),
+            orderId: createdOrderId,
+            reason: 'تعديل طلب بعد إغلاق يوم العمل',
+            deltaSummary: { orderNumber: createdOrderNumber },
+          }).catch((e) => console.warn('businessDayAdjustment:', e));
+        }
       }
     } catch (error) {
       alert(friendlyError(error, 'تعذّر إتمام الدفع. لم يُحفظ الطلب ولم يُخصم شيء من المخزون. حاول مرة أخرى.'));
@@ -2922,6 +3211,10 @@ const AppCore = () => {
   };
 
   const handleEditOrder = (order) => {
+    if (!canEditOrders(userRole)) {
+      alert('لا تملك صلاحية تعديل الطلبات.');
+      return;
+    }
     setCurrentOrder({
       items: order.items.map(item => ({
         ...item,
@@ -2945,23 +3238,36 @@ const AppCore = () => {
     setCurrentView('pos');
   };
 
-  const confirmDailyCashOpenBusy = async (countedAmount, operatorName, gate) => {
+  const confirmDailyCashOpenBusy = async (countedAmount, operatorName, onDutyStaffIds, gate) => {
     if (cashBusy || !gate?.show) return;
     if (!String(operatorName || '').trim()) {
       alert('أدخل اسم المشغّل');
       return;
     }
+    const duty = Array.isArray(onDutyStaffIds) ? onDutyStaffIds.filter(Boolean) : [];
+    if (duty.length === 0) {
+      alert('اختر موظفاً واحداً على الأقل مداوماً');
+      return;
+    }
     setCashBusy(true);
     try {
       const period = gate.shiftPeriod === 2 ? 2 : 1;
+      const expectedOpeningBalance = gate.firstTime
+        ? Math.max(0, Number(countedAmount) || 0)
+        : Math.max(0, Number(gate.expected) || 0);
       const note = gate.firstTime
         ? 'افتتاح أول — الشفت الأول'
         : period === 2
           ? 'بدء الشفت الثاني'
-          : `بدء الشفت الأول — متوقع ${Number(gate.expected) || 0}`;
+          : `بدء الشفت الأول — متوقع ${expectedOpeningBalance}`;
+      const actor = sessionActor();
+      const roster = buildOnDutyRosterInitial(staffMembers, duty, actor);
       if (isTrustedCashShiftsEnabled()) {
         await callOpenCashShift({
           openingBalance: countedAmount,
+          expectedOpeningBalance,
+          onDutyStaffIds: duty,
+          onDutyStaffRoster: roster,
           shiftPeriod: period,
           operatorName: String(operatorName).trim(),
           notes: note,
@@ -2970,14 +3276,96 @@ const AppCore = () => {
       } else {
         await openCashShift(user.uid, {
           openingBalance: countedAmount,
+          expectedOpeningBalance,
+          onDutyStaffIds: duty,
+          onDutyStaffRoster: roster,
+          staffMembersForSnapshot: staffMembers,
           shiftPeriod: period,
           operatorName: String(operatorName).trim(),
           notes: note,
-          actor: sessionActor(),
+          actor,
         });
       }
     } catch (error) {
       alert(error.message);
+    } finally {
+      setCashBusy(false);
+    }
+  };
+
+  const assignOnDutyForOpenShift = async (onDutyStaffIds) => {
+    const openShift = cashShifts.find((s) => s.status === 'open');
+    if (!openShift || !user?.uid) return;
+    setOnDutyAssignBusy(true);
+    try {
+      await assignOnDutyStaffToOpenShift(user.uid, {
+        shiftId: openShift.id,
+        onDutyStaffIds,
+        actor: sessionActor(),
+        staffMembers,
+      });
+      setOnDutyAssignDismissed(false);
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setOnDutyAssignBusy(false);
+    }
+  };
+
+  const handleQuickCreateStaff = async (form) => {
+    if (!user?.uid) throw new Error('غير مسجّل');
+    setStaffFormBusy(true);
+    try {
+      return await createEmployee(user.uid, form);
+    } finally {
+      setStaffFormBusy(false);
+    }
+  };
+
+  const handleQuickUpdateStaff = async (staffId, form) => {
+    if (!user?.uid) throw new Error('غير مسجّل');
+    setStaffFormBusy(true);
+    try {
+      await updateEmployee(user.uid, staffId, form);
+    } finally {
+      setStaffFormBusy(false);
+    }
+  };
+
+  const handleAddOnDutyStaffMidShift = async (staffId, staffName) => {
+    const openShift = cashShifts.find((s) => s.status === 'open');
+    if (!openShift || !user?.uid) throw new Error('لا توجد وردية مفتوحة');
+    setCashBusy(true);
+    try {
+      await addOnDutyStaffToOpenShift(user.uid, {
+        shiftId: openShift.id,
+        staffId,
+        staffName,
+        actor: sessionActor(),
+        staffMembers,
+      });
+    } catch (error) {
+      alert(error.message);
+      throw error;
+    } finally {
+      setCashBusy(false);
+    }
+  };
+
+  const handleRemoveOnDutyStaffMidShift = async (staffId) => {
+    const openShift = cashShifts.find((s) => s.status === 'open');
+    if (!openShift || !user?.uid) throw new Error('لا توجد وردية مفتوحة');
+    setCashBusy(true);
+    try {
+      await removeOnDutyStaffFromOpenShift(user.uid, {
+        shiftId: openShift.id,
+        staffId,
+        actor: sessionActor(),
+        staffMembers,
+      });
+    } catch (error) {
+      alert(error.message);
+      throw error;
     } finally {
       setCashBusy(false);
     }
@@ -3055,14 +3443,16 @@ const AppCore = () => {
     if (cashBusy) return;
     setCashBusy(true);
     try {
+      let meta = null;
       if (isTrustedCashShiftsEnabled()) {
-        await callCloseCashShift({
+        const res = await callCloseCashShift({
           shiftId: openShift.id,
           actualClosingBalance,
           notes,
         });
+        meta = res || null;
       } else {
-        await closeCashShift(user.uid, {
+        meta = await closeCashShift(user.uid, {
           shiftId: openShift.id,
           actualClosingBalance,
           notes,
@@ -3070,6 +3460,43 @@ const AppCore = () => {
         });
       }
       const period = Number(openShift.shiftPeriod) === 2 ? 2 : 1;
+      if (period === 2 && meta?.shiftPeriod === 2 && user?.uid) {
+        const closedAtMs = Number(meta.closedAtMs) || Date.now();
+        const dayKey = getCashDayKey(new Date(closedAtMs));
+        const orderInDay = (o) => {
+          const ms = Number(o.createdAtMs) || (o.timestamp?.toDate ? o.timestamp.toDate().getTime() : 0);
+          if (!ms) return false;
+          return getCashDayKey(new Date(ms)) === dayKey;
+        };
+        const dayOrders = orders.filter(orderInDay);
+        const dayExpenses = expenses.filter((e) => {
+          const d = parseExpenseDate(e);
+          return d && getCashDayKey(d) === dayKey;
+        });
+        const totalSales = dayOrders
+          .filter((o) => o.status !== 'cancelled')
+          .reduce((s, o) => s + (Number(o.total) || 0), 0);
+        const shift2OpenedMs = Number(openShift.openedAtMs) || 0;
+        const shift1 = cashShifts
+          .filter(
+            (s) =>
+              s.status === 'closed' &&
+              Number(s.shiftPeriod) === 1 &&
+              (Number(s.closedAtMs) || 0) <= shift2OpenedMs + 120000
+          )
+          .sort((a, b) => (Number(b.closedAtMs) || 0) - (Number(a.closedAtMs) || 0))[0];
+        await closeBusinessDay(user.uid, {
+          shift1Id: shift1?.id || null,
+          shift2Id: meta.shiftId || openShift.id,
+          closedAtMs,
+          summary: {
+            businessDayKey: dayKey,
+            totalSales: roundMoney(totalSales),
+            totalExpenses: roundMoney(sumReportExpenses(dayExpenses)),
+            orderCount: dayOrders.length,
+          },
+        });
+      }
       alert(
         period === 1
           ? 'تم إغلاق الشفت الأول ونقل الفائض للخزنة — ستظهر نافذة بدء الشفت الثاني.'
@@ -3086,7 +3513,11 @@ const AppCore = () => {
     if (vaultBusy) return;
     setVaultBusy(true);
     try {
-      await addVaultCapital(user.uid, { amount, note, actor: sessionActor() });
+      await gatewayAddVaultCapital(
+        user.uid,
+        { amount, note, actor: sessionActor(), vaultPin: resolveVaultPin() },
+        businessProfile
+      );
     } catch (error) {
       alert(error.message);
     } finally {
@@ -3098,7 +3529,11 @@ const AppCore = () => {
     if (vaultBusy) return;
     setVaultBusy(true);
     try {
-      await depositVaultManual(user.uid, { amount, note, actor: sessionActor() });
+      await gatewayDepositVaultManual(
+        user.uid,
+        { amount, note, actor: sessionActor(), vaultPin: resolveVaultPin() },
+        businessProfile
+      );
     } catch (error) {
       alert(error.message);
     } finally {
@@ -3617,6 +4052,8 @@ const AppCore = () => {
     [cashShifts, openCashShiftDoc]
   );
 
+  useShiftOverdueWarning({ openShift: openCashShiftDoc });
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: theme.bgWarm }}>
@@ -3747,12 +4184,19 @@ const AppCore = () => {
     { id: 'purchases', icon: ShoppingBag, label: 'المشتريات' },
     { id: 'traders', icon: Truck, label: 'التجار' },
     { id: 'reports', icon: FileText, label: 'التقارير' },
+    { id: 'employees', icon: User, label: 'الموظفين' },
     { id: 'settings', icon: Settings, label: 'الإعدادات' },
   ];
   const navItems = isEmployee
     ? allNavItems.filter((item) => EMPLOYEE_VIEWS.includes(item.id))
     : allNavItems;
   const activeView = isEmployee && !EMPLOYEE_VIEWS.includes(currentView) ? 'pos' : currentView;
+
+  const showOnDutyAssignment =
+    Boolean(user && userRole && openCashShiftDoc) &&
+    !dailyCashGate.show &&
+    openShiftNeedsOnDutyAssignment(openCashShiftDoc) &&
+    !onDutyAssignDismissed;
 
   if (showProfileSetup && !isEmployee) {
     return (
@@ -3834,6 +4278,33 @@ const AppCore = () => {
             </button>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  if (dailyCashGate.show && user && userRole && !showProfileSetup) {
+    return (
+      <div
+        dir="rtl"
+        className="min-h-[100dvh] flex items-center justify-center font-cairo p-4"
+        style={{ backgroundColor: theme.bgWarm }}
+      >
+        <DailyCashOpenModal
+          expected={dailyCashGate.expected}
+          firstTime={dailyCashGate.firstTime}
+          shiftPeriod={dailyCashGate.shiftPeriod}
+          staffMembers={staffMembers}
+          canManageStaff={!isEmployee}
+          onCreateStaff={!isEmployee ? handleQuickCreateStaff : undefined}
+          onUpdateStaff={!isEmployee ? handleQuickUpdateStaff : undefined}
+          staffFormBusy={staffFormBusy}
+          fmtMoney={fmtMoney}
+          theme={theme}
+          busy={cashBusy}
+          onContinue={(amount, operatorName, onDutyStaffIds) =>
+            confirmDailyCashOpenBusy(amount, operatorName, onDutyStaffIds, dailyCashGate)
+          }
+        />
       </div>
     );
   }
@@ -4102,6 +4573,15 @@ const AppCore = () => {
               <h2 className="text-3xl font-bold text-primary mb-1" style={{ fontFamily: FONT_HEADING }}>نظرة عامة</h2>
               <p className="text-gray-500 text-sm">مرحباً، هذا ملخص نشاط متجرك اليوم.</p>
             </div>
+            {orders.length >= ORDERS_DASHBOARD_LIMIT && (
+              <div
+                className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+                style={{ fontFamily: FONT_UI }}
+                role="status"
+              >
+                تم تحميل {ORDERS_DASHBOARD_LIMIT} طلباً كحد أقصى لليوم — إن كان لديك أكثر، قد تكون أرقام لوحة التحكم أقل من الواقع.
+              </div>
+            )}
             
             {/* Key Metrics Row */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5">
@@ -4403,6 +4883,27 @@ const AppCore = () => {
           </div>
         )}
 
+        {activeView === 'employees' && !isEmployee && user?.uid && (
+          <Suspense fallback={<p className="text-sm text-gray-500 p-8">جاري تحميل الموظفين…</p>}>
+            <EmployeesView
+              uid={user.uid}
+              staffMembers={staffMembers}
+              employeeBenefits={employeeBenefits}
+              theme={theme}
+              businessProfile={businessProfile}
+              sessionActor={sessionActor}
+              openShiftId={openCashShiftDoc?.id || null}
+              newIdempotencyKey={newIdempotencyKey}
+              onRefreshStaff={async () => {
+                const snap = await getDocs(
+                  query(collection(db, 'users', user.uid, 'staffMembers'), orderBy('name', 'asc'))
+                );
+                setStaffMembers(uniqueStaffMembersByName(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+              }}
+            />
+          </Suspense>
+        )}
+
         {activeView === 'settings' && (
           <div className="max-w-7xl mx-auto">
             <div className="flex justify-between items-center mb-6">
@@ -4530,6 +5031,49 @@ const AppCore = () => {
             )}
 
             <div className="mt-6 bg-white rounded-xl p-5 shadow-md border border-gray-200">
+              <h3 className="text-base md:text-lg mb-2 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
+                مراقبة قراءات Firestore (جلسة التطبيق)
+              </h3>
+              <p className="text-xs text-gray-500 mb-3">
+                للتشخيص فقط — قارن مع Firebase Console. لا تُسجَّل بيانات عملاء.
+              </p>
+              {(() => {
+                const m = getFirestoreReadMetrics();
+                return (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs" style={{ fontFamily: FONT_UI }}>
+                    <div className="p-2 rounded-lg bg-gray-50">
+                      <div className="text-gray-500">طلبات Query</div>
+                      <div className="font-semibold text-primary">{m.queryRequests}</div>
+                    </div>
+                    <div className="p-2 rounded-lg bg-gray-50">
+                      <div className="text-gray-500">مستندات مُرجَعة</div>
+                      <div className="font-semibold text-primary">{m.documentsReturned}</div>
+                    </div>
+                    <div className="p-2 rounded-lg bg-gray-50">
+                      <div className="text-gray-500">قراءات قابلة للفوترة (تقدير جلسة)</div>
+                      <div className="font-semibold text-primary">{m.billableDocumentReads}</div>
+                      <div className="text-[10px] text-gray-400">ليست بديل Firebase Console</div>
+                    </div>
+                    <div className="p-2 rounded-lg bg-gray-50">
+                      <div className="text-gray-500">Cache hit rate</div>
+                      <div className="font-semibold text-primary">
+                        {m.cacheHitRate == null ? '—' : `${Math.round(m.cacheHitRate * 100)}%`}
+                      </div>
+                    </div>
+                    <div className="p-2 rounded-lg bg-gray-50">
+                      <div className="text-gray-500">Listeners نشطة (SDK)</div>
+                      <div className="font-semibold text-primary">{m.activeRealtimeListeners}</div>
+                    </div>
+                    <div className="p-2 rounded-lg bg-gray-50">
+                      <div className="text-gray-500">Shared pools</div>
+                      <div className="font-semibold text-primary">{getActiveSharedListenerCount?.() ?? 0}</div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className="mt-6 bg-white rounded-xl p-5 shadow-md border border-gray-200">
               <h3 className="text-base md:text-lg mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>إحصائيات</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="text-center p-3 rounded-xl" style={{ backgroundColor: '#f3f4f6' }}>
@@ -4540,7 +5084,7 @@ const AppCore = () => {
                 </div>
                 <div className="text-center p-3 rounded-xl" style={{ backgroundColor: '#f3f4f6' }}>
                   <p className="text-2xl mb-1" style={{ color: theme.text, fontFamily: FONT_UI, fontWeight: 600 }}>
-                    {orders.length}
+                    {settingsOrdersCount ?? orders.length}
                   </p>
                   <p className="text-xs" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>إجمالي الطلبات</p>
                 </div>
@@ -4861,6 +5405,7 @@ const AppCore = () => {
                   <EmployeeBenefitsPanel
                     benefits={employeeBenefits}
                     staffMembers={staffMembers}
+                    openShift={openCashShiftDoc}
                     onCancel={handleCancelEmployeeBenefit}
                     busy={uploadProgress}
                   />
@@ -4920,6 +5465,11 @@ const AppCore = () => {
             )}
             
             {(() => {
+              const reportsPartialWarning = shouldWarnReportsPartialTotals({
+                reportFilter,
+                ordersLoadedCount: orders.length,
+              });
+
               const now = new Date();
               const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
               const yesterdayStart = new Date(todayStart);
@@ -5139,6 +5689,16 @@ const AppCore = () => {
 
               return (
                 <>
+                  {reportsPartialWarning && (
+                    <div
+                      className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+                      style={{ fontFamily: FONT_UI }}
+                      role="status"
+                    >
+                      تنبيه: الأرقام التالية محسوبة من آخر {orders.length} طلباً محمّلةً في Firestore (حد أقصى 400 للفترة).
+                      قد لا تمثل إجمالي الفترة المختارة بالكامل — راجع Firebase Console قبل قرارات مالية.
+                    </div>
+                  )}
                   <div className="flex justify-end mb-6 gap-2 flex-wrap">
                     <button 
                       onClick={handleExportPdf}
@@ -5389,6 +5949,7 @@ const AppCore = () => {
                 </>
               );
             })()}
+            <DailyArchivePanel uid={user?.uid} fmtMoney={fmtMoney} />
           </div>
         )}
 
@@ -5421,6 +5982,9 @@ const AppCore = () => {
                 onCancelBill={() => setShowCancelOpenBillConfirm(true)}
                 onExitBill={exitOpenBillToList}
                 busy={uploadProgress || openBillBusy}
+                posEmployeeStaffId={posEmployeeStaffId}
+                onPosEmployeeStaffIdChange={setPosEmployeeStaffId}
+                employeeStaffOptions={filterStaffByOnDuty(staffMembers, openCashShiftDoc)}
               />
 
               <div className="flex-1 min-w-0 h-full flex flex-col">
@@ -5787,6 +6351,7 @@ const AppCore = () => {
                           >
                             تعديل
                           </button>
+                          {canDeleteOrders(userRole) && (
                           <button
                             onClick={() => handleDeleteOrder(order.id)}
                             className="px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 text-xs font-medium transition-colors"
@@ -5794,6 +6359,7 @@ const AppCore = () => {
                           >
                             <Trash2 size={14} />
                           </button>
+                          )}
                           <button
                             onClick={() => printReceipt(order)}
                             className="px-3 py-1.5 rounded-lg text-white text-xs font-medium flex items-center gap-1"
@@ -5815,6 +6381,18 @@ const AppCore = () => {
                     
                     {expandedOrderIds.includes(order.id) && (
                       <div className="space-y-1.5 border-t border-gray-100 pt-3 mt-3">
+                        {order.status !== 'cancelled' && (
+                          <div className="flex justify-end mb-2">
+                            <button
+                              type="button"
+                              onClick={() => setPartialReturnOrder(order)}
+                              className="px-3 py-1.5 rounded-lg bg-amber-50 text-amber-900 hover:bg-amber-100 text-xs font-medium border border-amber-200"
+                              style={{ fontFamily: FONT_UI }}
+                            >
+                              استرجاع جزئي
+                            </button>
+                          </div>
+                        )}
                         {order.items.map((item, idx) => (
                           <div key={idx} className="p-3 rounded-xl text-sm" style={{ backgroundColor: '#f3f4f6' }}>
                             <div className="flex justify-between mb-1">
@@ -5850,6 +6428,19 @@ const AppCore = () => {
                   No orders found for this period
                 </div>
               )}
+              {ordersHasMore && (orderFilter === 'all' || orderFilter === 'custom') && (
+                <div className="flex justify-center pt-4">
+                  <button
+                    type="button"
+                    disabled={ordersLoadMoreBusy}
+                    onClick={handleLoadMoreOrders}
+                    className="px-5 py-2.5 rounded-xl bg-white border border-gray-200 text-sm font-medium text-primary hover:bg-gray-50 disabled:opacity-60"
+                    style={{ fontFamily: FONT_UI }}
+                  >
+                    {ordersLoadMoreBusy ? 'جاري التحميل…' : 'تحميل المزيد من الطلبات'}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -5867,7 +6458,7 @@ const AppCore = () => {
             onAddCustomerPayment={handleAddCustomerPayment}
             onDeleteCustomer={isEmployee ? undefined : handleDeleteCustomer}
             onExportCustomerFile={exportCustomerFile}
-            onEditOrder={isEmployee ? undefined : handleEditOrder}
+            onEditOrder={canEditOrders(userRole) ? handleEditOrder : undefined}
             onUpdateCustomerTransactions={isEmployee ? undefined : handleUpdateCustomerTransactions}
             businessProfile={businessProfile}
             onExportCustomersLedgerPdf={isEmployee ? undefined : exportCustomersLedgerPdf}
@@ -5883,6 +6474,13 @@ const AppCore = () => {
             lastClosedShift={lastClosedCashShift}
             shiftHistory={cashShifts}
             movements={cashMovements}
+            staffMembers={staffMembers}
+            canManageStaff={!isEmployee}
+            onCreateStaff={!isEmployee ? handleQuickCreateStaff : undefined}
+            onUpdateStaff={!isEmployee ? handleQuickUpdateStaff : undefined}
+            staffFormBusy={staffFormBusy}
+            onAddOnDutyStaff={handleAddOnDutyStaffMidShift}
+            onRemoveOnDutyStaff={handleRemoveOnDutyStaffMidShift}
             fmtMoney={fmtMoney}
             theme={theme}
             FONT_UI={FONT_UI}
@@ -7021,11 +7619,23 @@ const AppCore = () => {
           expenses={expenses}
           theme={theme}
           uploadProgress={uploadProgress}
+          userId={user?.uid}
+          openShiftId={openCashShiftDoc?.id}
+          actor={sessionActor()}
+          businessProfile={businessProfile}
           onClose={() => setSelectedSupplierId(null)}
           onReconcile={handleReconcileSupplier}
           onSubmitPayment={handleSupplierPaymentSubmit}
         />
       )}
+
+      <OrderPartialReturnModal
+        open={Boolean(partialReturnOrder)}
+        order={partialReturnOrder}
+        fmtMoney={fmtMoney}
+        onClose={() => setPartialReturnOrder(null)}
+        onSubmit={handlePartialReturnSubmit}
+      />
 
       {/* Supplier Modal */}
       {showSupplierModal && (
@@ -7392,6 +8002,20 @@ const AppCore = () => {
         onDone={handleAfterSystemReset}
       />
 
+      {showOnDutyAssignment && (
+        <OnDutyAssignmentModal
+          openShift={openCashShiftDoc}
+          staffMembers={staffMembers}
+          canManageStaff={!isEmployee}
+          onCreateStaff={!isEmployee ? handleQuickCreateStaff : undefined}
+          onUpdateStaff={!isEmployee ? handleQuickUpdateStaff : undefined}
+          staffFormBusy={staffFormBusy}
+          busy={onDutyAssignBusy}
+          onSave={assignOnDutyForOpenShift}
+          onDismiss={() => setOnDutyAssignDismissed(true)}
+        />
+      )}
+
       {/* Discount Modal */}
       {showDiscountModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-[80]">
@@ -7461,18 +8085,6 @@ const AppCore = () => {
             </div>
           </div>
         </div>
-      )}
-
-      {dailyCashGate.show && user && userRole && !showProfileSetup && (
-        <DailyCashOpenModal
-          expected={dailyCashGate.expected}
-          firstTime={dailyCashGate.firstTime}
-          shiftPeriod={dailyCashGate.shiftPeriod}
-          fmtMoney={fmtMoney}
-          theme={theme}
-          busy={cashBusy}
-          onContinue={(amount, operatorName) => confirmDailyCashOpenBusy(amount, operatorName, dailyCashGate)}
-        />
       )}
 
     </div>

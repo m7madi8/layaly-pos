@@ -2,11 +2,17 @@ import React, { useEffect, useState } from 'react';
 import { Wallet } from 'lucide-react';
 import { FONT_HEADING, FONT_UI } from '../branding';
 import { shiftPeriodLabel } from '../utils/cashDayGate';
+import ShiftOnDutyStaffPanel from './ShiftOnDutyStaffPanel';
 
 export default function DailyCashOpenModal({
   expected,
   firstTime,
   shiftPeriod = 1,
+  staffMembers = [],
+  canManageStaff = false,
+  onCreateStaff,
+  onUpdateStaff,
+  staffFormBusy = false,
   fmtMoney,
   theme,
   busy,
@@ -14,6 +20,7 @@ export default function DailyCashOpenModal({
 }) {
   const [amount, setAmount] = useState('');
   const [operatorName, setOperatorName] = useState('');
+  const [onDuty, setOnDuty] = useState({});
 
   useEffect(() => {
     setAmount(String(expected ?? 0));
@@ -21,11 +28,14 @@ export default function DailyCashOpenModal({
 
   useEffect(() => {
     setOperatorName('');
+    setOnDuty({});
   }, [shiftPeriod]);
 
   const parsed = parseFloat(amount);
   const validAmount = amount !== '' && Number.isFinite(parsed) && parsed >= 0;
   const validName = operatorName.trim().length >= 2;
+  const onDutyIds = Object.keys(onDuty).filter((id) => onDuty[id]);
+  const validDuty = onDutyIds.length > 0;
   const diff = validAmount ? Math.round((parsed - (Number(expected) || 0)) * 100) / 100 : 0;
   const periodLabel = shiftPeriodLabel(shiftPeriod);
 
@@ -37,7 +47,7 @@ export default function DailyCashOpenModal({
       aria-modal="true"
       aria-labelledby="daily-cash-title"
     >
-      <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200 shadow-2xl">
+      <div className="bg-white rounded-t-2xl sm:rounded-2xl p-6 w-full max-w-md border border-gray-200 shadow-2xl max-h-[92vh] overflow-y-auto">
         <div className="flex items-center gap-3 mb-4">
           <span
             className="w-12 h-12 rounded-2xl grid place-items-center text-white shrink-0"
@@ -50,11 +60,7 @@ export default function DailyCashOpenModal({
               {firstTime ? 'الافتتاح الأول للصندوق' : `بدء ${periodLabel}`}
             </h2>
             <p className="text-xs text-gray-500 mt-0.5" style={{ fontFamily: FONT_UI }}>
-              {shiftPeriod === 2
-                ? 'بعد إغلاق الشفت الأول — أكّد النقد في الصندوق لبدء الشفت الثاني.'
-                : firstTime
-                  ? 'سجّل اسمك والمبلغ في الصندوق لبدء الشفت الأول.'
-                  : 'الشفت الأول — عدّ النقد واضغط استمرار.'}
+              أكّد الصندوق وحدّد الموظفين المداومين (واحد أو أكثر) — لا يمكن استخدام النظام قبل الإكمال.
             </p>
           </div>
         </div>
@@ -94,11 +100,23 @@ export default function DailyCashOpenModal({
           </p>
         )}
 
+        <ShiftOnDutyStaffPanel
+          staffMembers={staffMembers}
+          onDuty={onDuty}
+          setOnDuty={setOnDuty}
+          canManageStaff={canManageStaff}
+          onCreateStaff={onCreateStaff}
+          onUpdateStaff={onUpdateStaff}
+          staffFormBusy={staffFormBusy}
+          showAddToShiftHint
+          maxHeightClass="max-h-44"
+        />
+
         <button
           type="button"
-          disabled={busy || !validAmount || !validName}
-          onClick={() => onContinue(parsed, operatorName.trim())}
-          className="w-full py-3.5 rounded-xl text-white text-sm font-semibold disabled:opacity-50"
+          disabled={busy || !validAmount || !validName || !validDuty}
+          onClick={() => onContinue(parsed, operatorName.trim(), onDutyIds)}
+          className="w-full py-3.5 rounded-xl text-white text-sm font-semibold disabled:opacity-50 mt-2"
           style={{ backgroundColor: theme.primary, fontFamily: FONT_UI }}
         >
           {busy ? 'جاري الفتح…' : 'استمرار وبدء العمل'}

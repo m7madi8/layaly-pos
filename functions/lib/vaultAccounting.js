@@ -44,4 +44,39 @@ function applyVaultCreditInTx(tx, db, uid, vaultSnap, { amount, type, reason, ac
   });
 }
 
-module.exports = { applyVaultCreditInTx, roundMoney };
+function applyVaultDebitInTx(tx, db, uid, vaultSnap, { amount, type, reason, actor, expenseId = null }) {
+  const amt = roundMoney(amount);
+  if (!(amt > 0)) return;
+
+  const vRef = db.doc(`users/${uid}/vault/main`);
+  const exists = vaultSnap && vaultSnap.exists;
+  const prev = exists ? Number(vaultSnap.data().balance) || 0 : 0;
+  if (prev < amt - 0.001) {
+    throw new Error(`رصيد الخزنة غير كافٍ (المتاح ${prev} ₪)`);
+  }
+
+  tx.set(
+    vRef,
+    {
+      balance: roundMoney(prev - amt),
+      updatedAt: serverTimestamp(db),
+      updatedAtMs: Date.now(),
+    },
+    { merge: true }
+  );
+
+  const mRef = db.collection(`users/${uid}/vaultMovements`).doc();
+  tx.set(mRef, {
+    type: type || 'withdrawal',
+    amount: amt,
+    reason: String(reason || '').trim(),
+    expenseId: expenseId || null,
+    shiftId: null,
+    createdBy: actor || null,
+    employeeId: actor?.role || null,
+    createdAt: serverTimestamp(db),
+    createdAtMs: Date.now(),
+  });
+}
+
+module.exports = { applyVaultCreditInTx, applyVaultDebitInTx, roundMoney };

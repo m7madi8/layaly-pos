@@ -79,7 +79,7 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
 
   test('1 open shift with valid opening balance', async () => {
     if (!emulatorUp) return;
-    const { shiftId } = await executeOpenCashShift(db, uid, { openingBalance: 500, shiftPeriod: 1 }, { actor });
+    const { shiftId } = await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 500, shiftPeriod: 1 }, { actor });
     const shift = (await db.doc(`users/${uid}/cashShifts/${shiftId}`).get()).data();
     expect(shift.status).toBe('open');
     expect(shift.openingBalance).toBe(500);
@@ -88,15 +88,15 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
 
   test('2 reject negative opening balance', async () => {
     if (!emulatorUp) return;
-    await expect(executeOpenCashShift(db, uid, { openingBalance: -10 }, { actor })).rejects.toThrow(/رصيد/);
+    await expect(executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: -10 }, { actor })).rejects.toThrow(/رصيد/);
     const shifts = await db.collection(`users/${uid}/cashShifts`).get();
     expect(shifts.size).toBe(0);
   });
 
   test('4 reject second open shift', async () => {
     if (!emulatorUp) return;
-    await executeOpenCashShift(db, uid, { openingBalance: 100 }, { actor });
-    await expect(executeOpenCashShift(db, uid, { openingBalance: 200 }, { actor })).rejects.toThrow(/مفتوحة/);
+    await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 100 }, { actor });
+    await expect(executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 200 }, { actor })).rejects.toThrow(/مفتوحة/);
     const open = await db.collection(`users/${uid}/cashShifts`).where('status', '==', 'open').get();
     expect(open.size).toBe(1);
   });
@@ -104,8 +104,8 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
   test('open idempotency prevents duplicate shifts', async () => {
     if (!emulatorUp) return;
     const key = `open_${Date.now()}`;
-    const a = await executeOpenCashShift(db, uid, { openingBalance: 50, idempotencyKey: key }, { actor });
-    const b = await executeOpenCashShift(db, uid, { openingBalance: 50, idempotencyKey: key }, { actor });
+    const a = await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 50, idempotencyKey: key }, { actor });
+    const b = await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 50, idempotencyKey: key }, { actor });
     expect(b.duplicate).toBe(true);
     expect(b.shiftId).toBe(a.shiftId);
     expect((await db.collection(`users/${uid}/cashShifts`).get()).size).toBe(1);
@@ -113,7 +113,7 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
 
   test('5 cash sale hits open shift', async () => {
     if (!emulatorUp) return;
-    const { shiftId } = await executeOpenCashShift(db, uid, { openingBalance: 100 }, { actor });
+    const { shiftId } = await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 100 }, { actor });
     await executeCompleteOrder(
       db,
       uid,
@@ -135,7 +135,7 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
 
   test('6 mixed payment records cash portion only', async () => {
     if (!emulatorUp) return;
-    await executeOpenCashShift(db, uid, { openingBalance: 0 }, { actor });
+    await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 0 }, { actor });
     await executeCompleteOrder(
       db,
       uid,
@@ -154,7 +154,7 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
 
   test('7 debt and compliment add no cash sales', async () => {
     if (!emulatorUp) return;
-    await executeOpenCashShift(db, uid, { openingBalance: 0 }, { actor });
+    await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 0 }, { actor });
     await executeCompleteOrder(
       db,
       uid,
@@ -183,7 +183,7 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
 
   test('8 cancel refund recorded once', async () => {
     if (!emulatorUp) return;
-    await executeOpenCashShift(db, uid, { openingBalance: 0 }, { actor });
+    await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 0 }, { actor });
     const res = await executeCompleteOrder(
       db,
       uid,
@@ -202,7 +202,7 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
 
   test('9 deposit and withdrawal', async () => {
     if (!emulatorUp) return;
-    const { shiftId } = await executeOpenCashShift(db, uid, { openingBalance: 100 }, { actor });
+    const { shiftId } = await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 100 }, { actor });
     await executeCashShiftMovement(db, uid, { shiftId, type: 'deposit', amount: 50, reason: 'تعبئة' }, { actor });
     await executeCashShiftMovement(db, uid, { shiftId, type: 'withdrawal', amount: 30, reason: 'مصروف' }, { actor });
     const shift = (await db.doc(`users/${uid}/cashShifts/${shiftId}`).get()).data();
@@ -213,7 +213,7 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
 
   test('10 expected closing on close', async () => {
     if (!emulatorUp) return;
-    const { shiftId } = await executeOpenCashShift(db, uid, { openingBalance: 100 }, { actor });
+    const { shiftId } = await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 100 }, { actor });
     await executeCashShiftMovement(db, uid, { shiftId, type: 'deposit', amount: 20 }, { actor });
     await executeCloseCashShift(db, uid, { shiftId, actualClosingBalance: 120 }, { actor });
     const shift = (await db.doc(`users/${uid}/cashShifts/${shiftId}`).get()).data();
@@ -244,7 +244,7 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
 
   test('11b reject sale on closed shift', async () => {
     if (!emulatorUp) return;
-    const { shiftId } = await executeOpenCashShift(db, uid, { openingBalance: 0 }, { actor });
+    const { shiftId } = await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 0 }, { actor });
     await executeCloseCashShift(db, uid, { shiftId, actualClosingBalance: 0 }, { actor });
     await expect(
       executeCompleteOrder(
@@ -262,7 +262,7 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
 
   test('14 movement idempotency', async () => {
     if (!emulatorUp) return;
-    const { shiftId } = await executeOpenCashShift(db, uid, { openingBalance: 0 }, { actor });
+    const { shiftId } = await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 0 }, { actor });
     const key = `mov_${Date.now()}`;
     const a = await executeCashShiftMovement(
       db,
@@ -283,7 +283,7 @@ describe('cash shift lifecycle (Firestore emulator)', () => {
 
   test('15 failed movement leaves shift unchanged', async () => {
     if (!emulatorUp) return;
-    const { shiftId } = await executeOpenCashShift(db, uid, { openingBalance: 10 }, { actor });
+    const { shiftId } = await executeOpenCashShift(db, uid, { onDutyStaffIds: ['on-duty-1'], openingBalance: 10 }, { actor });
     await expect(
       executeCashShiftMovement(db, uid, { shiftId, type: 'withdrawal', amount: 999 }, { actor })
     ).rejects.toThrow(/سالب/);

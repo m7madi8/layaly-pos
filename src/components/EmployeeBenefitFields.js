@@ -5,6 +5,7 @@ import StaffSearchSelect from './StaffSearchSelect';
 import {
   BENEFIT_TYPE_CASH,
   BENEFIT_TYPE_INVENTORY,
+  BENEFIT_TYPE_PERSONAL,
   sumApprovedBenefitsUsage,
   resolveBenefitLines,
   computeBenefitQuota,
@@ -12,6 +13,7 @@ import {
 } from '../utils/employeeBenefitAccounting';
 import { getCashDayKey } from '../utils/cashDayPeriod';
 import { getProductType } from '../utils/productPricing';
+import { filterStaffByOnDuty } from '../utils/shiftOnDuty';
 
 export default function EmployeeBenefitFields({
   expenseForm,
@@ -27,7 +29,11 @@ export default function EmployeeBenefitFields({
 
   const cashDayKey = getCashDayKey();
   const staffId = expenseForm.staffMemberId || '';
-  const selectedStaff = staffMembers.find((s) => s.id === staffId);
+  const eligibleStaff = useMemo(
+    () => filterStaffByOnDuty(staffMembers, openShift),
+    [staffMembers, openShift]
+  );
+  const selectedStaff = eligibleStaff.find((s) => s.id === staffId) || staffMembers.find((s) => s.id === staffId);
 
   const usedToday = useMemo(
     () => sumApprovedBenefitsUsage(employeeBenefits, staffId, cashDayKey),
@@ -91,7 +97,7 @@ export default function EmployeeBenefitFields({
   return (
     <div className="space-y-3 border-t border-gray-100 pt-3">
       <StaffSearchSelect
-        staffMembers={staffMembers}
+        staffMembers={eligibleStaff}
         value={staffId}
         onChange={(id) => setExpenseForm({ ...expenseForm, staffMemberId: id })}
         disabled={disabled}
@@ -100,10 +106,11 @@ export default function EmployeeBenefitFields({
 
       <div>
         <label className="block text-xs mb-1.5 font-medium text-gray-600">نوع الاستفادة</label>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           {[
             { id: BENEFIT_TYPE_CASH, label: 'كاش' },
-            { id: BENEFIT_TYPE_INVENTORY, label: 'أصناف من المقهى' },
+            { id: BENEFIT_TYPE_INVENTORY, label: 'أصناف (حد يومي)' },
+            { id: BENEFIT_TYPE_PERSONAL, label: 'استهلاك شخصي' },
           ].map((opt) => (
             <button
               key={opt.id}
@@ -137,7 +144,8 @@ export default function EmployeeBenefitFields({
         </div>
       )}
 
-      {expenseForm.benefitType === BENEFIT_TYPE_INVENTORY && (
+      {(expenseForm.benefitType === BENEFIT_TYPE_INVENTORY ||
+        expenseForm.benefitType === BENEFIT_TYPE_PERSONAL) && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-gray-600">الأصناف</span>

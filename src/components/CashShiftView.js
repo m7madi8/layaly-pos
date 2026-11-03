@@ -1,8 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Wallet, Plus, Minus, Lock, Unlock, CalendarDays, X, ChevronLeft } from 'lucide-react';
+import { Wallet, Plus, Minus, Lock, Unlock, CalendarDays, X, ChevronLeft, Users } from 'lucide-react';
 import { computeExpectedCash } from '../utils/cashShiftMath';
 import { shiftPeriodLabel } from '../utils/cashDayGate';
 import { listCashMovementsForShift } from '../services/cashShiftService';
+import { buildWorkedStaffSnapshot, getActiveOnDutyIdsFromShift } from '../utils/shiftOnDutyRoster';
+import { uniqueStaffMembersByName } from '../utils/employeeBenefitAccounting';
+import OpenShiftOnDutyManageModal from './OpenShiftOnDutyManageModal';
 
 function shiftDayLabel(shift) {
   const ms = Number(shift.closedAtMs) || Number(shift.openedAtMs) || 0;
@@ -67,6 +70,7 @@ function ShiftDetailModal({
   loading,
   error,
   movementsFallback,
+  staffMembers = [],
   fmtMoney,
   theme,
   FONT_UI,
@@ -92,6 +96,13 @@ function ShiftDetailModal({
     movements.length > 0
       ? movements
       : (movementsFallback || []).filter((m) => m.shiftId === shift.id);
+
+  const workedStaff = useMemo(() => {
+    const snap = buildWorkedStaffSnapshot(shift);
+    if (snap.length > 0) return snap;
+    const byId = Object.fromEntries((staffMembers || []).map((s) => [s.id, s.name]));
+    return (shift.onDutyStaffIds || []).map((id) => ({ staffId: id, name: byId[id] || '—' }));
+  }, [shift, staffMembers]);
 
   return (
     <div
@@ -155,6 +166,25 @@ function ShiftDetailModal({
               </div>
             ))}
           </div>
+
+          {workedStaff.length > 0 && (
+            <div>
+              <p className="text-sm font-semibold mb-2 flex items-center gap-2" style={{ fontFamily: FONT_UI }}>
+                <Users size={16} /> من داوم في الشفت
+              </p>
+              <ul className="flex flex-wrap gap-2">
+                {workedStaff.map((s) => (
+                  <li
+                    key={s.staffId}
+                    className="text-xs px-2.5 py-1 rounded-full bg-[var(--color-bg-warm)] border border-gray-100"
+                    style={{ fontFamily: FONT_UI }}
+                  >
+                    {s.name}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {shift.status === 'closed' && (
             <div className="rounded-xl border border-gray-200 px-4 py-3 space-y-2">
@@ -236,6 +266,13 @@ export default function CashShiftView({
   lastClosedShift,
   shiftHistory = [],
   movements = [],
+  staffMembers = [],
+  canManageStaff = false,
+  onCreateStaff,
+  onUpdateStaff,
+  staffFormBusy = false,
+  onAddOnDutyStaff,
+  onRemoveOnDutyStaff,
   fmtMoney,
   theme,
   FONT_UI,
@@ -249,6 +286,7 @@ export default function CashShiftView({
   const [withdrawReason, setWithdrawReason] = useState('');
   const [depositAmount, setDepositAmount] = useState('');
   const [showCloseModal, setShowCloseModal] = useState(false);
+  const [showOnDutyModal, setShowOnDutyModal] = useState(false);
   const [actualCash, setActualCash] = useState('');
   const [closeNotes, setCloseNotes] = useState('');
   const [detailShift, setDetailShift] = useState(null);
@@ -315,6 +353,13 @@ export default function CashShiftView({
     [movements, openShift]
   );
 
+  const activeOnDutyNames = useMemo(() => {
+    if (!openShift) return [];
+    const ids = getActiveOnDutyIdsFromShift(openShift);
+    const byId = Object.fromEntries(uniqueStaffMembersByName(staffMembers).map((s) => [s.id, s.name]));
+    return ids.map((id) => byId[id] || '—');
+  }, [openShift, staffMembers]);
+
   const dailyRows = useMemo(() => {
     const list = (shiftHistory || [])
       .slice()
@@ -367,13 +412,32 @@ export default function CashShiftView({
         </div>
       ) : (
         <>
-          <div className="mb-4 rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-warm)] px-4 py-3 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-bold text-primary" style={{ fontFamily: FONT_UI }}>
-              {shiftPeriodLabel(openShift.shiftPeriod)}
-            </p>
-            <p className="text-sm text-gray-600" style={{ fontFamily: FONT_UI }}>
-              المشغّل: <strong>{openShift.operatorName || '—'}</strong>
-            </p>
+          <div className="mb-4 rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-warm)] px-4 py-3 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-bold text-primary" style={{ fontFamily: FONT_UI }}>
+                {shiftPeriodLabel(openShift.shiftPeriod)}
+              </p>
+              <p className="text-sm text-gray-600" style={{ fontFamily: FONT_UI }}>
+                المشغّل: <strong>{openShift.operatorName || '—'}</strong>
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-gray-600 flex-1 min-w-0" style={{ fontFamily: FONT_UI }}>
+                المداومون:{' '}
+                <strong>{activeOnDutyNames.length ? activeOnDutyNames.join(' · ') : '—'}</strong>
+              </p>
+              {onAddOnDutyStaff && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setShowOnDutyModal(true)}
+                  className="text-xs font-semibold text-primary px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 shrink-0"
+                  style={{ fontFamily: FONT_UI }}
+                >
+                  إدارة المداومين
+                </button>
+              )}
+            </div>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
             {[
@@ -559,11 +623,39 @@ export default function CashShiftView({
           loading={detailLoading}
           error={detailError}
           movementsFallback={movements}
+          staffMembers={staffMembers}
           fmtMoney={fmtMoney}
           theme={theme}
           FONT_UI={FONT_UI}
           FONT_HEADING={FONT_HEADING}
           onClose={() => setDetailShift(null)}
+        />
+      )}
+
+      {showOnDutyModal && openShift && onAddOnDutyStaff && (
+        <OpenShiftOnDutyManageModal
+          openShift={openShift}
+          staffMembers={staffMembers}
+          canManageStaff={canManageStaff}
+          onCreateStaff={onCreateStaff}
+          onUpdateStaff={onUpdateStaff}
+          staffFormBusy={staffFormBusy}
+          busy={busy}
+          onAddStaff={async (staffId, staffName) => {
+            try {
+              await onAddOnDutyStaff(staffId, staffName);
+            } catch (e) {
+              alert(e.message);
+            }
+          }}
+          onRemoveStaff={async (staffId) => {
+            try {
+              await onRemoveOnDutyStaff?.(staffId);
+            } catch (e) {
+              /* alert shown in handler */
+            }
+          }}
+          onClose={() => setShowOnDutyModal(false)}
         />
       )}
 

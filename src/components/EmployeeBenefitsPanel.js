@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { fmtMoney } from '../i18n';
 import { FONT_UI, FONT_HEADING } from '../branding';
 import { BENEFIT_STATUS_APPROVED, BENEFIT_STATUS_CANCELLED } from '../utils/employeeBenefitAccounting';
+import { filterStaffByOnDuty } from '../utils/shiftOnDuty';
 
 function formatWhen(b) {
   const ms = b.createdAtMs || (b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0);
@@ -12,20 +13,32 @@ function formatWhen(b) {
 export default function EmployeeBenefitsPanel({
   benefits,
   staffMembers,
+  openShift,
   onCancel,
   busy,
 }) {
   const [staffFilter, setStaffFilter] = useState('');
+  const eligibleStaff = useMemo(
+    () => filterStaffByOnDuty(staffMembers, openShift),
+    [staffMembers, openShift]
+  );
   const [typeFilter, setTypeFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
 
   const rows = useMemo(() => {
     let list = [...(benefits || [])];
+    if (openShift?.status === 'open' && eligibleStaff.length > 0) {
+      const onDutySet = new Set(eligibleStaff.map((s) => s.id));
+      list = list.filter((b) => onDutySet.has(b.staffMemberId));
+      if (openShift.id) {
+        list = list.filter((b) => !b.shiftId || b.shiftId === openShift.id);
+      }
+    }
     if (staffFilter) list = list.filter((b) => b.staffMemberId === staffFilter);
     if (typeFilter !== 'all') list = list.filter((b) => b.benefitType === typeFilter);
     if (statusFilter !== 'all') list = list.filter((b) => b.status === statusFilter);
     return list.sort((a, b) => (Number(b.createdAtMs) || 0) - (Number(a.createdAtMs) || 0));
-  }, [benefits, staffFilter, typeFilter, statusFilter]);
+  }, [benefits, staffFilter, typeFilter, statusFilter, openShift, eligibleStaff]);
 
   const handleCancel = async (row) => {
     if (row.status !== BENEFIT_STATUS_APPROVED) return;
@@ -45,8 +58,10 @@ export default function EmployeeBenefitsPanel({
           onChange={(e) => setStaffFilter(e.target.value)}
           className="px-3 py-2 rounded-xl border border-gray-200 text-sm bg-white"
         >
-          <option value="">كل الموظفين</option>
-          {(staffMembers || []).map((s) => (
+          <option value="">
+            {openShift?.status === 'open' ? 'كل المداومين' : 'كل الموظفين'}
+          </option>
+          {eligibleStaff.map((s) => (
             <option key={s.id} value={s.id}>{s.name}</option>
           ))}
         </select>

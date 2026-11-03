@@ -116,6 +116,28 @@ test('hardened mode: client cannot write idempotency records', async () => {
   );
 });
 
+test('hardened mode: cashier cannot write orderReturns', async () => {
+  const adminDb = authedDb('owner6', { role: 'admin' });
+  await assertSucceeds(
+    adminDb.doc('users/owner6').set({ securityMode: 'hardened', businessName: 'Test' })
+  );
+  const cashierDb = authedDb('owner6', { role: 'cashier' });
+  await assertFails(
+    cashierDb.collection('users/owner6/orderReturns').doc('r1').set({ orderId: 'o1', refundAmount: 1 })
+  );
+});
+
+test('hardened mode: cashier cannot create payroll accrual doc', async () => {
+  const adminDb = authedDb('owner7', { role: 'admin' });
+  await assertSucceeds(
+    adminDb.doc('users/owner7').set({ securityMode: 'hardened', businessName: 'Test' })
+  );
+  const cashierDb = authedDb('owner7', { role: 'cashier' });
+  await assertFails(
+    cashierDb.collection('users/owner7/payrollAccruals').doc('p1').set({ amountDue: 100 })
+  );
+});
+
 test('cross-tenant: cannot read another user orders', async () => {
   const a = authedDb('tenantA');
   await assertSucceeds(a.doc('users/tenantA').set({ securityMode: 'legacy' }));

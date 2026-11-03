@@ -15,6 +15,18 @@ const {
   executeCloseCashShift,
   executeCashShiftMovement,
 } = require('./lib/cashShiftEngine');
+const { executePartialOrderReturn } = require('./lib/partialOrderReturnEngine');
+const {
+  createPayrollAccrual,
+  recordPayrollPayment,
+  recordEmployeeAdvance,
+  recordAdvanceRepayment,
+} = require('./lib/payrollEngine');
+const { registerCheck, collectCheck, returnCheck } = require('./lib/checkEngine');
+const { recordSupplierOpeningBalance } = require('./lib/supplierOpeningBalanceEngine');
+const { suspendOpenBill, closeOpenBill, cancelOpenBill } = require('./lib/openBillsEngine');
+const { addVaultCapital, depositVaultManual } = require('./lib/vaultEngine');
+const { executeEmployeeBenefit, cancelEmployeeBenefit } = require('./lib/employeeBenefitEngine');
 const {
   previewTestDataRemoval,
   executeTestDataRemoval,
@@ -23,6 +35,15 @@ const {
 } = require('./lib/testDataRemoval');
 
 initializeApp();
+
+if (process.env.FIRESTORE_EMULATOR_HOST) {
+  if (!String(process.env.EMPLOYEE_PIN || '').trim()) {
+    process.env.EMPLOYEE_PIN = 'gate-emulator-pin-7291';
+  }
+  if (!String(process.env.VAULT_PIN || '').trim()) {
+    process.env.VAULT_PIN = 'gate-vault-8291';
+  }
+}
 
 const region = 'europe-west1';
 
@@ -67,9 +88,9 @@ exports.bootstrapAdminClaim = onCall({ region }, async (request) => {
   return { ok: true, message: 'تم تعيين دور المدير — أعد تسجيل الدخول لتحديث الرمز' };
 });
 
-/** Server-side employee PIN check (secret lives in Functions env, not in the web bundle). */
+/** Server-side employee PIN check — issues cashier JWT via custom token. */
 exports.verifyEmployeePin = onCall({ region }, async (request) => {
-  requireAuth(request);
+  const uid = requireAuth(request);
   const pin = String(request.data?.pin || '').trim();
   const expected = employeePin();
   if (!expected) {
@@ -78,7 +99,17 @@ exports.verifyEmployeePin = onCall({ region }, async (request) => {
   if (!pin || pin !== expected) {
     throw new HttpsError('permission-denied', 'رمز الموظف غير صحيح');
   }
-  return { ok: true };
+  await getAuth().setCustomUserClaims(uid, { role: 'cashier' });
+  const customToken = await getAuth().createCustomToken(uid, { role: 'cashier' });
+  return { ok: true, customToken };
+});
+
+/** Refresh admin role claim + custom token after Firebase password sign-in. */
+exports.refreshAdminSession = onCall({ region }, async (request) => {
+  const uid = requireAuth(request);
+  await getAuth().setCustomUserClaims(uid, { role: 'admin' });
+  const customToken = await getAuth().createCustomToken(uid, { role: 'admin' });
+  return { ok: true, customToken };
 });
 
 /** Server-side vault PIN check — use before vault mutations in Phase 2. */
@@ -329,5 +360,209 @@ exports.cancelOrder = onCall({ region }, async (request) => {
   } catch (err) {
     const msg = err?.message || 'تعذّر إلغاء الطلب';
     throw new HttpsError('failed-precondition', msg);
+  }
+});
+
+exports.partialOrderReturn = onCall({ region }, async (request) => {
+  const db = getFirestore();
+  const { uid, role } = await requireOrderCaller(request, db);
+  const data = request.data || {};
+  assertNoClientRoleFields(data);
+  const actor = buildCallableActor(request, role);
+  try {
+    return await executePartialOrderReturn(db, uid, data, { actor });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر تنفيذ الاسترجاع');
+  }
+});
+
+exports.createPayrollAccrual = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  try {
+    return await createPayrollAccrual(db, uid, request.data || {}, { actor });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر إنشاء استحقاق الراتب');
+  }
+});
+
+exports.recordPayrollPayment = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  try {
+    return await recordPayrollPayment(db, uid, request.data || {}, { actor });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر تسجيل دفع الراتب');
+  }
+});
+
+exports.recordEmployeeAdvance = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  try {
+    return await recordEmployeeAdvance(db, uid, request.data || {}, { actor });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر تسجيل السلفة');
+  }
+});
+
+exports.recordAdvanceRepayment = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  try {
+    return await recordAdvanceRepayment(db, uid, request.data || {}, { actor });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر تسجيل تسديد السلفة');
+  }
+});
+
+exports.registerCheck = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  try {
+    return await registerCheck(db, uid, request.data || {}, { actor });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر تسجيل الشيك');
+  }
+});
+
+exports.collectCheck = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  try {
+    return await collectCheck(db, uid, String(request.data?.checkId || ''), {
+      actor,
+      shiftId: request.data?.shiftId,
+    });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر تحصيل الشيك');
+  }
+});
+
+exports.returnCheck = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  try {
+    return await returnCheck(db, uid, String(request.data?.checkId || ''), {
+      actor,
+      reason: request.data?.reason,
+    });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر إرجاع الشيك');
+  }
+});
+
+exports.recordSupplierOpeningBalance = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  const supplierId = String(request.data?.supplierId || '').trim();
+  if (!supplierId) throw new HttpsError('invalid-argument', 'معرّف التاجر مطلوب');
+  try {
+    return await recordSupplierOpeningBalance(db, uid, supplierId, request.data || {}, { actor });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر تسجيل الرصيد الافتتاحي');
+  }
+});
+
+exports.suspendOpenBill = onCall({ region }, async (request) => {
+  const db = getFirestore();
+  const { uid, role } = await requireOrderCaller(request, db);
+  const data = request.data || {};
+  assertNoClientRoleFields(data);
+  const actor = buildCallableActor(request, role);
+  try {
+    return await suspendOpenBill(db, uid, data, { actor });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر حفظ الفاتورة المعلقة');
+  }
+});
+
+exports.closeOpenBill = onCall({ region }, async (request) => {
+  const db = getFirestore();
+  const { uid, role } = await requireOrderCaller(request, db);
+  const data = request.data || {};
+  assertNoClientRoleFields(data);
+  const actor = buildCallableActor(request, role);
+  const billId = String(data.billId || '').trim();
+  if (!billId) throw new HttpsError('invalid-argument', 'معرّف الفاتورة المعلقة مطلوب');
+  try {
+    return await closeOpenBill(db, uid, billId, {
+      orderId: data.orderId,
+      orderNumber: data.orderNumber,
+      actor,
+    });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر إغلاق الفاتورة المعلقة');
+  }
+});
+
+exports.cancelOpenBill = onCall({ region }, async (request) => {
+  const db = getFirestore();
+  const { uid, role } = await requireOrderCaller(request, db);
+  const billId = String(request.data?.billId || '').trim();
+  if (!billId) throw new HttpsError('invalid-argument', 'معرّف الفاتورة المعلقة مطلوب');
+  const actor = buildCallableActor(request, role);
+  try {
+    return await cancelOpenBill(db, uid, billId, { actor });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر إلغاء الفاتورة المعلقة');
+  }
+});
+
+exports.recordEmployeeBenefit = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  assertNoClientRoleFields(request.data || {});
+  try {
+    return await executeEmployeeBenefit(db, uid, request.data || {}, { actor });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر تسجيل الاستفادة');
+  }
+});
+
+exports.cancelEmployeeBenefit = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  const benefitId = String(request.data?.benefitId || '').trim();
+  if (!benefitId) throw new HttpsError('invalid-argument', 'معرّف الاستفادة مطلوب');
+  try {
+    return await cancelEmployeeBenefit(db, uid, benefitId, {
+      actor,
+      reason: request.data?.reason,
+    });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر إلغاء الاستفادة');
+  }
+});
+
+exports.vaultAddCapital = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  try {
+    return await addVaultCapital(db, uid, request.data || {}, { actor, expectedVaultPin: vaultPin() });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر إضافة رأس المال');
+  }
+});
+
+exports.vaultManualDeposit = onCall({ region }, async (request) => {
+  const uid = requireAdminClaim(request);
+  const db = getFirestore();
+  const actor = buildCallableActor(request, 'admin');
+  try {
+    return await depositVaultManual(db, uid, request.data || {}, { actor, expectedVaultPin: vaultPin() });
+  } catch (err) {
+    mapPrecondition(err, 'تعذّر الإيداع في الخزنة');
   }
 });

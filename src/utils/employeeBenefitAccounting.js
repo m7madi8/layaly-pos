@@ -10,6 +10,7 @@ export const EMPLOYEE_BENEFIT_SECTION = 'employee_benefit';
 export const EMPLOYEE_BENEFIT_CATEGORY = 'EmployeeBenefit';
 export const BENEFIT_TYPE_CASH = 'cash';
 export const BENEFIT_TYPE_INVENTORY = 'inventory';
+export const BENEFIT_TYPE_PERSONAL = 'personal_consumption';
 export const BENEFIT_STATUS_APPROVED = 'approved';
 export const BENEFIT_STATUS_CANCELLED = 'cancelled';
 
@@ -79,7 +80,9 @@ export function buildEmployeeBenefitExpenseFields(benefit, { payDate, uid, benef
   const description =
     benefitType === BENEFIT_TYPE_CASH
       ? `استفادة موظف (كاش) — ${staffName}`
-      : `استفادة موظف (أصناف) — ${staffName}`;
+      : benefitType === BENEFIT_TYPE_PERSONAL
+        ? `استهلاك شخصي — ${staffName}`
+        : `استفادة موظف (أصناف) — ${staffName}`;
 
   return {
     amount: totalValue,
@@ -94,7 +97,13 @@ export function buildEmployeeBenefitExpenseFields(benefit, { payDate, uid, benef
     benefitId: benefitId || benefit.id,
     benefitNumber: benefit.benefitNumber,
     benefitType,
-    paymentMethod: benefitType === BENEFIT_TYPE_CASH ? 'Cash' : 'Inventory',
+    paymentMethod:
+      benefitType === BENEFIT_TYPE_CASH
+        ? 'Cash'
+        : benefitType === BENEFIT_TYPE_PERSONAL
+          ? 'PersonalConsumption'
+          : 'Inventory',
+    cogsAmount: benefit.cogsAmount != null ? roundMoney(benefit.cogsAmount) : null,
     recordedBy: benefit.recordedBy || null,
     userId: uid,
     cancelled: benefit.status === BENEFIT_STATUS_CANCELLED,
@@ -163,6 +172,52 @@ export function resolveBenefitLines(productsById, rawLines) {
   return { lines, totalValue: total };
 }
 
+/** Personal consumption — valued at selling price (counts as operating expense, not benefit quota). */
+export function lineSellPriceForPersonal(product, line) {
+  const type = getProductType(product);
+  const qty = Math.max(0, Number(line.quantity) || 0);
+  if (type === 'time') throw new Error(`صنف «${product.name}» بالوقت غير مدعوم للاستهلاك الشخصي`);
+  if (type === 'weight') {
+    const grams = Number(line.weightGrams) || 0;
+    if (!(grams > 0)) throw new Error(`أدخل وزن صنف «${product.name}»`);
+    const unitG = Math.max(1, Number(product.weightUnitGrams) || 1);
+    const sellPerG = (Number(product.price) || 0) / unitG;
+    return roundMoney(sellPerG * grams * (qty > 0 ? qty : 1));
+  }
+  if (!(qty > 0)) throw new Error(`أدخل كمية صنف «${product.name}»`);
+  return roundMoney((Number(product.price) || 0) * qty);
+}
+
+export function resolvePersonalConsumptionLines(productsById, rawLines) {
+  const lines = [];
+  let total = 0;
+  for (const raw of rawLines || []) {
+    const productId = String(raw.productId || '').trim();
+    const product = productsById[productId];
+    if (!product) throw new Error('صنف غير موجود');
+    const lineTotal = lineSellPriceForPersonal(product, raw);
+    if (!(lineTotal > 0)) throw new Error(`سعر بيع «${product.name}» غير صالح`);
+    const type = getProductType(product);
+    lines.push({
+      productId,
+      name: product.name,
+      productType: type,
+      quantity: Number(raw.quantity) || 1,
+      weightGrams: type === 'weight' ? Number(raw.weightGrams) || 0 : null,
+      sellUnitPrice: type === 'weight' ? null : roundMoney(Number(product.price) || 0),
+      lineTotal,
+      stockUnits: stockUnitsForItem({
+        ...product,
+        quantity: Number(raw.quantity) || 1,
+        weightGrams: raw.weightGrams,
+      }),
+    });
+    total = roundMoney(total + lineTotal);
+  }
+  if (!lines.length) throw new Error('أضف صنفاً واحداً على الأقل');
+  return { lines, totalValue: total };
+}
+
 export function sumApprovedBenefitsUsage(benefits, staffMemberId, cashDayKey) {
   if (!Array.isArray(benefits)) return 0;
   return roundMoney(
@@ -171,7 +226,8 @@ export function sumApprovedBenefitsUsage(benefits, staffMemberId, cashDayKey) {
         (b) =>
           b.staffMemberId === staffMemberId &&
           b.cashDayKey === cashDayKey &&
-          b.status === BENEFIT_STATUS_APPROVED
+          b.status === BENEFIT_STATUS_APPROVED &&
+          b.benefitType !== BENEFIT_TYPE_PERSONAL
       )
       .reduce((s, b) => s + (Number(b.totalValue) || 0), 0)
   );
@@ -225,12 +281,16 @@ export function validateBenefitInput({
     const resolved = resolveBenefitLines(productsById, inventoryLines);
     lines = resolved.lines;
     proposed = resolved.totalValue;
+  } else if (benefitType === BENEFIT_TYPE_PERSONAL) {
+    const resolved = resolvePersonalConsumptionLines(productsById, inventoryLines);
+    lines = resolved.lines;
+    proposed = resolved.totalValue;
   } else {
     throw new Error('نوع الاستفادة غير صالح');
   }
 
   const quota = computeBenefitQuota({ limit, used: usedToday, proposed });
-  if (quota.exceeds) {
+  if (benefitType !== BENEFIT_TYPE_PERSONAL && quota.exceeds) {
     if (!override) {
       throw new Error(
         `تجاوز حد الاستفادة. الحد ${limit} ₪ — المستخدم ${quota.used} ₪ — المتبقي ${quota.remaining} ₪`
