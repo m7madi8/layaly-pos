@@ -81,7 +81,7 @@ import { externalHookahCartItemId, selectHookahExternalCheckoutProducts } from '
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory, isSystemServiceProduct, buildSystemServiceProduct } from './productAssets';
 import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, Landmark, PauseCircle, Check } from 'lucide-react';
 import { friendlyError } from './utils/friendlyError';
-import { normalizeDocId } from './utils/firestoreIds';
+import { normalizeDocId, assertDocId, assertFirestoreDocRef } from './utils/firestoreIds';
 
 import {
   auth,
@@ -2149,11 +2149,16 @@ const AppCore = () => {
           const restoreByProduct = {};
           for (const item of orderData.items) {
             const units = stockUnitsForItem(item);
-            if (units > 0) restoreByProduct[item.id] = (restoreByProduct[item.id] || 0) + units;
+            const pid = normalizeDocId(item.id);
+            if (!pid || !(units > 0)) continue;
+            restoreByProduct[pid] = (restoreByProduct[pid] || 0) + units;
           }
           const productUpdates = [];
           for (const [productId, units] of Object.entries(restoreByProduct)) {
-            const productRef = doc(db, 'users', user.uid, 'products', productId);
+            const productRef = assertFirestoreDocRef(
+              doc(db, 'users', user.uid, 'products', productId),
+              `معرّف صنف غير صالح في الطلب #${orderData.orderNumber || '—'}`
+            );
             const productDoc = await transaction.get(productRef);
             if (productDoc.exists()) {
               const currentStock = productDoc.data().stock || 0;
@@ -2190,9 +2195,15 @@ const AppCore = () => {
             transaction.update(update.ref, { stock: update.newStock });
           }
           for (const item of orderData.items) {
-            if (item.sessionId) {
-              transaction.update(playstationSessionRef(user.uid, item.sessionId), { billed: false, orderId: null, orderNumber: null });
-            }
+            const sessionId = normalizeDocId(item.sessionId);
+            if (!sessionId) continue;
+            transaction.update(
+              assertFirestoreDocRef(
+                playstationSessionRef(user.uid, sessionId),
+                'جلسة البلايستيشن غير صالحة في الطلب'
+              ),
+              { billed: false, orderId: null, orderNumber: null }
+            );
           }
 
           if (cashShiftCtx) {
@@ -3014,6 +3025,8 @@ const AppCore = () => {
       const cost = currentOrder.items.reduce((sum, i) => sum + ((i.cost || 0) * i.quantity), 0);
 
       await runTransaction(db, async (transaction) => {
+        const ownerUid = assertDocId(user?.uid, 'يجب تسجيل الدخول لحفظ الطلب');
+        if (!db) throw new Error('قاعدة البيانات غير جاهزة — حدّث الصفحة وأعد المحاولة');
         // 1. READS
         let orderNumber;
         let newOrderRef;
@@ -3021,18 +3034,24 @@ const AppCore = () => {
         let currentCount = 0;
 
         if (editingOrderId) {
-            newOrderRef = doc(db, 'users', user.uid, 'orders', editingOrderId);
+            newOrderRef = assertFirestoreDocRef(
+              doc(db, 'users', ownerUid, 'orders', editingOrderId),
+              'مرجع تعديل الطلب غير صالح'
+            );
             const existingDoc = await transaction.get(newOrderRef);
             if (!existingDoc.exists()) throw new Error('الطلب غير موجود');
             existingOrderData = existingDoc.data();
             orderNumber = existingOrderData.orderNumber;
         } else {
-            const counterRef = doc(db, 'users', user.uid, 'counters', 'orders');
+            const counterRef = assertFirestoreDocRef(
+              doc(db, 'users', ownerUid, 'counters', 'orders'),
+              'عداد الطلبات غير متاح'
+            );
             const counterDoc = await transaction.get(counterRef);
             if (counterDoc.exists()) {
               currentCount = counterDoc.data().count || 0;
             }
-            newOrderRef = doc(collection(db, 'users', user.uid, 'orders'));
+            newOrderRef = doc(collection(db, 'users', ownerUid, 'orders'));
         }
         
         // Collect all product IDs to read (both new and old items)
@@ -3058,7 +3077,10 @@ const AppCore = () => {
 
         const productDocs = {};
         for (const pid of productIds) {
-          const pRef = doc(db, 'users', user.uid, 'products', pid);
+          const pRef = assertFirestoreDocRef(
+            doc(db, 'users', ownerUid, 'products', pid),
+            `معرّف الصنف «${pid}» غير صالح — أزل البند وأضفه من القائمة`
+          );
           const cached = productsById.get(pid);
           if (cached && (getProductType(cached) === 'time' || getProductType(cached) === 'service')) {
             productDocs[pid] = { ref: pRef, data: { ...cached } };
@@ -3076,7 +3098,8 @@ const AppCore = () => {
           const pData = productDocs[pid]?.data || productsById.get(pid);
           if (pData?.ingredients) {
             pData.ingredients.forEach((ing) => {
-              if (ing.ingredientId) ingredientIds.add(ing.ingredientId);
+              const ingKey = normalizeDocId(ing.ingredientId);
+              if (ingKey) ingredientIds.add(ingKey);
             });
           }
         });
@@ -3086,7 +3109,10 @@ const AppCore = () => {
         for (const ingId of ingredientIds) {
             const safeIngId = normalizeDocId(ingId);
             if (!safeIngId) continue;
-            const ingRef = doc(db, 'users', user.uid, 'ingredients', safeIngId);
+            const ingRef = assertFirestoreDocRef(
+              doc(db, 'users', ownerUid, 'ingredients', safeIngId),
+              'معرّف مكوّن غير صالح'
+            );
             const ingDoc = await transaction.get(ingRef);
             if (ingDoc.exists()) {
                 ingredientDocs[safeIngId] = { ref: ingRef, data: ingDoc.data() };
@@ -3104,7 +3130,12 @@ const AppCore = () => {
         for (const sessionId of newSessionIds) {
           const safeSessionId = normalizeDocId(sessionId);
           if (!safeSessionId) continue;
-          const sSnap = await transaction.get(playstationSessionRef(user.uid, safeSessionId));
+          const sSnap = await transaction.get(
+            assertFirestoreDocRef(
+              playstationSessionRef(ownerUid, safeSessionId),
+              'جلسة البلايستيشن غير صالحة'
+            )
+          );
           if (!sSnap.exists()) throw new Error('جلسة البلايستيشن غير موجودة');
           const s = sSnap.data();
           if (s.status !== 'ended') throw new Error('أنهِ جلسة البلايستيشن قبل حفظ الطلب');
@@ -3128,7 +3159,10 @@ const AppCore = () => {
         if (customerId && debtAmount > 0) trackCustomerId(customerId);
         const customerDocs = {};
         for (const cid of affectedCustomerIds) {
-          const cRef = doc(db, 'users', user.uid, 'customers', cid);
+          const cRef = assertFirestoreDocRef(
+            doc(db, 'users', ownerUid, 'customers', cid),
+            'معرّف عميل غير صالح'
+          );
           const cSnap = await transaction.get(cRef);
           if (cSnap.exists()) customerDocs[cid] = { ref: cRef, data: cSnap.data() };
           else if (cid === customerId && debtAmount > 0) throw new Error('العميل غير موجود');
@@ -3137,7 +3171,7 @@ const AppCore = () => {
         let cashShiftCtx = null;
         if (!editingOrderId && cashPaid > 0) {
           const openShiftIdForTx = cashShifts.find((s) => s.status === 'open')?.id || null;
-          cashShiftCtx = await readOpenCashShiftInTransaction(transaction, user.uid, openShiftIdForTx);
+          cashShiftCtx = await readOpenCashShiftInTransaction(transaction, ownerUid, openShiftIdForTx);
           if (!cashShiftCtx) {
             throw new Error('لا توجد وردية كاش مفتوحة لتسجيل النقد — افتح الوردية من شاشة الكاش أولاً');
           }
@@ -3158,7 +3192,7 @@ const AppCore = () => {
             p.data.stock = (p.data.stock || 0) + units;
             const pType = getProductType(p.data);
             if (pType !== 'time' && pType !== 'service' && useClientInventoryLayers) {
-              const restorePlan = await planInventoryLayersLifoRestore(transaction, user.uid, pid, units);
+              const restorePlan = await planInventoryLayersLifoRestore(transaction, ownerUid, pid, units);
               inventoryLayerUpdates.push(...restorePlan.updates);
             }
           }
@@ -3174,7 +3208,7 @@ const AppCore = () => {
           if (!(units > 0)) continue;
           let fifoPlan;
           if (useClientInventoryLayers) {
-            fifoPlan = await planInventoryLayersFifo(transaction, user.uid, pid, units);
+            fifoPlan = await planInventoryLayersFifo(transaction, ownerUid, pid, units);
             inventoryLayerUpdates.push(...fifoPlan.updates);
           } else {
             fifoPlan = {
@@ -3235,7 +3269,9 @@ const AppCore = () => {
         applyInventoryLayerUpdates(transaction, inventoryLayerUpdates);
         for (const pid of productIds) {
             if (productDocs[pid] && getProductType(productDocs[pid].data) !== 'time' && getProductType(productDocs[pid].data) !== 'service') {
-                transaction.update(productDocs[pid].ref, { stock: productDocs[pid].data.stock });
+                transaction.update(assertFirestoreDocRef(productDocs[pid].ref, 'مرجع صنف غير صالح'), {
+                  stock: productDocs[pid].data.stock,
+                });
             }
         }
 
@@ -3243,7 +3279,9 @@ const AppCore = () => {
         for (const ingId of ingredientIds) {
             const ingKey = normalizeDocId(ingId);
             if (ingKey && ingredientDocs[ingKey]) {
-                transaction.update(ingredientDocs[ingKey].ref, { stock: ingredientDocs[ingKey].data.stock });
+                transaction.update(assertFirestoreDocRef(ingredientDocs[ingKey].ref, 'مرجع مكوّن غير صالح'), {
+                  stock: ingredientDocs[ingKey].data.stock,
+                });
             }
         }
 
@@ -3251,7 +3289,10 @@ const AppCore = () => {
         if (!editingOrderId) {
             const newCount = currentCount + 1;
             orderNumber = String(newCount).padStart(4, '0');
-            const counterRef = doc(db, 'users', user.uid, 'counters', 'orders');
+            const counterRef = assertFirestoreDocRef(
+              doc(db, 'users', ownerUid, 'counters', 'orders'),
+              'عداد الطلبات غير متاح'
+            );
             transaction.set(counterRef, { count: newCount }, { merge: true });
         }
 
@@ -3310,7 +3351,7 @@ const AppCore = () => {
           cost: orderCogsTotal > 0 ? orderCogsTotal : cost,
           cogsTotal: orderCogsTotal,
           profit: total - (orderCogsTotal > 0 ? orderCogsTotal : cost),
-          userId: user.uid,
+          userId: ownerUid,
           ...(existingOrderData
             ? {
                 timestamp: existingOrderData.timestamp || serverTimestamp(),
@@ -3322,10 +3363,10 @@ const AppCore = () => {
               }
             : { timestamp: serverTimestamp(), createdAt: serverTimestamp() }),
         };
-        transaction.set(newOrderRef, orderPayload, { merge: true });
+        transaction.set(assertFirestoreDocRef(newOrderRef, 'مرجع الطلب غير صالح'), orderPayload, { merge: true });
 
         if (existingOrderData) {
-          transaction.set(doc(collection(db, 'users', user.uid, 'orderEdits')), {
+          transaction.set(doc(collection(db, 'users', ownerUid, 'orderEdits')), {
             orderId: newOrderRef.id,
             orderNumber,
             orderDate: existingOrderData.timestamp || null,
@@ -3339,7 +3380,9 @@ const AppCore = () => {
         for (const sessionId of newSessionIds) {
           const safeSessionId = normalizeDocId(sessionId);
           if (!safeSessionId) continue;
-          transaction.update(playstationSessionRef(user.uid, safeSessionId), {
+          transaction.update(
+            assertFirestoreDocRef(playstationSessionRef(ownerUid, safeSessionId), 'جلسة البلايستيشن غير صالحة'),
+            {
             billed: true,
             orderId: newOrderRef.id,
             orderNumber,
@@ -3348,17 +3391,26 @@ const AppCore = () => {
         for (const sessionId of oldSessionIds) {
           const safeSessionId = normalizeDocId(sessionId);
           if (!safeSessionId || newSessionIds.has(sessionId)) continue;
-          transaction.update(playstationSessionRef(user.uid, safeSessionId), { billed: false, orderId: null, orderNumber: null });
+          transaction.update(
+            assertFirestoreDocRef(playstationSessionRef(ownerUid, safeSessionId), 'جلسة البلايستيشن غير صالحة'),
+            { billed: false, orderId: null, orderNumber: null }
+          );
         }
 
         for (const movementId of currentOrder.assetMovementIds || []) {
           const safeMovementId = normalizeDocId(movementId);
           if (!safeMovementId) continue;
-          transaction.update(assetMovementRef(user.uid, safeMovementId), { orderId: newOrderRef.id, orderNumber });
+          transaction.update(
+            assertFirestoreDocRef(
+              assetMovementRef(ownerUid, safeMovementId),
+              'حركة أصل خارجي غير صالحة'
+            ),
+            { orderId: newOrderRef.id, orderNumber }
+          );
         }
 
         if (!editingOrderId && cashPaid > 0 && cashShiftCtx) {
-          await recordCashSaleInTransaction(transaction, user.uid, {
+          await recordCashSaleInTransaction(transaction, ownerUid, {
             amount: cashPaid,
             orderId: newOrderRef.id,
             orderNumber,
@@ -3378,7 +3430,7 @@ const AppCore = () => {
           const entry = keepsDebt
             ? { id: `tx_${editedAtMs}`, type: 'order_debt', orderNumber, amount: debtAmount, cashPaid, total }
             : null;
-          transaction.update(customerDoc.ref, {
+          transaction.update(assertFirestoreDocRef(customerDoc.ref, 'مرجع عميل غير صالح'), {
             balance: Math.round(((Number(customerDoc.data.balance) || 0) + delta) * 100) / 100,
             transactions: replaceOrderDebtEntry(customerDoc.data.transactions, orderNumber, entry),
             updatedAt: serverTimestamp(),

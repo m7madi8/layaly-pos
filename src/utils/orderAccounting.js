@@ -4,6 +4,8 @@
  * فيبقى الرصيد = مجموع ديون الطلبات الحالية − الدفعات، مهما تغيّر العميل أو طريقة الدفع.
  */
 
+import { normalizeDocId } from './firestoreIds';
+
 const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 /** الدين الذي يضيفه الطلب لحساب العميل — الطلب الملغى لا أثر له */
@@ -16,8 +18,9 @@ export function effectiveDebt(order) {
 export function debtDeltasByCustomer(oldOrder, newOrder) {
   const deltas = {};
   const add = (customerId, amount) => {
-    if (!customerId || !amount) return;
-    deltas[customerId] = money((deltas[customerId] || 0) + amount);
+    const id = normalizeDocId(customerId);
+    if (!id || !amount) return;
+    deltas[id] = money((deltas[id] || 0) + amount);
   };
   add(oldOrder?.customerId, -effectiveDebt(oldOrder));
   add(newOrder?.customerId, effectiveDebt(newOrder));

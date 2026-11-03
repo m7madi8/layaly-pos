@@ -21,3 +21,16 @@ export function assertDocId(id, label) {
   if (!normalized) throw new Error(label || 'معرّف غير صالح');
   return normalized;
 }
+
+/** Firestore SDK throws "reading 'path'" when transaction.get/update receives a bad ref. */
+export function assertFirestoreDocRef(ref, label) {
+  const path = ref?.path;
+  if (typeof path !== 'string' || !path.trim()) {
+    throw new Error(label || 'مرجع Firestore غير صالح — حدّث الصفحة وأعد إضافة الأصناف');
+  }
+  const segments = path.split('/').filter((s) => s.length > 0);
+  if (segments.length < 2 || segments.some((s) => !String(s).trim())) {
+    throw new Error(label || 'مسار مستند غير صالح — حدّث الصفحة وأعد المحاولة');
+  }
+  return ref;
+}

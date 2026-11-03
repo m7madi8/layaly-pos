@@ -241,14 +241,13 @@ async function appendMovementInTx(
 /** Record cash sale inside an existing Firestore transaction (order + shift atomicity). */
 export async function recordCashSaleInTransaction(tx, uid, { amount, orderId, orderNumber, actor, shiftId, shiftSnap }) {
   if (!(Number(amount) > 0)) return null;
-  let shiftDocId = shiftId;
-  let snap = shiftSnap;
-  if (!snap) {
-    const ctx = await readOpenCashShiftInTransaction(tx, uid, shiftId || null);
-    if (!ctx) return null;
-    shiftDocId = ctx.shiftId;
-    snap = ctx.shiftSnap;
+  const snap = shiftSnap;
+  if (!snap?.exists?.()) {
+    throw new Error(
+      'وردية الكاش غير محمّلة داخل معاملة الطلب — أغلق نافذة الدفع، تأكد من فتح الوردية، ثم أعد المحاولة'
+    );
   }
+  const shiftDocId = shiftId || snap.id;
   await appendMovementInTx(tx, uid, shiftDocId, snap, {
     type: 'sale',
     amount,

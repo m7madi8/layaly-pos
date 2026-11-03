@@ -1,4 +1,5 @@
 import { db, doc, collection, serverTimestamp, query, where } from '../firebaseClient';
+import { assertFirestoreDocRef } from '../utils/firestoreIds';
 import { roundMoney } from '../utils/employeeBenefitAccounting';
 
 const layersCol = (uid) => collection(db, 'users', uid, 'inventoryLayers');
@@ -11,7 +12,7 @@ function layerQuery(uid, productId) {
 export function applyInventoryLayerUpdates(tx, updates) {
   for (const u of updates || []) {
     if (!u?.ref || typeof u.ref.path !== 'string') continue;
-    tx.update(u.ref, {
+    tx.update(assertFirestoreDocRef(u.ref, 'طبقة مخزون غير صالحة'), {
       remainingQuantity: u.remainingQuantity,
       updatedAt: serverTimestamp(),
     });

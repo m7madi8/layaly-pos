@@ -14,6 +14,14 @@ export function friendlyError(error, fallback) {
   ) {
     return 'كثرة الطلبات على قاعدة البيانات — انتظر 30–60 ثانية، أغلق التبويبات المكررة، ثم أعد المحاولة مرة واحدة.';
   }
+  if (/reading 'path'|invalid document reference/i.test(msg)) {
+    // eslint-disable-next-line no-console
+    console.error(error);
+    return (
+      'تعذّر حفظ الطلب بسبب بيانات غير متزامنة — حدّث الصفحة (Ctrl+F5)، أفرغ السلة، وأعد إضافة الأصناف. ' +
+      'للدفع النقدي تأكد أن وردية الكاش مفتوحة.'
+    );
+  }
   if (ARABIC.test(msg) && !TECHNICAL.test(msg)) return msg;
   // eslint-disable-next-line no-console
   console.error(error);
