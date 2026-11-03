@@ -4,6 +4,7 @@ import {
   stockUnitsForItem,
 } from './productPricing';
 import { getCashDayKey } from './cashDayPeriod';
+import { validateEmployeePriceAvailable } from './employeePricing';
 
 export const EMPLOYEE_BENEFIT_SECTION = 'employee_benefit';
 export const EMPLOYEE_BENEFIT_CATEGORY = 'EmployeeBenefit';
@@ -123,9 +124,23 @@ export function dailyUsageDocId(staffMemberId, cashDayKey) {
   return `${staffMemberId}__${cashDayKey}`;
 }
 
-/** قيمة سطر الاستفادة (أصناف / حد يومي) = سعر البيع */
+/** قيمة سطر الاستفادة (أصناف / حد يومي) = سعر الموظف (تكلفة + نصف الربح) */
 export function lineCostForBenefit(product, line) {
-  return lineSellPriceForProduct(product, line);
+  const type = getProductType(product);
+  const qty = Math.max(0, Number(line.quantity) || 0);
+  if (type === 'time') {
+    throw new Error(`صنف «${product.name}» بالوقت غير مدعوم لاستفادة الموظف`);
+  }
+  if (type === 'weight') {
+    const grams = Number(line.weightGrams) || 0;
+    if (!(grams > 0)) throw new Error(`أدخل وزن صنف «${product.name}»`);
+    const count = qty > 0 ? qty : 1;
+    const pricing = validateEmployeePriceAvailable(product, { weightGrams: grams });
+    return roundMoney(pricing.employeePrice * count);
+  }
+  if (!(qty > 0)) throw new Error(`أدخل كمية صنف «${product.name}»`);
+  const pricing = validateEmployeePriceAvailable(product, {});
+  return roundMoney(pricing.employeePrice * qty);
 }
 
 /** سعر البيع للصنف × الكمية (أو الوزن) */
@@ -154,18 +169,22 @@ export function resolveBenefitLines(productsById, rawLines) {
     const product = productsById[productId];
     if (!product) throw new Error('صنف غير موجود');
     const lineTotal = lineCostForBenefit(product, raw);
-    if (!(lineTotal > 0)) throw new Error(`سعر بيع «${product.name}» غير صالح`);
+    if (!(lineTotal > 0)) throw new Error(`سعر الموظف لـ «${product.name}» غير صالح`);
     const type = getProductType(product);
+    const unitEmployee =
+      type === 'weight'
+        ? validateEmployeePriceAvailable(product, { weightGrams: raw.weightGrams }).employeePrice
+        : validateEmployeePriceAvailable(product, {}).employeePrice;
     lines.push({
       productId,
       name: product.name,
       productType: type,
       quantity: Number(raw.quantity) || 1,
       weightGrams: type === 'weight' ? Number(raw.weightGrams) || 0 : null,
-      sellUnitPrice: type === 'weight' ? null : roundMoney(Number(product.price) || 0),
+      sellUnitPrice: type === 'weight' ? null : roundMoney(unitEmployee),
       unitCost: type === 'weight'
         ? roundMoney(lineTotal / (Number(raw.quantity) || 1))
-        : roundMoney(Number(product.price) || 0),
+        : roundMoney(unitEmployee),
       lineTotal,
       stockUnits: stockUnitsForItem({
         ...product,

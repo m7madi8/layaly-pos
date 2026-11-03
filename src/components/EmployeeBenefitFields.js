@@ -229,7 +229,7 @@ export default function EmployeeBenefitFields({
                 </div>
                 {product && (
                   <p className="text-[11px] text-gray-500">
-                    سعر البيع:{' '}
+                    سعر الموظف (نصف الربح):{' '}
                     {(() => {
                       try {
                         if (expenseForm.benefitType === BENEFIT_TYPE_PERSONAL) {

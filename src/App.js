@@ -75,7 +75,7 @@ import RemoveOldPlaystationModal from './components/RemoveOldPlaystationModal';
 import SystemResetModal from './components/SystemResetModal';
 import { computeEmployeeUnitPrice } from './utils/employeePricing';
 import { assertStaffOnDutyForShift } from './utils/shiftOnDuty';
-import { openShiftNeedsOnDutyAssignment, filterStaffByOnDuty } from './utils/shiftOnDuty';
+import { openShiftNeedsOnDutyAssignment } from './utils/shiftOnDuty';
 import OnDutyAssignmentModal from './components/OnDutyAssignmentModal';
 import { externalHookahCartItemId, selectHookahExternalCheckoutProducts } from './utils/hookahExternalSale';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory, isSystemServiceProduct, buildSystemServiceProduct } from './productAssets';
@@ -6307,7 +6307,7 @@ const AppCore = () => {
                 busy={uploadProgress || openBillBusy}
                 posEmployeeStaffId={posEmployeeStaffId}
                 onPosEmployeeStaffIdChange={setPosEmployeeStaffId}
-                employeeStaffOptions={filterStaffByOnDuty(staffMembers, openCashShiftDoc)}
+                employeeStaffOptions={staffMembers.filter((s) => s.active !== false)}
               />
 
               <div className="flex-1 min-w-0 h-full flex flex-col">
