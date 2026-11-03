@@ -7,6 +7,7 @@ export const ADMIN_PRODUCT_VIEWS = [
   'reports',
   'settings',
   'expenses',
+  'employees',
 ];
 
 export const EMPLOYEE_PRODUCT_VIEWS = ['pos'];
@@ -21,7 +22,7 @@ export function needsProductsListener(userRole, currentView) {
 export function needsStaffListener(userRole, currentView) {
   if (!userRole || !currentView) return false;
   if (userRole === 'admin') {
-    return ['settings', 'expenses', 'pos', 'dashboard', 'cash', 'purchases'].includes(currentView);
+    return ['settings', 'expenses', 'pos', 'dashboard', 'cash', 'purchases', 'employees'].includes(currentView);
   }
   if (userRole === 'employee') {
     return ['expenses', 'pos', 'cash'].includes(currentView);

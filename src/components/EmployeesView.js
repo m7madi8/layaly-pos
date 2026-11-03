@@ -9,6 +9,7 @@ import {
 } from '../services/employeeService';
 import {
   resolveStaffPermissions,
+  staffAllowsEmployeeBenefit,
 } from '../utils/staffPermissions';
 import {
   listPayrollAccrualsForStaff,
@@ -20,10 +21,18 @@ import {
   gatewayRecordEmployeeAdvance,
   gatewayRecordAdvanceRepayment,
 } from '../services/financialGateway';
+import { gatewayExecuteEmployeeBenefit } from '../services/operationalGateway';
+import { defaultExpenseForm } from '../expenseConfig';
+import EmployeeBenefitFields from './EmployeeBenefitFields';
+import { getCashDayKey } from '../utils/cashDayPeriod';
+import { sumApprovedBenefitsUsage } from '../utils/employeeBenefitAccounting';
+import { filterStaffByOnDuty } from '../utils/shiftOnDuty';
 
 function ProfilePanel({
   employee,
   benefits,
+  products,
+  openShift,
   onBack,
   onSaveBasic,
   fmtMoney: fm,
@@ -49,6 +58,15 @@ function ProfilePanel({
   const [payForm, setPayForm] = useState({ accrualId: '', amount: '' });
   const [advanceForm, setAdvanceForm] = useState({ amount: '', note: '' });
   const [repayForm, setRepayForm] = useState({ advanceId: '', amount: '' });
+  const [benefitForm, setBenefitForm] = useState(() => ({
+    ...defaultExpenseForm('employee_benefit'),
+    staffMemberId: employee.id,
+  }));
+  const [benefitBusy, setBenefitBusy] = useState(false);
+
+  useEffect(() => {
+    setBenefitForm((f) => ({ ...defaultExpenseForm('employee_benefit'), staffMemberId: employee.id, notes: f.notes }));
+  }, [employee.id]);
 
   const reloadFinancial = async () => {
     const [a, adv] = await Promise.all([
@@ -125,7 +143,7 @@ function ProfilePanel({
       <div className="rounded-xl border border-gray-100 bg-gray-50/80 p-4 space-y-2">
         <p className="text-sm font-semibold text-primary">صلاحيات</p>
         <p className="text-xs text-gray-500">
-          تتحكم في إمكانية تسجيل استفادة أو سلف لهذا الموظف من المصروفات أو من ملفه هنا.
+          تتحكم في إمكانية تسجيل استفادة أو سلف لهذا الموظف من المصروفات أو من ملفه هنا (قسم الاستفادة أدناه).
         </p>
         <label className="flex items-center gap-2 text-sm">
           <input
@@ -184,13 +202,87 @@ function ProfilePanel({
         {!staffPerms.canRecordEmployeeBenefit && (
           <p className="text-xs text-amber-700 mb-2">تسجيل استفادة جديدة معطّل من الصلاحيات.</p>
         )}
-        <div className="max-h-40 overflow-y-auto text-xs space-y-1">
+        <div className="max-h-40 overflow-y-auto text-xs space-y-1 mb-4">
           {staffBenefits.slice(0, 20).map((b) => (
             <p key={b.id}>
               {b.benefitNumber} — {b.benefitType === 'cash' ? 'كاش' : 'أصناف'} — {fm(b.totalValue)}
             </p>
           ))}
         </div>
+
+        {staffPerms.canRecordEmployeeBenefit && (
+          <div className="rounded-xl border border-emerald-100 bg-emerald-50/30 p-4">
+            <p className="text-sm font-semibold text-emerald-900 mb-3">تسجيل استفادة من ملف الموظف</p>
+            {!openShift && (
+              <p className="text-xs text-amber-800 mb-2">افتح وردية صندوق لتسجيل الاستفادة.</p>
+            )}
+            {openShift &&
+              !filterStaffByOnDuty([employee], openShift).some((s) => s.id === employee.id) && (
+                <p className="text-xs text-amber-800 mb-2">الموظف غير مداوم في الشفت الحالي.</p>
+              )}
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (benefitBusy || !openShift) return;
+                if (!staffAllowsEmployeeBenefit({ ...employee, permissions: form.permissions })) {
+                  alert('تسجيل الاستفادة معطّل لهذا الموظف — فعّل الصلاحية أعلاه واحفظ.');
+                  return;
+                }
+                const staffMember = { ...employee, permissions: form.permissions };
+                const onDuty = filterStaffByOnDuty([staffMember], openShift);
+                if (!onDuty.some((s) => s.id === employee.id)) {
+                  alert('الموظف غير مداوم في الشفت الحالي.');
+                  return;
+                }
+                setBenefitBusy(true);
+                const idem = newIdempotencyKey('emp_ben');
+                try {
+                  const cashDayKey = getCashDayKey();
+                  const usedToday = sumApprovedBenefitsUsage(benefits, employee.id, cashDayKey);
+                  const productsById = Object.fromEntries((products || []).map((p) => [p.id, p]));
+                  const result = await gatewayExecuteEmployeeBenefit(
+                    employee._uid,
+                    {
+                      staffMember,
+                      benefitType: benefitForm.benefitType || 'cash',
+                      cashAmount: benefitForm.amount,
+                      inventoryLines: benefitForm.inventoryLines || [],
+                      date: benefitForm.date,
+                      notes: benefitForm.notes || benefitForm.description,
+                      shiftId: openShift?.id || openShiftId || null,
+                      usedToday,
+                      override: Boolean(benefitForm.override),
+                      overrideReason: benefitForm.overrideReason,
+                      productsById,
+                    },
+                    { actor: sessionActor(), idempotencyKey: idem },
+                    businessProfile
+                  );
+                  if (!result.duplicate) {
+                    alert(`تم تسجيل الاستفادة.\nرقم العملية: ${result.benefitRef}`);
+                    setBenefitForm({ ...defaultExpenseForm('employee_benefit'), staffMemberId: employee.id });
+                  }
+                } catch (err) {
+                  alert(err.message || 'تعذّر تسجيل الاستفادة');
+                } finally {
+                  setBenefitBusy(false);
+                }
+              }}
+            >
+              <EmployeeBenefitFields
+                expenseForm={benefitForm}
+                setExpenseForm={setBenefitForm}
+                staffMembers={[employee]}
+                employeeBenefits={benefits}
+                products={products}
+                openShift={openShift}
+                isAdmin
+                disabled={benefitBusy || !openShift}
+                lockedStaffId={employee.id}
+              />
+            </form>
+          </div>
+        )}
       </div>
 
       <div className="border-t pt-4 grid md:grid-cols-2 gap-4 text-xs">
@@ -404,6 +496,8 @@ export default function EmployeesView({
   uid,
   staffMembers,
   employeeBenefits,
+  products,
+  openShift,
   theme,
   onRefreshStaff,
   businessProfile,
@@ -432,6 +526,8 @@ export default function EmployeesView({
       <ProfilePanel
         employee={{ ...detail, _uid: uid }}
         benefits={employeeBenefits}
+        products={products}
+        openShift={openShift}
         fmtMoney={fmtMoney}
         theme={theme}
         businessProfile={businessProfile}

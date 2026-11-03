@@ -77,13 +77,13 @@ describe('sumApprovedBenefitsUsage', () => {
 
 describe('resolveBenefitLines', () => {
   const productsById = {
-    p1: { id: 'p1', name: 'شيشة', cost: 2, stock: 10, productType: 'standard' },
+    p1: { id: 'p1', name: 'شيشة', cost: 2, price: 15, stock: 10, productType: 'standard' },
   };
 
-  it('uses product cost not price', () => {
+  it('uses product selling price for inventory benefit', () => {
     const { totalValue, lines } = resolveBenefitLines(productsById, [{ productId: 'p1', quantity: 2 }]);
-    expect(totalValue).toBe(4);
-    expect(lines[0].lineTotal).toBe(4);
+    expect(totalValue).toBe(30);
+    expect(lines[0].lineTotal).toBe(30);
   });
 });
 

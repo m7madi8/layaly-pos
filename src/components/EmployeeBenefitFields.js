@@ -8,6 +8,7 @@ import {
   BENEFIT_TYPE_PERSONAL,
   sumApprovedBenefitsUsage,
   resolveBenefitLines,
+  resolvePersonalConsumptionLines,
   computeBenefitQuota,
   roundMoney,
 } from '../utils/employeeBenefitAccounting';
@@ -25,11 +26,12 @@ export default function EmployeeBenefitFields({
   openShift,
   isAdmin,
   disabled,
+  lockedStaffId,
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const cashDayKey = getCashDayKey();
-  const staffId = expenseForm.staffMemberId || '';
+  const staffId = lockedStaffId || expenseForm.staffMemberId || '';
   const eligibleStaff = useMemo(
     () => filterStaffForEmployeeBenefit(filterStaffByOnDuty(staffMembers, openShift)),
     [staffMembers, openShift]
@@ -67,6 +69,19 @@ export default function EmployeeBenefitFields({
           lines: [],
         };
       }
+      if (expenseForm.benefitType === BENEFIT_TYPE_PERSONAL) {
+        const { lines, totalValue } = resolvePersonalConsumptionLines(
+          productsById,
+          expenseForm.inventoryLines || []
+        );
+        const limit = roundMoney(selectedStaff?.benefitLimitILS);
+        return {
+          ok: true,
+          total: totalValue,
+          lines,
+          quota: computeBenefitQuota({ limit, used: usedToday, proposed: totalValue }),
+        };
+      }
       const { lines, totalValue } = resolveBenefitLines(productsById, expenseForm.inventoryLines || []);
       const limit = roundMoney(selectedStaff?.benefitLimitILS);
       return {
@@ -97,13 +112,24 @@ export default function EmployeeBenefitFields({
 
   return (
     <div className="space-y-3 border-t border-gray-100 pt-3">
-      <StaffSearchSelect
-        staffMembers={eligibleStaff}
-        value={staffId}
-        onChange={(id) => setExpenseForm({ ...expenseForm, staffMemberId: id })}
-        disabled={disabled}
-        usedToday={usedToday}
-      />
+      {!lockedStaffId && (
+        <StaffSearchSelect
+          staffMembers={eligibleStaff}
+          value={staffId}
+          onChange={(id) => setExpenseForm({ ...expenseForm, staffMemberId: id })}
+          disabled={disabled}
+          usedToday={usedToday}
+        />
+      )}
+      {lockedStaffId && selectedStaff && (
+        <div className="rounded-xl bg-gray-50 border border-gray-100 px-3 py-2 text-sm">
+          <span className="text-gray-500">الموظف: </span>
+          <span className="font-semibold text-primary">{selectedStaff.name}</span>
+          <span className="text-xs text-gray-500 block mt-0.5">
+            مستخدم اليوم {fmtMoney(usedToday)} من {fmtMoney(selectedStaff.benefitLimitILS)}
+          </span>
+        </div>
+      )}
 
       <div>
         <label className="block text-xs mb-1.5 font-medium text-gray-600">نوع الاستفادة</label>
@@ -203,9 +229,13 @@ export default function EmployeeBenefitFields({
                 </div>
                 {product && (
                   <p className="text-[11px] text-gray-500">
-                    تكلفة تقديرية:{' '}
+                    سعر البيع:{' '}
                     {(() => {
                       try {
+                        if (expenseForm.benefitType === BENEFIT_TYPE_PERSONAL) {
+                          const { totalValue } = resolvePersonalConsumptionLines(productsById, [line]);
+                          return fmtMoney(totalValue);
+                        }
                         const { totalValue } = resolveBenefitLines(productsById, [line]);
                         return fmtMoney(totalValue);
                       } catch {

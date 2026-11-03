@@ -1,7 +1,6 @@
 import {
   roundMoney,
   getProductType,
-  costFromWeight,
   stockUnitsForItem,
 } from './productPricing';
 import { getCashDayKey } from './cashDayPeriod';
@@ -124,8 +123,13 @@ export function dailyUsageDocId(staffMemberId, cashDayKey) {
   return `${staffMemberId}__${cashDayKey}`;
 }
 
-/** تكلفة سطر استفادة (لا سعر البيع) */
+/** قيمة سطر الاستفادة (أصناف / حد يومي) = سعر البيع */
 export function lineCostForBenefit(product, line) {
+  return lineSellPriceForProduct(product, line);
+}
+
+/** سعر البيع للصنف × الكمية (أو الوزن) */
+export function lineSellPriceForProduct(product, line) {
   const type = getProductType(product);
   const qty = Math.max(0, Number(line.quantity) || 0);
   if (type === 'time') {
@@ -134,10 +138,12 @@ export function lineCostForBenefit(product, line) {
   if (type === 'weight') {
     const grams = Number(line.weightGrams) || 0;
     if (!(grams > 0)) throw new Error(`أدخل وزن صنف «${product.name}»`);
-    return roundMoney(costFromWeight(product, grams) * (qty > 0 ? qty : 1));
+    const unitG = Math.max(1, Number(product.weightUnitGrams) || 1);
+    const sellPerG = (Number(product.price) || 0) / unitG;
+    return roundMoney(sellPerG * grams * (qty > 0 ? qty : 1));
   }
   if (!(qty > 0)) throw new Error(`أدخل كمية صنف «${product.name}»`);
-  return roundMoney((Number(product.cost) || 0) * qty);
+  return roundMoney((Number(product.price) || 0) * qty);
 }
 
 export function resolveBenefitLines(productsById, rawLines) {
@@ -148,7 +154,7 @@ export function resolveBenefitLines(productsById, rawLines) {
     const product = productsById[productId];
     if (!product) throw new Error('صنف غير موجود');
     const lineTotal = lineCostForBenefit(product, raw);
-    if (!(lineTotal > 0)) throw new Error(`قيمة صنف «${product.name}» غير صالحة`);
+    if (!(lineTotal > 0)) throw new Error(`سعر بيع «${product.name}» غير صالح`);
     const type = getProductType(product);
     lines.push({
       productId,
@@ -156,9 +162,10 @@ export function resolveBenefitLines(productsById, rawLines) {
       productType: type,
       quantity: Number(raw.quantity) || 1,
       weightGrams: type === 'weight' ? Number(raw.weightGrams) || 0 : null,
+      sellUnitPrice: type === 'weight' ? null : roundMoney(Number(product.price) || 0),
       unitCost: type === 'weight'
         ? roundMoney(lineTotal / (Number(raw.quantity) || 1))
-        : roundMoney(Number(product.cost) || 0),
+        : roundMoney(Number(product.price) || 0),
       lineTotal,
       stockUnits: stockUnitsForItem({
         ...product,
@@ -174,18 +181,7 @@ export function resolveBenefitLines(productsById, rawLines) {
 
 /** Personal consumption — valued at selling price (counts as operating expense, not benefit quota). */
 export function lineSellPriceForPersonal(product, line) {
-  const type = getProductType(product);
-  const qty = Math.max(0, Number(line.quantity) || 0);
-  if (type === 'time') throw new Error(`صنف «${product.name}» بالوقت غير مدعوم للاستهلاك الشخصي`);
-  if (type === 'weight') {
-    const grams = Number(line.weightGrams) || 0;
-    if (!(grams > 0)) throw new Error(`أدخل وزن صنف «${product.name}»`);
-    const unitG = Math.max(1, Number(product.weightUnitGrams) || 1);
-    const sellPerG = (Number(product.price) || 0) / unitG;
-    return roundMoney(sellPerG * grams * (qty > 0 ? qty : 1));
-  }
-  if (!(qty > 0)) throw new Error(`أدخل كمية صنف «${product.name}»`);
-  return roundMoney((Number(product.price) || 0) * qty);
+  return lineSellPriceForProduct(product, line);
 }
 
 export function resolvePersonalConsumptionLines(productsById, rawLines) {

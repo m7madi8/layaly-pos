@@ -724,7 +724,7 @@ const AppCore = () => {
     if (!user?.uid || !isFinanceRole(userRole)) return undefined;
     const needsBenefits =
       userRole === 'admin'
-        ? ['expenses', 'settings'].includes(currentView)
+        ? ['expenses', 'settings', 'employees'].includes(currentView)
         : currentView === 'expenses';
     if (!needsBenefits) return;
     const unsubscribe = onSnapshot(
@@ -845,7 +845,7 @@ const AppCore = () => {
     const needsCash =
       userRole === 'employee'
         ? ['pos', 'cash', 'expenses'].includes(currentView)
-        : ['pos', 'cash', 'dashboard'].includes(currentView);
+        : ['pos', 'cash', 'dashboard', 'employees'].includes(currentView);
     if (!needsCash) return;
 
     const unsubShifts = onSnapshot(
@@ -5160,6 +5160,8 @@ const AppCore = () => {
               uid={user.uid}
               staffMembers={staffMembers}
               employeeBenefits={employeeBenefits}
+              products={products}
+              openShift={openCashShiftDoc}
               theme={theme}
               businessProfile={businessProfile}
               sessionActor={sessionActor}
