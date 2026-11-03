@@ -2521,7 +2521,9 @@ const AppCore = () => {
     if (currentOrder.items.length === 0 || uploadProgress) return;
     setPaymentCustomPrice('');
     setMixedCashAmount('');
-    if (!currentOrder.customerId) {
+    const employeeSale = Boolean(posEmployeeStaffId);
+    const hasRegisteredCustomer = Boolean(currentOrder.customerId);
+    if (!hasRegisteredCustomer && !employeeSale) {
       setCashGiven('');
       setFinalTotalForPayment(cartTotal);
       setShowCashModal(true);
@@ -7653,7 +7655,15 @@ const AppCore = () => {
       <PaymentChooserSheet
         open={showPaymentModal}
         total={cartTotal}
-        customerName={currentOrder.customer}
+        customerName={
+          currentOrder.customer ||
+          (posEmployeeStaffId
+            ? (() => {
+                const sn = staffMembers.find((s) => s.id === posEmployeeStaffId)?.name;
+                return sn ? `بيع موظف: ${sn}` : 'بيع بسعر موظف';
+              })()
+            : '')
+        }
         busy={uploadProgress}
         onClose={() => setShowPaymentModal(false)}
         onCash={() => {
@@ -7663,11 +7673,21 @@ const AppCore = () => {
           setShowCashModal(true);
         }}
         onMixed={() => {
+          if (!currentOrder.customerId) {
+            alert('لتسجيل كاش + دين اختر العميل من قائمة العملاء في السلة أولاً.');
+            return;
+          }
           setMixedCashAmount('');
           setShowPaymentModal(false);
           setShowMixedPaymentModal(true);
         }}
-        onDebt={() => completeOrder('unpaid', { paymentType: 'debt', customerId: currentOrder.customerId })}
+        onDebt={() => {
+          if (!currentOrder.customerId) {
+            alert('لتسجيل الدين اختر العميل من قائمة العملاء في السلة أولاً.');
+            return;
+          }
+          completeOrder('unpaid', { paymentType: 'debt', customerId: currentOrder.customerId });
+        }}
       />
 
       <CashSheet

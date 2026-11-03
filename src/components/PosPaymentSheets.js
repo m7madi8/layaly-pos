@@ -59,7 +59,7 @@ function Row({ label, value, tone }) {
 const confirmBtn =
   'w-full h-16 rounded-xl text-white text-xl font-extrabold shadow-md disabled:opacity-40 transition-opacity';
 
-/* ───── 1) اختيار طريقة الدفع (للعميل المسجّل فقط — الضيف يذهب مباشرة للكاش) ───── */
+/* ───── 1) اختيار طريقة الدفع (عميل مسجّل أو بيع بسعر موظف — الضيف العادي يذهب للكاش) ───── */
 export function PaymentChooserSheet({ open, total, customerName, busy, onClose, onCash, onDebt, onMixed }) {
   const tile =
     'w-full min-h-[84px] px-4 flex items-center gap-4 rounded-2xl border-2 text-start disabled:opacity-50 active:scale-[0.99] transition-transform';

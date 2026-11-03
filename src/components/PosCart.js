@@ -301,7 +301,7 @@ export default function PosCart({
 
           {employeeStaffOptions.length > 0 && onPosEmployeeStaffIdChange && (
             <div className="mb-3">
-              <label className="text-[11px] text-[var(--color-text-muted)] block mb-1">بيع بسعر موظف (مداوم فقط)</label>
+              <label className="text-[11px] text-[var(--color-text-muted)] block mb-1">بيع بسعر موظف (اختياري)</label>
               <select
                 value={posEmployeeStaffId}
                 onChange={(e) => onPosEmployeeStaffIdChange(e.target.value)}
