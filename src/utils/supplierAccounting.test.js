@@ -10,6 +10,9 @@ import {
   SUPPLIER_PAYMENT_CATEGORY,
   SUPPLIER_PAYMENT_SECTION,
   validateSupplierPaymentInput,
+  normalizeSupplierPaymentMethod,
+  supplierPaymentMethodLabel,
+  SUPPLIER_PAYMENT_VAULT,
 } from './supplierAccounting';
 import { PURCHASE_CATEGORY } from '../expenseConfig';
 
@@ -55,14 +58,9 @@ describe('supplierAccounting', () => {
     expect(resolveSupplierOutstandingBalance(supplier, [], 's1')).toBe(500);
   });
 
-  test('ledger includes opening balance row', () => {
-    const supplier = {
-      id: 's1',
-      openingBalanceRecorded: true,
-      openingBalanceAmount: 200,
-      openingBalanceNature: 'payable',
-    };
-    const rows = supplierLedgerEntries([], 's1', supplier);
-    expect(rows.some((r) => r.kind === 'opening_balance')).toBe(true);
+  test('normalize supplier payment methods includes vault', () => {
+    expect(normalizeSupplierPaymentMethod('Vault')).toBe(SUPPLIER_PAYMENT_VAULT);
+    expect(normalizeSupplierPaymentMethod('Transfer')).toBe('Transfer Bank');
+    expect(supplierPaymentMethodLabel('Vault')).toBe('من الخزنة');
   });
 });

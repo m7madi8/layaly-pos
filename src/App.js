@@ -20,6 +20,7 @@ import EmployeeBenefitsPanel from './components/EmployeeBenefitsPanel';
 import {
   executeSupplierPayment,
   reconcileSupplierBalance,
+  reverseSupplierPaymentInTransaction,
 } from './services/supplierPaymentService';
 import {
   listActiveSuppliers,
@@ -46,6 +47,9 @@ import {
   roundMoney,
   sumReportExpenses,
   resolveSupplierOutstandingBalance,
+  SUPPLIER_PAYMENT_CASH,
+  SUPPLIER_PAYMENT_VAULT,
+  normalizeSupplierPaymentMethod,
 } from './utils/supplierAccounting';
 import PosProductCard from './components/PosProductCard';
 import PosCart from './components/PosCart';
@@ -859,8 +863,13 @@ const AppCore = () => {
   }, [user, currentView]);
 
   useEffect(() => {
-    if (!user || userRole !== 'admin') return;
-    const needsVault = ['vault', 'purchases', 'dashboard'].includes(currentView);
+    if (!user) return;
+    const adminVaultViews = ['vault', 'purchases', 'dashboard', 'expenses', 'traders'];
+    const employeeVaultViews = ['expenses', 'purchases', 'traders'];
+    const needsVault =
+      userRole === 'admin'
+        ? adminVaultViews.includes(currentView)
+        : employeeVaultViews.includes(currentView);
     if (!needsVault) return;
     const unsubVault = onSnapshot(
       vaultDocRef(user.uid),
@@ -1016,8 +1025,11 @@ const AppCore = () => {
         },
         { actor: sessionActor(), idempotencyKey: supplierPaymentIdemRef.current }
       );
-      if (!result.duplicate && payload.paymentMethod === 'Cash' && !result.cashRecorded) {
-        alert('تم تسجيل الدفعة على حساب التاجر، لكن لم تُسجَّل في وردية الكاش (لا توجد وردية مفتوحة).');
+      if (!result.duplicate) {
+        const pm = normalizeSupplierPaymentMethod(payload.paymentMethod);
+        if (pm === SUPPLIER_PAYMENT_CASH && !result.cashRecorded) {
+          alert('تم تسجيل الدفعة على حساب التاجر، لكن لم تُسجَّل في وردية الكاش (لا توجد وردية مفتوحة).');
+        }
       }
       return result;
     } catch (error) {
@@ -1154,10 +1166,13 @@ const AppCore = () => {
           },
           { actor: sessionActor(), idempotencyKey: idem }
         );
-        if (!result.duplicate && expenseForm.paymentMethod === 'Cash' && !result.cashRecorded) {
-          alert('تم تسجيل الدفعة. لم تُسجَّل في وردية الكاش — لا توجد وردية مفتوحة.');
-        } else if (!result.duplicate) {
-          alert(`تم تسجيل صرف للتاجر بنجاح.\nرقم السند: ${result.paymentRef}`);
+        if (!result.duplicate) {
+          const pm = normalizeSupplierPaymentMethod(expenseForm.paymentMethod);
+          if (pm === SUPPLIER_PAYMENT_CASH && !result.cashRecorded) {
+            alert('تم تسجيل الدفعة. لم تُسجَّل في وردية الكاش — لا توجد وردية مفتوحة.');
+          } else {
+            alert(`تم تسجيل صرف للتاجر بنجاح.\nرقم السند: ${result.paymentRef}`);
+          }
         }
         setShowExpenseModal(false);
         setExpenseForm(defaultExpenseForm('operating'));
@@ -1385,7 +1400,7 @@ const AppCore = () => {
     if (reversesStock) {
       message = `هل تريد حذف هذه العملية؟ سيتم خصم ${expense.quantityBought} من مخزون «${expense.linkedProductName || 'الصنف'}».`;
     } else if (isSupplierPay) {
-      message = 'حذف دفعة التاجر؟ سيتم استرجاع الرصيد المستحق وإلغاء تأثيرها على الصندوق إن وُجد.';
+      message = 'حذف دفعة التاجر؟ سيتم استرجاع الرصيد المستحق وإلغاء تأثيرها على الصندوق أو الخزنة إن وُجد.';
     } else if (isPurchase && expense.supplierId) {
       message = 'حذف المشتريات؟ سيتم عكس تأثيرها على التاجر والصندوق أو الخزنة إن وُجد.';
     }
@@ -1426,6 +1441,11 @@ const AppCore = () => {
                 balance: roundMoney(prev + roundMoney(expense.amount)),
                 updatedAt: serverTimestamp(),
               });
+              const openShift = cashShifts.find((s) => s.status === 'open');
+              await reverseSupplierPaymentInTransaction(transaction, user.uid, expense, {
+                actor: sessionActor(),
+                shiftId: openShift?.id || null,
+              });
             }
           });
           if (isPurchase && expense.paymentMethod === PURCHASE_PAYMENT_CASH) {
@@ -1434,19 +1454,11 @@ const AppCore = () => {
               alert('تم حذف المشتريات. لم يُرجَع المبلغ للصندوق — لا توجد وردية مفتوحة.');
             }
           }
-          if (isSupplierPay && expense.paymentMethod === 'Cash') {
+          if (isSupplierPay) {
+            const pm = normalizeSupplierPaymentMethod(expense.paymentMethod);
             const openShift = cashShifts.find((s) => s.status === 'open');
-            if (openShift) {
-              try {
-                await recordCashDeposit(user.uid, {
-                  shiftId: openShift.id,
-                  amount: expense.amount,
-                  reason: `إلغاء دفعة تاجر — ${expense.paymentRef || expenseId}`,
-                  actor: sessionActor(),
-                });
-              } catch (cashErr) {
-                alert(`تم حذف الدفعة لكن تعذّر إرجاع المبلغ للصندوق: ${cashErr.message}`);
-              }
+            if (pm === SUPPLIER_PAYMENT_CASH && !openShift) {
+              alert('تم حذف الدفعة. لم يُرجَع المبلغ للصندوق — لا توجد وردية مفتوحة.');
             }
           }
         } else {
@@ -7714,6 +7726,8 @@ const AppCore = () => {
                   setExpenseForm={setExpenseForm}
                   suppliers={suppliers}
                   expenses={expenses}
+                  openShift={cashShifts.find((s) => s.status === 'open') || null}
+                  vaultBalance={vaultSummary?.balance}
                   disabled={Boolean(editingExpenseId)}
                 />
               )}
@@ -7898,6 +7912,8 @@ const AppCore = () => {
           uploadProgress={uploadProgress}
           userId={user?.uid}
           openShiftId={openCashShiftDoc?.id}
+          openShift={openCashShiftDoc}
+          vaultBalance={vaultSummary?.balance}
           actor={sessionActor()}
           businessProfile={businessProfile}
           canManageProfile={canManageMerchantProfiles(userRole)}

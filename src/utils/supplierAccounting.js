@@ -5,9 +5,27 @@ export const SUPPLIER_PAYMENT_CATEGORY = 'SupplierPayment';
 export const SUPPLIER_PAYMENT_SECTION = 'supplier_payment';
 
 export const SUPPLIER_PAYMENT_METHODS = [
-  { id: 'Cash', label: 'نقداً' },
+  { id: 'Cash', label: 'نقداً من الصندوق' },
+  { id: 'Vault', label: 'من الخزنة' },
   { id: 'Transfer Bank', label: 'تحويل بنكي' },
 ];
+
+export const SUPPLIER_PAYMENT_CASH = 'Cash';
+export const SUPPLIER_PAYMENT_VAULT = 'Vault';
+export const SUPPLIER_PAYMENT_TRANSFER = 'Transfer Bank';
+
+export function normalizeSupplierPaymentMethod(method) {
+  const m = String(method || '').trim();
+  if (m === SUPPLIER_PAYMENT_CASH) return SUPPLIER_PAYMENT_CASH;
+  if (m === SUPPLIER_PAYMENT_VAULT || m === 'Vault') return SUPPLIER_PAYMENT_VAULT;
+  if (m === SUPPLIER_PAYMENT_TRANSFER || m === 'Transfer') return SUPPLIER_PAYMENT_TRANSFER;
+  return SUPPLIER_PAYMENT_CASH;
+}
+
+export function supplierPaymentMethodLabel(method) {
+  const id = normalizeSupplierPaymentMethod(method);
+  return SUPPLIER_PAYMENT_METHODS.find((row) => row.id === id)?.label || id;
+}
 
 export function roundMoney(n) {
   return Math.round((Number(n) || 0) * 100) / 100;

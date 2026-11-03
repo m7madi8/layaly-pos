@@ -3,12 +3,16 @@ import {
   readOpenCashShiftInTransaction,
   appendCashMovementInTransaction,
 } from './cashShiftService';
+import { vaultDocRef, applyVaultDebit, applyVaultCredit } from './vaultService';
 import {
   SUPPLIER_PAYMENT_CATEGORY,
   SUPPLIER_PAYMENT_SECTION,
+  SUPPLIER_PAYMENT_CASH,
+  SUPPLIER_PAYMENT_VAULT,
   buildPaymentReference,
   computeSupplierPayableFromExpenses,
   computeSupplierTotalPayable,
+  normalizeSupplierPaymentMethod,
   roundMoney,
   validateSupplierPaymentInput,
 } from '../utils/supplierAccounting';
@@ -48,7 +52,7 @@ export async function executeSupplierPayment(uid, input, { actor, idempotencyKey
     throw new Error(validation.errors.join(' — '));
   }
 
-  const paymentMethod = String(input.paymentMethod || 'Cash').trim() || 'Cash';
+  const paymentMethod = normalizeSupplierPaymentMethod(input.paymentMethod);
   const payDate = input.date ? new Date(input.date) : new Date();
   if (Number.isNaN(payDate.getTime())) throw new Error('تاريخ الدفع غير صالح');
 
@@ -70,6 +74,7 @@ export async function executeSupplierPayment(uid, input, { actor, idempotencyKey
           expenseId: data.expenseId,
           paymentRef: data.paymentRef,
           cashRecorded: Boolean(data.cashRecorded),
+          vaultRecorded: Boolean(data.vaultRecorded),
           duplicate: true,
         };
       }
@@ -80,8 +85,12 @@ export async function executeSupplierPayment(uid, input, { actor, idempotencyKey
     if (!supplierSnap.exists()) throw new Error('التاجر غير موجود');
 
     let cashShiftCtx = null;
-    if (paymentMethod === 'Cash') {
+    let vaultSnap = null;
+    if (paymentMethod === SUPPLIER_PAYMENT_CASH) {
       cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, input.shiftId || null);
+    }
+    if (paymentMethod === SUPPLIER_PAYMENT_VAULT) {
+      vaultSnap = await tx.get(vaultDocRef(uid));
     }
 
     const expenseRef = doc(expensesCol(uid));
@@ -124,7 +133,8 @@ export async function executeSupplierPayment(uid, input, { actor, idempotencyKey
     });
 
     let cashRecorded = false;
-    if (paymentMethod === 'Cash' && cashShiftCtx) {
+    let vaultRecorded = false;
+    if (paymentMethod === SUPPLIER_PAYMENT_CASH && cashShiftCtx) {
       await appendCashMovementInTransaction(tx, uid, cashShiftCtx.shiftId, cashShiftCtx.shiftSnap, {
         type: 'withdrawal',
         amount,
@@ -134,12 +144,23 @@ export async function executeSupplierPayment(uid, input, { actor, idempotencyKey
       });
       cashRecorded = true;
     }
+    if (paymentMethod === SUPPLIER_PAYMENT_VAULT) {
+      applyVaultDebit(tx, uid, vaultSnap, {
+        amount,
+        type: 'supplier_payment',
+        reason: `دفعة تاجر — ${supplierName}${paymentRef ? ` (${paymentRef})` : ''}`,
+        actor,
+        expenseId: expenseRef.id,
+      });
+      vaultRecorded = true;
+    }
 
     if (idemKey && idemRef) {
       tx.set(idemRef, {
         expenseId: expenseRef.id,
         paymentRef,
         cashRecorded,
+        vaultRecorded,
         supplierId,
         amount,
         createdAt: serverTimestamp(),
@@ -150,9 +171,45 @@ export async function executeSupplierPayment(uid, input, { actor, idempotencyKey
       expenseId: expenseRef.id,
       paymentRef,
       cashRecorded,
+      vaultRecorded,
       duplicate: false,
     };
   });
+}
+
+/** عكس دفعة تاجر (صندوق / خزنة) داخل transaction حذف المصروف */
+export async function reverseSupplierPaymentInTransaction(
+  tx,
+  uid,
+  expense,
+  { actor, shiftId }
+) {
+  const paymentMethod = normalizeSupplierPaymentMethod(expense.paymentMethod);
+  const amount = roundMoney(expense.amount);
+  if (!(amount > 0)) return;
+
+  if (paymentMethod === SUPPLIER_PAYMENT_VAULT) {
+    const vSnap = await tx.get(vaultDocRef(uid));
+    applyVaultCredit(tx, uid, vSnap, {
+      amount,
+      type: 'supplier_payment_reversal',
+      reason: `إلغاء دفعة تاجر — ${expense.paymentRef || expense.description || expense.id}`,
+      actor,
+    });
+  }
+
+  if (paymentMethod === SUPPLIER_PAYMENT_CASH) {
+    const cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, shiftId || null);
+    if (cashShiftCtx) {
+      await appendCashMovementInTransaction(tx, uid, cashShiftCtx.shiftId, cashShiftCtx.shiftSnap, {
+        type: 'deposit',
+        amount,
+        reason: `إلغاء دفعة تاجر — ${expense.paymentRef || expense.id}`,
+        actor,
+        expenseId: expense.id,
+      });
+    }
+  }
 }
 
 /** Increase supplier payable when a purchase expense is created (supplierSnap must be pre-read). */

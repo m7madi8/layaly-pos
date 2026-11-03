@@ -1,4 +1,6 @@
 /** تنسيق وعرض النصوص العربية */
+import { supplierPaymentMethodLabel as supplierPayMethodLabel } from './utils/supplierAccounting';
+
 export const fmtMoney = (amount) => {
   const n = Number(amount || 0);
   return `₪${n.toLocaleString('he-IL', { maximumFractionDigits: n % 1 ? 2 : 0 })}`;
@@ -101,4 +103,4 @@ export const expenseCategoryLabel = (cat) => {
   return map[cat] || cat;
 };
 
-export const supplierPaymentMethodLabel = (method) => paymentMethodLabel(method);
+export const supplierPaymentMethodLabel = (method) => supplierPayMethodLabel(method);

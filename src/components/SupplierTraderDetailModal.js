@@ -7,6 +7,9 @@ import {
   resolveSupplierOutstandingBalance,
   supplierLedgerEntries,
   SUPPLIER_PAYMENT_METHODS,
+  SUPPLIER_PAYMENT_CASH,
+  SUPPLIER_PAYMENT_VAULT,
+  SUPPLIER_PAYMENT_TRANSFER,
   validateSupplierPaymentInput,
 } from '../utils/supplierAccounting';
 import { newIdempotencyKey } from '../utils/idempotencyKey';
@@ -34,6 +37,8 @@ export default function SupplierTraderDetailModal({
   uploadProgress,
   userId,
   openShiftId,
+  openShift,
+  vaultBalance,
   actor,
   businessProfile,
 }) {
@@ -348,6 +353,21 @@ export default function SupplierTraderDetailModal({
                     <option key={m.id} value={m.id}>{m.label}</option>
                   ))}
                 </select>
+                {paymentMethod === SUPPLIER_PAYMENT_CASH && (
+                  <p className="text-[11px] text-gray-600 mt-1">
+                    {openShift
+                      ? 'سيُسجَّل سحب من وردية الصندوق المفتوحة.'
+                      : 'لا توجد وردية صندوق مفتوحة — تُسجَّل الدفعة على التاجر دون خصم من الصندوق.'}
+                  </p>
+                )}
+                {paymentMethod === SUPPLIER_PAYMENT_VAULT && (
+                  <p className="text-[11px] text-gray-600 mt-1">
+                    رصيد الخزنة: <span className="font-semibold">{fmtMoney(vaultBalance || 0)}</span>
+                  </p>
+                )}
+                {paymentMethod === SUPPLIER_PAYMENT_TRANSFER && (
+                  <p className="text-[11px] text-gray-600 mt-1">لا يُخصم من الصندوق أو الخزنة — للتوثيق فقط.</p>
+                )}
               </div>
               <div>
                 <label className="block text-xs mb-1 font-medium text-gray-600">تاريخ الدفع</label>
@@ -561,8 +581,11 @@ export function SupplierPaymentFields({
   setExpenseForm,
   suppliers,
   expenses,
+  openShift,
+  vaultBalance,
   disabled,
 }) {
+  const method = expenseForm.paymentMethod || SUPPLIER_PAYMENT_CASH;
   return (
     <div className="space-y-3 rounded-xl border border-emerald-100 bg-emerald-50/40 p-3">
       <p className="text-xs font-semibold text-emerald-800">صرف للتاجر</p>
@@ -580,7 +603,7 @@ export function SupplierPaymentFields({
       <div>
         <label className="block text-xs mb-1 font-medium text-gray-600">طريقة الدفع</label>
         <select
-          value={expenseForm.paymentMethod || 'Cash'}
+          value={method}
           onChange={(e) => setExpenseForm({ ...expenseForm, paymentMethod: e.target.value })}
           className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm bg-white"
           disabled={disabled}
@@ -589,6 +612,21 @@ export function SupplierPaymentFields({
             <option key={m.id} value={m.id}>{m.label}</option>
           ))}
         </select>
+        {method === SUPPLIER_PAYMENT_CASH && (
+          <p className="text-[11px] text-gray-600 mt-1">
+            {openShift
+              ? 'سيُسجَّل سحب من وردية الصندوق المفتوحة.'
+              : 'لا توجد وردية مفتوحة — تُسجَّل الدفعة على التاجر دون خصم من الصندوق.'}
+          </p>
+        )}
+        {method === SUPPLIER_PAYMENT_VAULT && (
+          <p className="text-[11px] text-gray-600 mt-1">
+            رصيد الخزنة: <span className="font-semibold">{fmtMoney(vaultBalance || 0)}</span>
+          </p>
+        )}
+        {method === SUPPLIER_PAYMENT_TRANSFER && (
+          <p className="text-[11px] text-gray-600 mt-1">تحويل بنكي — لا يُخصم من الصندوق أو الخزنة.</p>
+        )}
       </div>
       <div>
         <label className="block text-xs mb-1 font-medium text-gray-600">ملاحظات</label>
