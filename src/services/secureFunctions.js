@@ -36,24 +36,35 @@ export async function callVerifyEmployeePin(pin) {
   return result.data;
 }
 
+/** Set on Vercel only after Cloud Functions are deployed on Blaze. */
+function isCloudFunctionsReadyEnv() {
+  return process.env.REACT_APP_CLOUD_FUNCTIONS_READY === 'true';
+}
+
 /** Callable missing or blocked (404/CORS/network) — safe to fall back to legacy Firestore paths. */
 export function isCloudCallableUnavailableError(error) {
   const code = String(error?.code || '');
   const msg = String(error?.message || error || '').toLowerCase();
+  if (code === 'functions/permission-denied' || code === 'functions/unauthenticated') {
+    return false;
+  }
   return (
     code === 'functions/unavailable' ||
     code === 'functions/internal' ||
     code === 'functions/not-found' ||
     code === 'functions/deadline-exceeded' ||
+    code === 'functions/cancelled' ||
     msg.includes('failed to fetch') ||
     msg.includes('network') ||
     msg.includes('cors') ||
-    msg.includes('cloudfunctions.net')
+    msg.includes('cloudfunctions.net') ||
+    msg.includes('err_failed')
   );
 }
 
 export function isTrustedOrdersEnabled() {
   return (
+    isCloudFunctionsReadyEnv() &&
     process.env.REACT_APP_TRUSTED_ORDERS === 'true' &&
     process.env.REACT_APP_DEMO_MODE !== 'true'
   );
@@ -113,6 +124,7 @@ export async function callMarkOrdersAsTestData(payload) {
 
 export function isTrustedCashShiftsEnabled() {
   return (
+    isCloudFunctionsReadyEnv() &&
     process.env.REACT_APP_TRUSTED_CASH_SHIFTS === 'true' &&
     process.env.REACT_APP_DEMO_MODE !== 'true'
   );

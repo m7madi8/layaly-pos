@@ -905,7 +905,7 @@ const AppCore = () => {
     e.preventDefault();
     const password = normalizeLoginPassword(adminPassword);
     if (!password) return;
-    if (process.env.REACT_APP_VERIFY_EMPLOYEE_PIN_ON_SERVER === 'true') {
+    if (process.env.REACT_APP_VERIFY_EMPLOYEE_PIN_ON_SERVER === 'true' && process.env.REACT_APP_CLOUD_FUNCTIONS_READY === 'true') {
       setUploadProgress(true);
       try {
         const pinResult = await callVerifyEmployeePin(password);
@@ -3106,14 +3106,15 @@ const AppCore = () => {
 
         // Deduct stock for new items
         for (const item of currentOrder.items) {
-          if (!productDocs[item.id]) {
+          const pid = normalizeDocId(item.id);
+          if (!productDocs[pid]) {
              throw new Error(`الصنف "${item.name}" غير موجود`);
           }
           const units = stockUnitsForItem(item);
           if (units <= 0) continue;
-          const p = productDocs[item.id];
+          const p = productDocs[pid];
           if (p.data.stock < units) {
-             const unitLabel = getProductType(item) === 'weight' ? ' غ' : '';
+             const unitLabel = getProductType(p.data) === 'weight' ? ' غ' : '';
              throw new Error(`مخزون "${item.name}" غير كافٍ. المتاح: ${p.data.stock}${unitLabel}`);
           }
           p.data.stock -= units;
@@ -3121,11 +3122,13 @@ const AppCore = () => {
 
         // Deduct Ingredients (Recipe)
         for (const item of currentOrder.items) {
-          const pData = productDocs[item.id]?.data;
+          const pid = normalizeDocId(item.id);
+          const pData = productDocs[pid]?.data;
           if (pData && pData.ingredients) {
             for (const ing of pData.ingredients) {
-              if (ing.ingredientId && ingredientDocs[ing.ingredientId]) {
-                const ingData = ingredientDocs[ing.ingredientId];
+              const ingKey = normalizeDocId(ing.ingredientId);
+              if (ingKey && ingredientDocs[ingKey]) {
+                const ingData = ingredientDocs[ingKey];
                 const usage = (Number(ing.usageQty) || 0) * item.quantity;
                 const nextStock = (ingData.data.stock || 0) - usage;
                 if (nextStock < -0.0001) {
@@ -3146,8 +3149,9 @@ const AppCore = () => {
 
         // Apply ingredient updates
         for (const ingId of ingredientIds) {
-            if (ingredientDocs[ingId]) {
-                transaction.update(ingredientDocs[ingId].ref, { stock: ingredientDocs[ingId].data.stock });
+            const ingKey = normalizeDocId(ingId);
+            if (ingKey && ingredientDocs[ingKey]) {
+                transaction.update(ingredientDocs[ingKey].ref, { stock: ingredientDocs[ingKey].data.stock });
             }
         }
 
