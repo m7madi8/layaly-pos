@@ -205,6 +205,21 @@ export function summarizePlaystationSessions(sessions, isInPeriod, fallbackRate 
   };
 }
 
+/** سعر البيع للكمية/الوزن (نفس منطق نقطة البيع) */
+export function retailSellAmount(product, { weightGrams, quantity = 1 } = {}) {
+  const type = getProductType(product);
+  const q = Math.max(1, Number(quantity) || 1);
+  if (type === 'weight') {
+    const g = Number(weightGrams) || 0;
+    if (!(g > 0)) return 0;
+    return roundMoney(amountFromWeight(product, g) * q);
+  }
+  if (type === 'standard') {
+    return roundMoney((Number(product.price) || 0) * q);
+  }
+  return 0;
+}
+
 export function productPriceLabel(product, fmtMoney) {
   const type = getProductType(product);
   if (type === 'weight') {

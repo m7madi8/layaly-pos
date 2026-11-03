@@ -12,13 +12,20 @@ export function buildTrustedCompleteOrderPayload({
   status,
   editingOrderId,
   idempotencyKey,
+  employeeSaleStaffId,
 }) {
   const paymentType = payment.paymentType || (status === 'unpaid' ? 'pending' : 'cash');
+  const staffId =
+    employeeSaleStaffId ||
+    currentOrder.employeeSaleStaffId ||
+    (currentOrder.items || []).find((i) => i.employeeSaleStaffId)?.employeeSaleStaffId ||
+    '';
   return {
     idempotencyKey: editingOrderId ? undefined : idempotencyKey || newIdempotencyKey(),
     editingOrderId: editingOrderId || null,
     customerId: payment.customerId || currentOrder.customerId || '',
     customerName: currentOrder.customer || '',
+    employeeSaleStaffId: staffId ? String(staffId) : '',
     notes: currentOrder.notes || '',
     assetMovementIds: currentOrder.assetMovementIds || [],
     lines: (currentOrder.items || []).map((item) => ({

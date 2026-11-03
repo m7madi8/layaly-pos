@@ -46,7 +46,9 @@ function validateAddons(product, selectedAddonNames) {
   return { addons: resolved, price: roundMoney(price), cost: roundMoney(cost) };
 }
 
-async function resolveCartLines(db, uid, lines, sessionCache) {
+async function resolveCartLines(db, uid, lines, sessionCache, options = {}) {
+  const employeeStaffId = options.employeeSaleStaffId ? String(options.employeeSaleStaffId) : '';
+  const { computeEmployeeUnitPrice } = require('./employeePricing');
   const resolved = [];
   for (const line of lines) {
     const productId = String(line.productId || '').trim();
@@ -71,8 +73,15 @@ async function resolveCartLines(db, uid, lines, sessionCache) {
     if (type === 'weight') {
       weightGrams = Number(line.weightGrams);
       if (!(weightGrams > 0)) throw new Error('وزن غير صالح');
-      unitPrice = amountFromWeight(product, weightGrams);
-      lineCost = costFromWeight(product, weightGrams);
+      if (employeeStaffId) {
+        const ep = computeEmployeeUnitPrice(product, { weightGrams });
+        if (!ep) throw new Error(`تعذّر حساب سعر الموظف للصنف «${product.name}»`);
+        unitPrice = ep.employeePrice;
+        lineCost = ep.cost;
+      } else {
+        unitPrice = amountFromWeight(product, weightGrams);
+        lineCost = costFromWeight(product, weightGrams);
+      }
     } else if (type === 'time') {
       sessionId = String(line.sessionId || '').trim();
       if (!sessionId) throw new Error('جلسة البلايستيشن مطلوبة');
@@ -91,11 +100,19 @@ async function resolveCartLines(db, uid, lines, sessionCache) {
       displayName = `${product.name} · ${session.stationName || ''}`;
     } else {
       const ext = externalHookahUnitPrice(product, lineId);
-      const base = ext != null ? ext : roundMoney(Number(product.price) || 0);
       const addonResolved = validateAddons(product, line.selectedAddonNames);
       selectedAddons = addonResolved.addons;
-      unitPrice = roundMoney(base + addonResolved.price);
-      lineCost = roundMoney((Number(product.cost) || 0) + addonResolved.cost);
+      if (employeeStaffId) {
+        const ep = computeEmployeeUnitPrice(product, {});
+        if (!ep) throw new Error(`تعذّر حساب سعر الموظف للصنف «${product.name}»`);
+        const base = ext != null ? ext : ep.employeePrice;
+        unitPrice = roundMoney(base + addonResolved.price);
+        lineCost = roundMoney(ep.cost + addonResolved.cost);
+      } else {
+        const base = ext != null ? ext : roundMoney(Number(product.price) || 0);
+        unitPrice = roundMoney(base + addonResolved.price);
+        lineCost = roundMoney((Number(product.cost) || 0) + addonResolved.cost);
+      }
     }
 
     resolved.push({
@@ -147,7 +164,9 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
   if (lines.length === 0) throw new Error('السلة فارغة');
 
   const sessionCache = new Map();
-  const resolvedLines = await resolveCartLines(db, uid, lines, sessionCache);
+  const resolvedLines = await resolveCartLines(db, uid, lines, sessionCache, {
+    employeeSaleStaffId: payload.employeeSaleStaffId,
+  });
 
   const subtotal = roundMoney(
     resolvedLines.reduce((s, l) => s + l.unitPrice * l.quantity, 0)

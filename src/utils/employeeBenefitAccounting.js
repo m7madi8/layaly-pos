@@ -2,6 +2,7 @@ import {
   roundMoney,
   getProductType,
   stockUnitsForItem,
+  retailSellAmount,
 } from './productPricing';
 import { getCashDayKey } from './cashDayPeriod';
 import { validateEmployeePriceAvailable } from './employeePricing';
@@ -153,12 +154,10 @@ export function lineSellPriceForProduct(product, line) {
   if (type === 'weight') {
     const grams = Number(line.weightGrams) || 0;
     if (!(grams > 0)) throw new Error(`أدخل وزن صنف «${product.name}»`);
-    const unitG = Math.max(1, Number(product.weightUnitGrams) || 1);
-    const sellPerG = (Number(product.price) || 0) / unitG;
-    return roundMoney(sellPerG * grams * (qty > 0 ? qty : 1));
+    return retailSellAmount(product, { weightGrams: grams, quantity: qty > 0 ? qty : 1 });
   }
   if (!(qty > 0)) throw new Error(`أدخل كمية صنف «${product.name}»`);
-  return roundMoney((Number(product.price) || 0) * qty);
+  return retailSellAmount(product, { quantity: qty });
 }
 
 export function resolveBenefitLines(productsById, rawLines) {

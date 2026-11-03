@@ -1,6 +1,7 @@
 /** Server copy — keep in sync with src/utils/employeeBenefitAccounting.js */
-const { roundMoney, getProductType, costFromWeight, stockUnitsForItem } = require('./productPricing');
+const { roundMoney, getProductType, costFromWeight, stockUnitsForItem, amountFromWeight } = require('./productPricing');
 const { getCashDayKey } = require('./cashDayPeriod');
+const { validateEmployeePriceAvailable } = require('./employeePricing');
 
 const EMPLOYEE_BENEFIT_SECTION = 'employee_benefit';
 const EMPLOYEE_BENEFIT_CATEGORY = 'EmployeeBenefit';
@@ -128,10 +129,13 @@ function lineCostForBenefit(product, line) {
   if (type === 'weight') {
     const grams = Number(line.weightGrams) || 0;
     if (!(grams > 0)) throw new Error(`أدخل وزن صنف «${product.name}»`);
-    return roundMoney(costFromWeight(product, grams) * (qty > 0 ? qty : 1));
+    const count = qty > 0 ? qty : 1;
+    const pricing = validateEmployeePriceAvailable(product, { weightGrams: grams });
+    return roundMoney(pricing.employeePrice * count);
   }
   if (!(qty > 0)) throw new Error(`أدخل كمية صنف «${product.name}»`);
-  return roundMoney((Number(product.cost) || 0) * qty);
+  const pricing = validateEmployeePriceAvailable(product, {});
+  return roundMoney(pricing.employeePrice * qty);
 }
 
 function resolveBenefitLines(productsById, rawLines) {
@@ -142,8 +146,12 @@ function resolveBenefitLines(productsById, rawLines) {
     const product = productsById[productId];
     if (!product) throw new Error('صنف غير موجود');
     const lineTotal = lineCostForBenefit(product, raw);
-    if (!(lineTotal > 0)) throw new Error(`قيمة صنف «${product.name}» غير صالحة`);
+    if (!(lineTotal > 0)) throw new Error(`سعر الموظف لـ «${product.name}» غير صالح`);
     const type = getProductType(product);
+    const unitEmployee =
+      type === 'weight'
+        ? validateEmployeePriceAvailable(product, { weightGrams: raw.weightGrams }).employeePrice
+        : validateEmployeePriceAvailable(product, {}).employeePrice;
     lines.push({
       productId,
       name: product.name,
@@ -152,7 +160,7 @@ function resolveBenefitLines(productsById, rawLines) {
       weightGrams: type === 'weight' ? Number(raw.weightGrams) || 0 : null,
       unitCost: type === 'weight'
         ? roundMoney(lineTotal / (Number(raw.quantity) || 1))
-        : roundMoney(Number(product.cost) || 0),
+        : roundMoney(unitEmployee),
       lineTotal,
       stockUnits: stockUnitsForItem({
         ...product,

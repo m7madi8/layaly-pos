@@ -73,7 +73,7 @@ import {
 import RemoveTestSalesModal from './components/RemoveTestSalesModal';
 import RemoveOldPlaystationModal from './components/RemoveOldPlaystationModal';
 import SystemResetModal from './components/SystemResetModal';
-import { computeEmployeeUnitPrice } from './utils/employeePricing';
+import { applyPosPricingToCartItem } from './utils/employeePricing';
 import { assertStaffOnDutyForShift } from './utils/shiftOnDuty';
 import { openShiftNeedsOnDutyAssignment } from './utils/shiftOnDuty';
 import OnDutyAssignmentModal from './components/OnDutyAssignmentModal';
@@ -170,6 +170,7 @@ import {
   stockUnitsForItem,
   stockUnitsForCatalogLine,
   costFromWeight,
+  amountFromWeight,
   validateWeightPricing,
   validateTimePricing,
   weightPricePerUnit,
@@ -366,6 +367,24 @@ const AppCore = () => {
   const [discount, setDiscount] = useState(0);
   const [discountType, setDiscountType] = useState('amount'); // new invoices use ₪ only; 'percentage' kept for old orders
   const [posEmployeeStaffId, setPosEmployeeStaffId] = useState('');
+
+  useEffect(() => {
+    setCurrentOrder((prev) => {
+      if (!prev.items.length) return prev;
+      const nextItems = prev.items.map((item) => {
+        const product = products.find((p) => p.id === item.id);
+        return applyPosPricingToCartItem(item, product, posEmployeeStaffId || null);
+      });
+      const unchanged = nextItems.every(
+        (line, idx) =>
+          line.price === prev.items[idx].price &&
+          line.pricingMode === prev.items[idx].pricingMode &&
+          line.employeeSaleStaffId === prev.items[idx].employeeSaleStaffId
+      );
+      if (unchanged) return prev;
+      return { ...prev, items: nextItems };
+    });
+  }, [posEmployeeStaffId, products]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [showProductModal, setShowProductModal] = useState(false);
@@ -2278,10 +2297,6 @@ const AppCore = () => {
   };
 
   const addItemToCart = (product, selectedAddons, cartItemIdOverride = null) => {
-    const addonsPrice = selectedAddons.reduce((sum, addon) => sum + (parseFloat(addon.price) || 0), 0);
-    const addonsCost = selectedAddons.reduce((sum, addon) => sum + (parseFloat(addon.cost) || 0), 0);
-    let basePrice = product.price;
-    let baseCost = product.cost || 0;
     if (posEmployeeStaffId) {
       const openShift = cashShifts.find((s) => s.status === 'open');
       try {
@@ -2290,45 +2305,40 @@ const AppCore = () => {
         alert(e.message);
         return;
       }
-      const ep = computeEmployeeUnitPrice(product);
-      if (!ep) {
-        alert(`تعذّر حساب سعر الموظف للصنف «${product.name}»`);
-        return;
-      }
-      basePrice = ep.employeePrice;
-      baseCost = ep.cost;
     }
-    const finalPrice = basePrice + addonsPrice;
-    const finalCost = baseCost + addonsCost;
-    
-    // Create a unique ID for cart item based on product ID and selected add-ons
-    const cartItemId = cartItemIdOverride ?? (selectedAddons.length > 0 
+
+    const cartItemId = cartItemIdOverride ?? (selectedAddons.length > 0
       ? `${product.id}-${JSON.stringify(selectedAddons.map(a => a.name).sort())}`
       : product.id);
 
     const existing = currentOrder.items.find(i => i.cartItemId === cartItemId);
-    
+
     if (existing) {
       setCurrentOrder(prev => ({
         ...prev,
-        items: prev.items.map(i => 
-          i.cartItemId === cartItemId ? { ...i, quantity: i.quantity + 1 } : i
+        items: prev.items.map(i =>
+          i.cartItemId === cartItemId
+            ? applyPosPricingToCartItem(
+                { ...i, quantity: i.quantity + 1 },
+                product,
+                posEmployeeStaffId || null
+              )
+            : i
         )
       }));
     } else {
+      const draft = {
+        ...product,
+        cartItemId,
+        quantity: 1,
+        selectedAddons,
+        originalPrice: Number(product.price) || 0,
+        price: Number(product.price) || 0,
+        cost: Number(product.cost) || 0,
+      };
       setCurrentOrder(prev => ({
         ...prev,
-        items: [...prev.items, { 
-          ...product, 
-          cartItemId, 
-          quantity: 1, 
-          selectedAddons, 
-          price: finalPrice,
-          originalPrice: product.price,
-          cost: finalCost,
-          employeeSaleStaffId: posEmployeeStaffId || null,
-          pricingMode: posEmployeeStaffId ? 'employee' : 'retail',
-        }]
+        items: [...prev.items, applyPosPricingToCartItem(draft, product, posEmployeeStaffId || null)],
       }));
     }
     pingCartFeedback(cartItemId);
@@ -2338,23 +2348,22 @@ const AppCore = () => {
 
   const addWeightItemToCart = (product, { weightGrams, amount }) => {
     const cartItemId = `w-${product.id}-${Date.now()}`;
+    const retailAmount = roundMoney(amount ?? amountFromWeight(product, weightGrams));
+    const draft = {
+      ...product,
+      productType: 'weight',
+      cartItemId,
+      quantity: 1,
+      selectedAddons: [],
+      weightGrams,
+      unitPrice: weightPricePerUnit(product),
+      originalPrice: retailAmount,
+      price: retailAmount,
+      cost: costFromWeight(product, weightGrams),
+    };
     setCurrentOrder((prev) => ({
       ...prev,
-      items: [
-        ...prev.items,
-        {
-          ...product,
-          productType: 'weight',
-          cartItemId,
-          quantity: 1,
-          selectedAddons: [],
-          weightGrams,
-          unitPrice: weightPricePerUnit(product),
-          price: amount,
-          originalPrice: amount,
-          cost: costFromWeight(product, weightGrams),
-        },
-      ],
+      items: [...prev.items, applyPosPricingToCartItem(draft, product, posEmployeeStaffId || null)],
     }));
     pingCartFeedback(cartItemId);
     setWeightEntryProduct(null);
@@ -2966,6 +2975,7 @@ const AppCore = () => {
           currentOrder,
           discount: finalDiscount,
           discountType: currentDiscountType,
+          employeeSaleStaffId: posEmployeeStaffId || null,
           payment: {
             ...payment,
             paymentType,
