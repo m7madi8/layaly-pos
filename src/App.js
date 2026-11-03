@@ -35,6 +35,8 @@ import { findDuplicateCustomer, normalizeCustomerName } from './utils/customerId
 import {
   isEmployeeBenefitExpense,
   sumApprovedBenefitsUsage,
+  evaluateEmployeeBenefitPreview,
+  normalizeBenefitType,
 } from './utils/employeeBenefitAccounting';
 import {
   staffAllowsEmployeeAdvance,
@@ -1131,18 +1133,34 @@ const AppCore = () => {
         alert(dutyErr.message || 'الموظف غير مداوم في الشفت الحالي');
         return;
       }
+      const cashDayKey = getCashDayKey();
+      const usedToday = sumApprovedBenefitsUsage(employeeBenefits, staffMember.id, cashDayKey);
+      const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
+      const benefitPreview = evaluateEmployeeBenefitPreview({
+        benefitType: expenseForm.benefitType,
+        cashAmount: expenseForm.amount,
+        inventoryLines: expenseForm.inventoryLines || [],
+        productsById,
+        usedToday,
+        staffMember,
+        openShift: openShiftForBenefit,
+        isAdmin: userRole === 'admin',
+        override: Boolean(expenseForm.override),
+        overrideReason: expenseForm.overrideReason,
+      });
+      if (!benefitPreview.ok) {
+        alert(benefitPreview.error || 'تحقق من بيانات الاستفادة');
+        return;
+      }
       setUploadProgress(true);
       const idem = employeeBenefitIdemRef.current || newIdempotencyKey('emp_ben');
       employeeBenefitIdemRef.current = idem;
       try {
-        const cashDayKey = getCashDayKey();
-        const usedToday = sumApprovedBenefitsUsage(employeeBenefits, staffMember.id, cashDayKey);
-        const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
         const result = await gatewayExecuteEmployeeBenefit(
           user.uid,
           {
             staffMember,
-            benefitType: expenseForm.benefitType || 'cash',
+            benefitType: normalizeBenefitType(expenseForm.benefitType),
             cashAmount: expenseForm.amount,
             inventoryLines: expenseForm.inventoryLines || [],
             date: expenseForm.date,
@@ -7909,7 +7927,7 @@ const AppCore = () => {
                   staffMembers={staffMembers}
                   employeeBenefits={employeeBenefits}
                   products={products}
-                  openShift={cashShifts.find((s) => s.status === 'open') || null}
+                  openShift={openCashShiftDoc}
                   isAdmin={userRole === 'admin'}
                   disabled={Boolean(editingExpenseId) || uploadProgress}
                 />
@@ -8029,6 +8047,7 @@ const AppCore = () => {
                   </div>
                 );
               })()}
+              {!isEmployeeBenefitForm(expenseForm) && (
               <div>
                 <label className="block text-xs mb-1.5 font-medium text-gray-600">صورة الإيصال</label>
                 <input
@@ -8038,6 +8057,7 @@ const AppCore = () => {
                   className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-white hover:file:bg-opacity-90"
                 />
               </div>
+              )}
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"

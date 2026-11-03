@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { fmtMoney } from '../i18n';
 import StaffSearchSelect from './StaffSearchSelect';
@@ -27,8 +27,6 @@ export default function EmployeeBenefitFields({
   disabled,
   lockedStaffId,
 }) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-
   const cashDayKey = getCashDayKey();
   const staffId = lockedStaffId || expenseForm.staffMemberId || '';
   const eligibleStaff = useMemo(
@@ -57,6 +55,15 @@ export default function EmployeeBenefitFields({
     [products]
   );
 
+  const resolveStaffForPreview = useMemo(() => {
+    if (!staffId) return null;
+    return (
+      staffMembers.find((s) => s.id === staffId) ||
+      eligibleStaff.find((s) => s.id === staffId) ||
+      null
+    );
+  }, [staffId, staffMembers, eligibleStaff]);
+
   const preview = useMemo(
     () =>
       evaluateEmployeeBenefitPreview({
@@ -65,7 +72,7 @@ export default function EmployeeBenefitFields({
         inventoryLines: expenseForm.inventoryLines,
         productsById,
         usedToday,
-        staffMember: selectedStaff,
+        staffMember: resolveStaffForPreview,
         openShift,
         isAdmin,
         override: expenseForm.override,
@@ -79,23 +86,29 @@ export default function EmployeeBenefitFields({
       expenseForm.overrideReason,
       productsById,
       usedToday,
-      selectedStaff,
+      resolveStaffForPreview,
       openShift,
       isAdmin,
     ]
   );
 
-  useEffect(() => {
-    setConfirmOpen(false);
-  }, [
-    expenseForm.benefitType,
-    expenseForm.amount,
-    expenseForm.staffMemberId,
-    expenseForm.inventoryLines,
-    expenseForm.override,
-    expenseForm.overrideReason,
-    staffId,
-  ]);
+  const canSave = Boolean(staffId && preview.ok && !disabled);
+
+  const handleSaveClick = (e) => {
+    if (disabled) {
+      e.preventDefault();
+      return;
+    }
+    if (!staffId) {
+      e.preventDefault();
+      alert('اختر الموظف');
+      return;
+    }
+    if (!preview.ok) {
+      e.preventDefault();
+      alert(preview.error || 'تحقق من البيانات قبل الحفظ');
+    }
+  };
 
   const addLine = () => {
     const lines = [...(expenseForm.inventoryLines || []), { productId: '', quantity: 1, weightGrams: '' }];
@@ -194,9 +207,9 @@ export default function EmployeeBenefitFields({
         <div>
           <label className="block text-xs mb-1.5 font-medium text-gray-600">مبلغ الكاش (₪)</label>
           <input
-            type="number"
-            min="0"
-            step="0.01"
+            type="text"
+            inputMode="decimal"
+            pattern="[0-9]*[.,]?[0-9]*"
             value={expenseForm.amount}
             onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })}
             className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
@@ -343,49 +356,20 @@ export default function EmployeeBenefitFields({
         </div>
       )}
 
-      {!preview.ok && staffId && !preview.error && (
-        <p className="text-xs text-amber-700">أكمل البيانات أعلاه لتفعيل زر الحفظ.</p>
-      )}
-
-      {!confirmOpen ? (
-        <button
-          type="button"
-          disabled={disabled || !preview.ok || !staffId}
-          onClick={() => setConfirmOpen(true)}
-          className="w-full py-3 rounded-xl text-white font-semibold disabled:opacity-40"
-          style={{ backgroundColor: 'var(--color-primary)' }}
-        >
-          مراجعة وتأكيد الحفظ
-        </button>
-      ) : (
-        <div className="space-y-2 border border-primary/20 rounded-xl p-3">
-          <p className="text-sm font-bold text-primary">تأكيد استفادة الموظف</p>
-          <p className="text-xs text-gray-600">
-            {selectedStaff?.name} —{' '}
-            {expenseForm.benefitType === BENEFIT_TYPE_CASH
-              ? 'كاش'
-              : expenseForm.benefitType === BENEFIT_TYPE_PERSONAL
-                ? 'استهلاك شخصي'
-                : 'أصناف'}{' '}
-            — {fmtMoney(preview.total)}
-          </p>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="flex-1 py-2 rounded-xl border border-gray-200 text-sm"
-              onClick={() => setConfirmOpen(false)}
-            >
-              رجوع
-            </button>
-            <button
-              type="submit"
-              disabled={disabled || !preview.ok}
-              className="flex-1 py-2 rounded-xl bg-primary text-white text-sm font-semibold disabled:opacity-40"
-            >
-              تأكيد الحفظ
-            </button>
-          </div>
-        </div>
+      <button
+        type="submit"
+        onClick={handleSaveClick}
+        className={`w-full py-3 rounded-xl text-white font-semibold touch-manipulation ${
+          canSave ? 'hover:opacity-95 active:scale-[0.99]' : 'opacity-50 cursor-pointer'
+        }`}
+        style={{ backgroundColor: 'var(--color-primary)' }}
+      >
+        {disabled ? 'جاري الحفظ…' : 'حفظ استفادة الموظف'}
+      </button>
+      {!canSave && !disabled && (
+        <p className="text-[11px] text-center text-gray-500">
+          {preview.error || (!staffId ? 'اختر الموظف أولاً' : 'أكمل البيانات لتفعيل الحفظ')}
+        </p>
       )}
     </div>
   );

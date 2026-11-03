@@ -267,6 +267,26 @@ export function assertBenefitPermission(actor, { allowOverride = false } = {}) {
   }
 }
 
+export function normalizeBenefitType(raw) {
+  const t = String(raw || '')
+    .trim()
+    .toLowerCase();
+  if (t === BENEFIT_TYPE_CASH || t === 'cash') return BENEFIT_TYPE_CASH;
+  if (t === BENEFIT_TYPE_INVENTORY || t === 'inventory') return BENEFIT_TYPE_INVENTORY;
+  if (t === BENEFIT_TYPE_PERSONAL || t === 'personal' || t === 'personal_consumption') {
+    return BENEFIT_TYPE_PERSONAL;
+  }
+  return BENEFIT_TYPE_CASH;
+}
+
+export function parseMoneyInput(value) {
+  if (value == null || value === '') return 0;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const s = String(value).trim().replace(/,/g, '.');
+  const n = parseFloat(s, 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
 /** معاينة واجهة استفادة الموظف — تحدد إن كان زر «مراجعة وتأكيد» متاحاً */
 export function evaluateEmployeeBenefitPreview({
   benefitType,
@@ -281,6 +301,7 @@ export function evaluateEmployeeBenefitPreview({
   overrideReason,
 }) {
   const empty = { ok: false, total: 0, lines: [], quota: null, error: null, needsOverride: false };
+  const type = normalizeBenefitType(benefitType);
   if (!staffMember?.id) {
     return { ...empty, error: 'اختر الموظف' };
   }
@@ -299,19 +320,19 @@ export function evaluateEmployeeBenefitPreview({
   try {
     let total = 0;
     let lines = [];
-    if (benefitType === BENEFIT_TYPE_CASH) {
-      total = roundMoney(parseFloat(cashAmount) || cashAmount);
+    if (type === BENEFIT_TYPE_CASH) {
+      total = roundMoney(parseMoneyInput(cashAmount));
       if (!(total > 0)) {
         return { ...empty, error: 'أدخل مبلغ كاش أكبر من صفر' };
       }
-    } else if (benefitType === BENEFIT_TYPE_PERSONAL) {
+    } else if (type === BENEFIT_TYPE_PERSONAL) {
       const resolved = resolvePersonalConsumptionLines(productsById, inventoryLines || []);
       lines = resolved.lines;
       total = resolved.totalValue;
       if (!(total > 0)) {
         return { ...empty, error: 'أضف أصنافاً للاستهلاك الشخصي' };
       }
-    } else if (benefitType === BENEFIT_TYPE_INVENTORY) {
+    } else if (type === BENEFIT_TYPE_INVENTORY) {
       const resolved = resolveBenefitLines(productsById, inventoryLines || []);
       lines = resolved.lines;
       total = resolved.totalValue;
@@ -322,7 +343,7 @@ export function evaluateEmployeeBenefitPreview({
       return { ...empty, error: 'نوع الاستفادة غير صالح' };
     }
     const quota = computeBenefitQuota({ limit, used, proposed: total });
-    if (benefitType !== BENEFIT_TYPE_PERSONAL && quota.exceeds) {
+    if (type !== BENEFIT_TYPE_PERSONAL && quota.exceeds) {
       if (!isAdmin) {
         return {
           ok: false,
@@ -372,7 +393,7 @@ export function validateBenefitInput({
   let proposed = 0;
   let lines = [];
   if (benefitType === BENEFIT_TYPE_CASH) {
-    proposed = roundMoney(cashAmount);
+    proposed = roundMoney(parseMoneyInput(cashAmount));
     if (!(proposed > 0)) throw new Error('أدخل مبلغاً أكبر من صفر');
   } else if (benefitType === BENEFIT_TYPE_INVENTORY) {
     const resolved = resolveBenefitLines(productsById, inventoryLines);
