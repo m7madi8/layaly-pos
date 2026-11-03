@@ -1,23 +1,10 @@
 import { getLocalCalendarDayStart } from './dashboardCashSales';
+import { getReportPeriodBounds } from './reportPeriodBounds';
 
 export const ORDERS_PAGE_SIZE = 30;
 export const ORDERS_DASHBOARD_LIMIT = 250;
 export const ORDERS_REPORTS_LIMIT = 400;
 export const ORDERS_EMPLOYEE_POS_LIMIT = 80;
-
-function startOfYesterday(reference = new Date()) {
-  const today = getLocalCalendarDayStart(reference);
-  const y = new Date(today);
-  y.setDate(y.getDate() - 1);
-  return y;
-}
-
-function startOfLastWeek(reference = new Date()) {
-  const today = getLocalCalendarDayStart(reference);
-  const w = new Date(today);
-  w.setDate(w.getDate() - 7);
-  return w;
-}
 
 function toTimestamp(Timestamp, date) {
   if (!date) return null;
@@ -70,11 +57,9 @@ export function resolveOrdersQuerySpec({
   }
 
   if (userRole === 'admin' && currentView === 'reports') {
-    const todayStart = getLocalCalendarDayStart();
-    const monthStart = new Date(todayStart);
-    monthStart.setDate(monthStart.getDate() - 29);
-
+    const bounds = getReportPeriodBounds(reportFilter, reportCustomDates);
     if (reportFilter === 'lastMonth' || reportFilter === 'all') {
+      const monthStart = bounds.start || getLocalCalendarDayStart();
       return {
         mode: 'reports-month',
         queryLimit: ORDERS_REPORTS_LIMIT,
@@ -86,24 +71,20 @@ export function resolveOrdersQuerySpec({
         ),
       };
     }
-    if (reportFilter === 'custom' && reportCustomDates?.start && reportCustomDates?.end) {
-      const startDate = new Date(reportCustomDates.start);
-      startDate.setHours(0, 0, 0, 0);
-      const endDate = new Date(reportCustomDates.end);
-      endDate.setHours(23, 59, 59, 999);
+    if (reportFilter === 'custom' && bounds.start && bounds.end) {
       return {
         mode: 'reports-custom',
         queryLimit: ORDERS_REPORTS_LIMIT,
         q: query(
           col,
-          where('timestamp', '>=', toTimestamp(Timestamp, startDate)),
-          where('timestamp', '<=', toTimestamp(Timestamp, endDate)),
+          where('timestamp', '>=', toTimestamp(Timestamp, bounds.start)),
+          where('timestamp', '<=', toTimestamp(Timestamp, bounds.end)),
           orderBy('timestamp', 'desc'),
           limit(ORDERS_REPORTS_LIMIT)
         ),
       };
     }
-    const weekStart = startOfLastWeek();
+    const weekStart = bounds.start || getLocalCalendarDayStart();
     return {
       mode: 'reports-week',
       queryLimit: ORDERS_REPORTS_LIMIT,
@@ -117,7 +98,7 @@ export function resolveOrdersQuerySpec({
   }
 
   if (currentView === 'customers') {
-    const weekStart = startOfLastWeek();
+    const weekStart = getReportPeriodBounds('lastWeek').start;
     return {
       mode: 'customers-statements',
       q: query(
@@ -150,9 +131,9 @@ export function resolveOrdersQuerySpec({
         ),
       };
     case 'yesterday': {
-      const yStart = startOfYesterday();
-      const yEnd = new Date(todayStart);
-      yEnd.setMilliseconds(-1);
+      const bounds = getReportPeriodBounds('yesterday');
+      const yStart = bounds.start;
+      const yEnd = bounds.end;
       return {
         mode: 'orders-yesterday',
         q: query(
@@ -165,7 +146,7 @@ export function resolveOrdersQuerySpec({
       };
     }
     case 'lastWeek': {
-      const weekStart = startOfLastWeek();
+      const weekStart = getReportPeriodBounds('lastWeek').start;
       return {
         mode: 'orders-week',
         q: query(

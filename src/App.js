@@ -103,8 +103,10 @@ import {
   mapOrderSnapshot,
   ORDERS_PAGE_SIZE,
   ORDERS_DASHBOARD_LIMIT,
+  ORDERS_REPORTS_LIMIT,
 } from './utils/firestoreOrderQueries';
-import { shouldWarnReportsPartialTotals } from './utils/reportsOrdersCoverage';
+import { describeReportDataCoverage } from './utils/reportsOrdersCoverage';
+import { getDashboardPeriodLabels } from './utils/dashboardPeriodLabels';
 import {
   needsProductsListener,
   needsStaffListener,
@@ -576,7 +578,10 @@ const AppCore = () => {
           const tail = prev.filter((o) => !headIds.has(o.id));
           return [...next, ...tail];
         });
-        setOrdersHasMore(pageModes.has(spec.mode) && snapshot.size >= ORDERS_PAGE_SIZE);
+        setOrdersHasMore(
+          (pageModes.has(spec.mode) && snapshot.size >= ORDERS_PAGE_SIZE) ||
+            (String(spec.mode || '').startsWith('reports-') && snapshot.size >= ORDERS_REPORTS_LIMIT)
+        );
       },
       (error) => {
         console.error("Error loading orders:", error);
@@ -1672,6 +1677,33 @@ const AppCore = () => {
       alert('تعذّر حذف الطلب');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleLoadMoreReportsOrders = async () => {
+    if (!user?.uid || ordersLoadMoreBusy || !ordersHasMore || currentView !== 'reports') return;
+    const last = orders[orders.length - 1];
+    if (!last?.timestamp) return;
+    setOrdersLoadMoreBusy(true);
+    try {
+      const col = collection(db, 'users', user.uid, 'orders');
+      const q = query(col, orderBy('timestamp', 'desc'), startAfter(last.timestamp), limit(ORDERS_REPORTS_LIMIT));
+      const snap = await getDocs(q);
+      const more = mapOrderSnapshot(snap);
+      setOrders((prev) => {
+        const seen = new Set(prev.map((o) => o.id));
+        const merged = [...prev];
+        more.forEach((o) => {
+          if (!seen.has(o.id)) merged.push(o);
+        });
+        return merged;
+      });
+      setOrdersHasMore(snap.size >= ORDERS_REPORTS_LIMIT);
+    } catch (error) {
+      console.error('Load more report orders failed:', error);
+      alert('تعذّر تحميل المزيد من الطلبات للتقرير');
+    } finally {
+      setOrdersLoadMoreBusy(false);
     }
   };
 
@@ -3869,6 +3901,7 @@ const AppCore = () => {
   const cartTotal = taxableAmount;
   
   const dashboardDayStart = getLocalCalendarDayStart();
+  const dashboardPeriodInfo = useMemo(() => getDashboardPeriodLabels(), []);
 
   const dashboardOrders = orders.filter((o) => {
     if (!o.timestamp) return false;
@@ -4572,6 +4605,18 @@ const AppCore = () => {
             <div>
               <h2 className="text-3xl font-bold text-primary mb-1" style={{ fontFamily: FONT_HEADING }}>نظرة عامة</h2>
               <p className="text-gray-500 text-sm">مرحباً، هذا ملخص نشاط متجرك اليوم.</p>
+            </div>
+            <div
+              className="rounded-xl border border-blue-100 bg-blue-50/80 px-4 py-3 text-xs text-blue-950 space-y-1"
+              style={{ fontFamily: FONT_UI }}
+              role="note"
+            >
+              <p className="font-semibold">فترة لوحة التحكم (تقويم)</p>
+              <p>{dashboardPeriodInfo.calendarNote}</p>
+              <p className="text-blue-800/90">{dashboardPeriodInfo.cashDayNote}</p>
+              <p className="text-[10px] text-blue-700/80">
+                لا تُقارن أرقام الكاش هنا مع تسوية الشفت دون مراعاة فرق «يوم التقويم» و«يوم الكاش».
+              </p>
             </div>
             {orders.length >= ORDERS_DASHBOARD_LIMIT && (
               <div
@@ -5465,10 +5510,15 @@ const AppCore = () => {
             )}
             
             {(() => {
-              const reportsPartialWarning = shouldWarnReportsPartialTotals({
+              const reportCoverage = describeReportDataCoverage({
                 reportFilter,
+                reportCustomDates,
                 ordersLoadedCount: orders.length,
+                ordersQueryLimit: ORDERS_REPORTS_LIMIT,
+                expensesLoadedCount: expenses.length,
+                expensesQueryLimit: 800,
               });
+              const reportsPartialWarning = reportCoverage.partial;
 
               const now = new Date();
               const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -5691,12 +5741,27 @@ const AppCore = () => {
                 <>
                   {reportsPartialWarning && (
                     <div
-                      className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+                      className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 space-y-1"
                       style={{ fontFamily: FONT_UI }}
                       role="status"
                     >
-                      تنبيه: الأرقام التالية محسوبة من آخر {orders.length} طلباً محمّلةً في Firestore (حد أقصى 400 للفترة).
-                      قد لا تمثل إجمالي الفترة المختارة بالكامل — راجع Firebase Console قبل قرارات مالية.
+                      <p>{reportCoverage.message}</p>
+                      {reportCoverage.expensesNote && (
+                        <p className="text-xs text-amber-800">{reportCoverage.expensesNote}</p>
+                      )}
+                      <p className="text-[10px] text-amber-700">
+                        محمّل للتقرير: {reportCoverage.ordersLoadedCount} طلب (حد {reportCoverage.ordersQueryLimit}) — الفترة: {reportCoverage.bounds.label}
+                      </p>
+                      {reportCoverage.ordersCapped && (
+                        <button
+                          type="button"
+                          disabled={ordersLoadMoreBusy}
+                          onClick={handleLoadMoreReportsOrders}
+                          className="mt-2 px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+                        >
+                          {ordersLoadMoreBusy ? 'جاري التحميل…' : 'تحميل المزيد من الطلبات للتقرير'}
+                        </button>
+                      )}
                     </div>
                   )}
                   <div className="flex justify-end mb-6 gap-2 flex-wrap">

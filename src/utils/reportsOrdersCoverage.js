@@ -1,19 +1,8 @@
 import { ORDERS_REPORTS_LIMIT } from './firestoreOrderQueries';
+import { getReportPeriodBounds } from './reportPeriodBounds';
 
-/** Whether the active report period may exceed the Firestore orders window loaded in memory. */
 export function reportsPeriodExceedsLoadedWindow(reportFilter) {
-  switch (reportFilter) {
-    case 'today':
-    case 'yesterday':
-    case 'lastWeek':
-      return false;
-    case 'lastMonth':
-    case 'all':
-    case 'custom':
-      return true;
-    default:
-      return false;
-  }
+  return reportFilter === 'all';
 }
 
 export function shouldWarnReportsPartialTotals({
@@ -23,11 +12,44 @@ export function shouldWarnReportsPartialTotals({
 }) {
   if (reportFilter === 'all') return true;
   if (ordersLoadedCount >= ordersQueryLimit) return true;
-  if (reportsPeriodExceedsLoadedWindow(reportFilter) && ordersLoadedCount >= ordersQueryLimit * 0.95) {
-    return true;
-  }
-  if (reportFilter === 'lastMonth' || reportFilter === 'custom') {
-    return ordersLoadedCount >= ordersQueryLimit;
-  }
   return false;
+}
+
+/** User-facing coverage summary for the reports screen. */
+export function describeReportDataCoverage({
+  reportFilter,
+  reportCustomDates,
+  ordersLoadedCount,
+  ordersQueryLimit = ORDERS_REPORTS_LIMIT,
+  expensesLoadedCount,
+  expensesQueryLimit = 800,
+}) {
+  const bounds = getReportPeriodBounds(reportFilter, reportCustomDates);
+  const ordersCapped = ordersLoadedCount >= ordersQueryLimit;
+  const expensesCapped = expensesLoadedCount >= expensesQueryLimit;
+  const partial = shouldWarnReportsPartialTotals({
+    reportFilter,
+    ordersLoadedCount,
+    ordersQueryLimit,
+  });
+
+  return {
+    bounds,
+    partial,
+    ordersCapped,
+    expensesCapped,
+    ordersLoadedCount,
+    ordersQueryLimit,
+    message: partial
+      ? reportFilter === 'all'
+        ? 'فلتر «الكل» لا يحمّل السجل الكامل — الأرقام جزئية حتى تُقيّد الفترة أو تُحمَّل المزيد من الطلبات.'
+        : ordersCapped
+          ? `تم بلوغ حد ${ordersQueryLimit} طلباً للفترة «${bounds.label}» — الإجماليات قد تكون ناقصة.`
+          : 'قد تكون بعض الإجماليات جزئية — راجع عدد الطلبات المحمّلة.'
+      : null,
+    expensesNote:
+      expensesCapped && reportFilter !== 'today'
+        ? `المصروفات: ${expensesLoadedCount} سجل (حد ${expensesQueryLimit}) — قد لا تشمل كامل الفترة.`
+        : null,
+  };
 }
