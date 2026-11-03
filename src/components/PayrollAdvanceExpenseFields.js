@@ -3,6 +3,7 @@ import StaffSearchSelect from './StaffSearchSelect';
 import { fmtMoney } from '../i18n';
 import { listPayrollAccrualsForStaff } from '../services/payrollService';
 import { uniqueStaffMembersByName } from '../utils/employeeBenefitAccounting';
+import { filterStaffForEmployeeAdvance } from '../utils/staffPermissions';
 
 const NEW_ACCRUAL = '__new__';
 
@@ -20,10 +21,10 @@ export default function PayrollAdvanceExpenseFields({
   const isSalary = expenseForm.category === 'Salaries';
   const isAdvance = expenseForm.category === 'Advance';
 
-  const activeStaff = useMemo(
-    () => uniqueStaffMembersByName(staffMembers).filter((s) => s.active !== false),
-    [staffMembers]
-  );
+  const activeStaff = useMemo(() => {
+    const list = uniqueStaffMembersByName(staffMembers).filter((s) => s.active !== false);
+    return isAdvance ? filterStaffForEmployeeAdvance(list) : list;
+  }, [staffMembers, isAdvance]);
 
   const selectedStaff = activeStaff.find((s) => s.id === staffId);
 

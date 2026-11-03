@@ -30,6 +30,10 @@ import {
   isEmployeeBenefitExpense,
   sumApprovedBenefitsUsage,
 } from './utils/employeeBenefitAccounting';
+import {
+  staffAllowsEmployeeAdvance,
+  staffAllowsEmployeeBenefit,
+} from './utils/staffPermissions';
 import { getCashDayKey } from './utils/cashDayPeriod';
 import { resolveDailyCashGate } from './utils/cashDayGate';
 import {
@@ -1071,6 +1075,10 @@ const AppCore = () => {
         alert('الموظف غير موجود');
         return;
       }
+      if (!staffAllowsEmployeeBenefit(staffMember)) {
+        alert('تسجيل الاستفادة معطّل لهذا الموظف — راجع صلاحياته من قسم الموظفين.');
+        return;
+      }
       setUploadProgress(true);
       const idem = employeeBenefitIdemRef.current || newIdempotencyKey('emp_ben');
       employeeBenefitIdemRef.current = idem;
@@ -1169,6 +1177,10 @@ const AppCore = () => {
       const staffMember = staffMembers.find((s) => s.id === expenseForm.staffMemberId);
       if (!staffMember) {
         alert('الموظف غير موجود');
+        return;
+      }
+      if (expenseForm.category === 'Advance' && !staffAllowsEmployeeAdvance(staffMember)) {
+        alert('تسجيل السلف معطّل لهذا الموظف — راجع صلاحياته من قسم الموظفين.');
         return;
       }
       const payAmount = parseFloat(expenseForm.amount);

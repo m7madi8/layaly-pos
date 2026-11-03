@@ -7,6 +7,7 @@ import {
   serverTimestamp,
 } from '../firebaseClient';
 import { normalizeStaffName, roundMoney, staffNameKey } from '../utils/employeeBenefitAccounting';
+import { DEFAULT_STAFF_PERMISSIONS, normalizeStaffPermissionsPatch } from '../utils/staffPermissions';
 import { listStaffMembers, dedupeStaffMembers } from './staffMembersService';
 import { migrateEmployeeProfilesV1 } from './migrateEmployeeProfiles';
 
@@ -40,6 +41,7 @@ export async function createEmployee(uid, { name, benefitLimitILS = 20, phone = 
     phone: String(phone || '').trim(),
     notes: String(notes || '').trim(),
     baseSalary: baseSalary != null && baseSalary !== '' ? roundMoney(baseSalary) : null,
+    permissions: { ...DEFAULT_STAFF_PERMISSIONS },
     profileVersion: 1,
     createdAt: serverTimestamp(),
     createdAtMs: Date.now(),
@@ -69,6 +71,9 @@ export async function updateEmployee(uid, staffId, patch) {
     const inactive = patch.status === 'inactive' || patch.active === false;
     data.active = !inactive;
     data.status = inactive ? 'inactive' : 'active';
+  }
+  if (patch.permissions != null) {
+    data.permissions = normalizeStaffPermissionsPatch(patch.permissions);
   }
   data.updatedAt = serverTimestamp();
   await updateDoc(staffRef(uid, staffId), data);

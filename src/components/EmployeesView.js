@@ -8,6 +8,9 @@ import {
   updateEmployee,
 } from '../services/employeeService';
 import {
+  resolveStaffPermissions,
+} from '../utils/staffPermissions';
+import {
   listPayrollAccrualsForStaff,
   listAdvancesForStaff,
 } from '../services/payrollService';
@@ -37,6 +40,7 @@ function ProfilePanel({
     benefitLimitILS: employee.benefitLimitILS,
     baseSalary: employee.baseSalary ?? '',
     active: employee.active !== false,
+    permissions: resolveStaffPermissions(employee),
   });
   const [accruals, setAccruals] = useState([]);
   const [advances, setAdvances] = useState([]);
@@ -77,6 +81,11 @@ function ProfilePanel({
     [benefits, employee.id]
   );
 
+  const staffPerms = useMemo(
+    () => resolveStaffPermissions({ ...employee, permissions: form.permissions }),
+    [employee, form.permissions]
+  );
+
   return (
     <div className="layali-card p-5 space-y-4">
       <button type="button" onClick={onBack} className="text-sm text-primary flex items-center gap-1">
@@ -112,6 +121,40 @@ function ProfilePanel({
         />
         نشط
       </label>
+
+      <div className="rounded-xl border border-gray-100 bg-gray-50/80 p-4 space-y-2">
+        <p className="text-sm font-semibold text-primary">صلاحيات</p>
+        <p className="text-xs text-gray-500">
+          تتحكم في إمكانية تسجيل استفادة أو سلف لهذا الموظف من المصروفات أو من ملفه هنا.
+        </p>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={form.permissions.canRecordEmployeeBenefit}
+            onChange={(e) =>
+              setForm((f) => ({
+                ...f,
+                permissions: { ...f.permissions, canRecordEmployeeBenefit: e.target.checked },
+              }))
+            }
+          />
+          السماح بتسجيل استفادة موظف
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={form.permissions.canRecordEmployeeAdvance}
+            onChange={(e) =>
+              setForm((f) => ({
+                ...f,
+                permissions: { ...f.permissions, canRecordEmployeeAdvance: e.target.checked },
+              }))
+            }
+          />
+          السماح بتسجيل سلف
+        </label>
+      </div>
+
       <textarea
         value={form.notes}
         onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
@@ -138,6 +181,9 @@ function ProfilePanel({
 
       <div className="border-t pt-4">
         <p className="font-semibold text-primary mb-2">سجل الاستفادة ({staffBenefits.length})</p>
+        {!staffPerms.canRecordEmployeeBenefit && (
+          <p className="text-xs text-amber-700 mb-2">تسجيل استفادة جديدة معطّل من الصلاحيات.</p>
+        )}
         <div className="max-h-40 overflow-y-auto text-xs space-y-1">
           {staffBenefits.slice(0, 20).map((b) => (
             <p key={b.id}>
@@ -251,6 +297,10 @@ function ProfilePanel({
         </div>
         <div className="space-y-2">
           <p className="font-semibold mb-1">سلف ({advances.length})</p>
+          {!staffPerms.canRecordEmployeeAdvance ? (
+            <p className="text-gray-500">تسجيل السلف معطّل من صلاحيات هذا الموظف.</p>
+          ) : (
+          <>
           <div className="flex flex-wrap gap-2">
             <input
               type="number"
@@ -342,6 +392,8 @@ function ProfilePanel({
               {fm(a.amount)} — متبقي {fm(a.balanceRemaining)}
             </p>
           ))}
+          </>
+          )}
         </div>
       </div>
     </div>
@@ -395,9 +447,10 @@ export default function EmployeesView({
             benefitLimitILS: form.benefitLimitILS,
             baseSalary: form.baseSalary,
             active: form.active,
+            permissions: form.permissions,
           });
           await onRefreshStaff?.();
-          setDetail({ ...detail, ...form });
+          setDetail({ ...detail, ...form, permissions: form.permissions });
         }}
       />
     );

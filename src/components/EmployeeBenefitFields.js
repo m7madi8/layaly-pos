@@ -14,6 +14,7 @@ import {
 import { getCashDayKey } from '../utils/cashDayPeriod';
 import { getProductType } from '../utils/productPricing';
 import { filterStaffByOnDuty } from '../utils/shiftOnDuty';
+import { filterStaffForEmployeeBenefit } from '../utils/staffPermissions';
 
 export default function EmployeeBenefitFields({
   expenseForm,
@@ -30,7 +31,7 @@ export default function EmployeeBenefitFields({
   const cashDayKey = getCashDayKey();
   const staffId = expenseForm.staffMemberId || '';
   const eligibleStaff = useMemo(
-    () => filterStaffByOnDuty(staffMembers, openShift),
+    () => filterStaffForEmployeeBenefit(filterStaffByOnDuty(staffMembers, openShift)),
     [staffMembers, openShift]
   );
   const selectedStaff = eligibleStaff.find((s) => s.id === staffId) || staffMembers.find((s) => s.id === staffId);
