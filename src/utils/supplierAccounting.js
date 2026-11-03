@@ -73,6 +73,18 @@ export function resolveSupplierOutstandingBalance(supplier, expenses, supplierId
   return fromFormula;
 }
 
+/** إجمالي المستحق للتجار = مجموع أرصدة المستحق الإيجابية (نفس resolveSupplierOutstandingBalance لكل تاجر). */
+export function computeTotalOutstandingSupplierPayable(suppliers = [], expenses = []) {
+  return roundMoney(
+    (suppliers || []).reduce((sum, supplier) => {
+      const id = supplier?.id;
+      if (!id) return sum;
+      const due = resolveSupplierOutstandingBalance(supplier, expenses, id);
+      return due > 0 ? sum + due : sum;
+    }, 0)
+  );
+}
+
 export function expenseCountsInReportTotals(expense) {
   if (isSupplierPaymentExpense(expense)) return false;
   if (expense?.cancelled) return false;

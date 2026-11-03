@@ -47,6 +47,7 @@ import {
   roundMoney,
   sumReportExpenses,
   resolveSupplierOutstandingBalance,
+  computeTotalOutstandingSupplierPayable,
   SUPPLIER_PAYMENT_CASH,
   normalizeSupplierPaymentMethod,
 } from './utils/supplierAccounting';
@@ -1512,6 +1513,11 @@ const AppCore = () => {
   };
 
   const activeSuppliers = useMemo(() => listActiveSuppliers(suppliers), [suppliers]);
+
+  const totalOutstandingSupplierPayable = useMemo(
+    () => computeTotalOutstandingSupplierPayable(activeSuppliers, expenses),
+    [activeSuppliers, expenses]
+  );
 
   const handleSaveSettings = async (e) => {
     e.preventDefault();
@@ -5451,13 +5457,23 @@ const AppCore = () => {
 
             {financeTab === 'traders' ? (
               <>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-8">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
                   <div className="bg-white rounded-2xl p-6 shadow-md border border-gray-100">
                     <div className="flex items-center gap-3 mb-2">
                       <div className="p-2 bg-blue-50 rounded-xl text-blue-500"><Users size={20} /></div>
                       <p className="text-sm text-gray-500 font-medium">عدد التجار</p>
                     </div>
                     <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>{activeSuppliers.length}</p>
+                  </div>
+                  <div className="bg-gradient-to-br from-amber-50 via-white to-white rounded-2xl p-6 shadow-md border border-amber-100">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="p-2 bg-amber-100/80 rounded-xl text-amber-700"><Landmark size={20} /></div>
+                      <p className="text-sm font-semibold text-amber-900/90">إجمالي المستحق للتجار</p>
+                    </div>
+                    <p className="text-2xl md:text-3xl font-bold text-amber-800 tabular-nums" style={{ fontFamily: FONT_UI }}>
+                      {fmtMoney(totalOutstandingSupplierPayable)}
+                    </p>
+                    <p className="text-[11px] text-gray-500 mt-2">ديون يجب دفعها للتجار حالياً (مشتريات − دفعات + أرصدة افتتاحية)</p>
                   </div>
                   <div className="bg-white rounded-2xl p-6 shadow-md border border-gray-100">
                     <div className="flex items-center gap-3 mb-2">

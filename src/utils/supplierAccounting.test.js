@@ -2,6 +2,7 @@ import {
   computeSupplierPayableFromExpenses,
   computeSupplierTotalPayable,
   resolveSupplierOutstandingBalance,
+  computeTotalOutstandingSupplierPayable,
   supplierLedgerEntries,
   expenseCountsInReportTotals,
   isSupplierPaymentExpense,
@@ -62,5 +63,14 @@ describe('supplierAccounting', () => {
     expect(normalizeSupplierPaymentMethod('Vault')).toBe(SUPPLIER_PAYMENT_VAULT);
     expect(normalizeSupplierPaymentMethod('Transfer')).toBe('Transfer Bank');
     expect(supplierPaymentMethodLabel('Vault')).toBe('من الخزنة');
+  });
+
+  test('total outstanding supplier payable sums positive balances per trader', () => {
+    const traders = [
+      { id: 'a', balance: 100 },
+      { id: 'b', balance: 150 },
+      { id: 'c', balance: 0 },
+    ];
+    expect(computeTotalOutstandingSupplierPayable(traders, [])).toBe(250);
   });
 });
