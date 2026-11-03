@@ -6,6 +6,7 @@ import {
   timePrice,
   electricityCost,
   stockUnitsForItem,
+  stockUnitsForCatalogLine,
   getProductType,
   validateWeightPricing,
   validateTimePricing,
@@ -127,4 +128,6 @@ describe('stock units', () => {
   test('weight uses grams', () => expect(stockUnitsForItem({ productType: 'weight', weightGrams: 20, quantity: 1 })).toBe(20));
   test('time uses none', () => expect(stockUnitsForItem({ productType: 'time', quantity: 1 })).toBe(0));
   test('service uses none', () => expect(stockUnitsForItem({ productType: 'service', quantity: 1 })).toBe(0));
+  test('catalog line infers weight from product', () =>
+    expect(stockUnitsForCatalogLine({ quantity: 1, weightGrams: 15 }, { productType: 'weight' })).toBe(15));
 });

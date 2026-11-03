@@ -10,7 +10,7 @@ function layerQuery(uid, productId) {
 
 export function applyInventoryLayerUpdates(tx, updates) {
   for (const u of updates || []) {
-    if (!u?.ref) continue;
+    if (!u?.ref || typeof u.ref.path !== 'string') continue;
     tx.update(u.ref, {
       remainingQuantity: u.remainingQuantity,
       updatedAt: serverTimestamp(),
@@ -28,7 +28,7 @@ export async function planInventoryLayersFifo(tx, uid, productId, quantityNeeded
 
   const snap = await tx.get(q);
   const layers = snap.docs
-    .map((d) => ({ id: d.id, ref: d.ref, ...d.data() }))
+    .map((d) => ({ ...d.data(), id: d.id, ref: d.ref }))
     .filter((l) => (Number(l.remainingQuantity) || 0) > 0)
     .sort((a, b) => (Number(a.purchaseDateMs) || 0) - (Number(b.purchaseDateMs) || 0));
 
@@ -63,7 +63,7 @@ export async function planInventoryLayersLifoRestore(tx, uid, productId, quantit
 
   const snap = await tx.get(q);
   const layers = snap.docs
-    .map((d) => ({ id: d.id, ref: d.ref, ...d.data() }))
+    .map((d) => ({ ...d.data(), id: d.id, ref: d.ref }))
     .sort((a, b) => (Number(b.purchaseDateMs) || 0) - (Number(a.purchaseDateMs) || 0));
 
   let restored = 0;

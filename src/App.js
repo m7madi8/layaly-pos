@@ -150,6 +150,7 @@ import {
   TIME_ROUNDING_OPTIONS,
   getProductType,
   stockUnitsForItem,
+  stockUnitsForCatalogLine,
   costFromWeight,
   validateWeightPricing,
   validateTimePricing,
@@ -3074,16 +3075,18 @@ const AppCore = () => {
         let orderCogsTotal = 0;
         const itemFifoConsumption = new Map();
         const inventoryLayerUpdates = [];
+        const useClientInventoryLayers = process.env.REACT_APP_POS_INVENTORY_LAYERS === 'true';
 
         if (existingOrderData && existingOrderData.status !== 'cancelled') {
           for (const item of existingOrderData.items) {
-            const units = stockUnitsForItem(item);
             const pid = normalizeDocId(item.id);
-            if (!productDocs[pid] || !(units > 0)) continue;
             const p = productDocs[pid];
+            if (!p) continue;
+            const units = stockUnitsForCatalogLine(item, p.data);
+            if (!(units > 0)) continue;
             p.data.stock = (p.data.stock || 0) + units;
             const pType = getProductType(p.data);
-            if (pType !== 'time' && pType !== 'service') {
+            if (pType !== 'time' && pType !== 'service' && useClientInventoryLayers) {
               const restorePlan = await planInventoryLayersLifoRestore(transaction, user.uid, pid, units);
               inventoryLayerUpdates.push(...restorePlan.updates);
             }
@@ -3096,10 +3099,20 @@ const AppCore = () => {
           if (!p) continue;
           const pType = getProductType(p.data);
           if (pType === 'time' || pType === 'service') continue;
-          const units = stockUnitsForItem(item);
+          const units = stockUnitsForCatalogLine(item, p.data);
           if (!(units > 0)) continue;
-          const fifoPlan = await planInventoryLayersFifo(transaction, user.uid, pid, units);
-          inventoryLayerUpdates.push(...fifoPlan.updates);
+          let fifoPlan;
+          if (useClientInventoryLayers) {
+            fifoPlan = await planInventoryLayersFifo(transaction, user.uid, pid, units);
+            inventoryLayerUpdates.push(...fifoPlan.updates);
+          } else {
+            fifoPlan = {
+              cogs: legacyProductCogs(p.data, units),
+              layers: [],
+              shortfall: 0,
+              updates: [],
+            };
+          }
           itemFifoConsumption.set(item.cartItemId || item.id, fifoPlan.layers || []);
           let lineCogs = fifoPlan.cogs || 0;
           if (fifoPlan.shortfall > 0) {
@@ -3117,7 +3130,7 @@ const AppCore = () => {
           if (!productDocs[pid]) {
              throw new Error(`الصنف "${item.name}" غير موجود`);
           }
-          const units = stockUnitsForItem(item);
+          const units = stockUnitsForCatalogLine(item, productDocs[pid]?.data);
           if (units <= 0) continue;
           const p = productDocs[pid];
           if (p.data.stock < units) {

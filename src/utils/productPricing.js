@@ -128,6 +128,16 @@ export function stockUnitsForItem(item) {
   return qty;
 }
 
+/** سطر السلة + بيانات الصنف من الكatalog (يضمن نوع «بالوزن» حتى لو السطر قديم بدون productType) */
+export function stockUnitsForCatalogLine(item, productData) {
+  if (!productData) return stockUnitsForItem(item);
+  return stockUnitsForItem({
+    ...item,
+    productType: productData.productType,
+    weightPricing: productData.weightPricing,
+  });
+}
+
 /** وصف مختصر لسطر الفاتورة: الوزن أو مدة الجلسة — فارغ للأصناف العادية */
 export function itemDetailLabel(item) {
   const type = getProductType(item);
