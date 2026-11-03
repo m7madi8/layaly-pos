@@ -3,6 +3,115 @@ import { roundMoney } from '../utils/employeeBenefitAccounting';
 
 const layersCol = (uid) => collection(db, 'users', uid, 'inventoryLayers');
 
+function layerQuery(uid, productId) {
+  if (!uid || !productId) return null;
+  return query(layersCol(uid), where('productId', '==', productId));
+}
+
+export function applyInventoryLayerUpdates(tx, updates) {
+  for (const u of updates || []) {
+    if (!u?.ref) continue;
+    tx.update(u.ref, {
+      remainingQuantity: u.remainingQuantity,
+      updatedAt: serverTimestamp(),
+    });
+  }
+}
+
+/** Read-only FIFO plan (use before any writes in the same transaction). */
+export async function planInventoryLayersFifo(tx, uid, productId, quantityNeeded) {
+  let need = Number(quantityNeeded) || 0;
+  if (!(need > 0) || !productId) return { cogs: 0, layers: [], shortfall: 0, updates: [] };
+
+  const q = layerQuery(uid, productId);
+  if (!q) return { cogs: 0, layers: [], shortfall: need, updates: [] };
+
+  const snap = await tx.get(q);
+  const layers = snap.docs
+    .map((d) => ({ id: d.id, ref: d.ref, ...d.data() }))
+    .filter((l) => (Number(l.remainingQuantity) || 0) > 0)
+    .sort((a, b) => (Number(a.purchaseDateMs) || 0) - (Number(b.purchaseDateMs) || 0));
+
+  let cogs = 0;
+  const consumed = [];
+  const updates = [];
+  for (const layer of layers) {
+    if (need <= 0) break;
+    const rem = Number(layer.remainingQuantity) || 0;
+    if (rem <= 0) continue;
+    const take = Math.min(rem, need);
+    const unit = Number(layer.unitCost) || 0;
+    cogs += take * unit;
+    need -= take;
+    updates.push({ ref: layer.ref, remainingQuantity: roundMoney(rem - take) });
+    consumed.push({ layerId: layer.id, quantity: take, unitCost: unit });
+  }
+
+  if (need > 0.0001) {
+    return { cogs: roundMoney(cogs), layers: consumed, shortfall: need, updates };
+  }
+  return { cogs: roundMoney(cogs), layers: consumed, shortfall: 0, updates };
+}
+
+/** Read-only LIFO restore plan. */
+export async function planInventoryLayersLifoRestore(tx, uid, productId, quantityToRestore) {
+  let need = Number(quantityToRestore) || 0;
+  if (!(need > 0) || !productId) return { restored: 0, layers: [], shortfall: 0, updates: [] };
+
+  const q = layerQuery(uid, productId);
+  if (!q) return { restored: 0, layers: [], shortfall: need, updates: [] };
+
+  const snap = await tx.get(q);
+  const layers = snap.docs
+    .map((d) => ({ id: d.id, ref: d.ref, ...d.data() }))
+    .sort((a, b) => (Number(b.purchaseDateMs) || 0) - (Number(a.purchaseDateMs) || 0));
+
+  let restored = 0;
+  const restoredLayers = [];
+  const updates = [];
+  for (const layer of layers) {
+    if (need <= 0) break;
+    const initial = Number(layer.initialQuantity) || 0;
+    const rem = Number(layer.remainingQuantity) || 0;
+    const room = initial - rem;
+    if (room <= 0.0001) continue;
+    const add = Math.min(room, need);
+    updates.push({ ref: layer.ref, remainingQuantity: roundMoney(rem + add) });
+    restored += add;
+    need -= add;
+    restoredLayers.push({ layerId: layer.id, quantity: add });
+  }
+
+  return {
+    restored: roundMoney(restored),
+    layers: restoredLayers,
+    shortfall: need > 0.0001 ? need : 0,
+    updates,
+  };
+}
+
+/** FIFO consume — returns total COGS and consumption detail. */
+export async function consumeInventoryLayersFifo(tx, uid, productId, quantityNeeded) {
+  const plan = await planInventoryLayersFifo(tx, uid, productId, quantityNeeded);
+  applyInventoryLayerUpdates(tx, plan.updates);
+  return {
+    cogs: plan.cogs,
+    layers: plan.layers,
+    shortfall: plan.shortfall,
+  };
+}
+
+/** LIFO restore — add quantity back to cost layers newest-first (reverse of FIFO sale). */
+export async function restoreInventoryLayersLifo(tx, uid, productId, quantityToRestore) {
+  const plan = await planInventoryLayersLifoRestore(tx, uid, productId, quantityToRestore);
+  applyInventoryLayerUpdates(tx, plan.updates);
+  return {
+    restored: plan.restored,
+    layers: plan.layers,
+    shortfall: plan.shortfall,
+  };
+}
+
 /**
  * Append FIFO cost layer on purchase (does not overwrite legacy stock cost on product except lastPurchaseUnitCost).
  */
@@ -22,77 +131,6 @@ export async function appendInventoryLayerInTransaction(tx, uid, { productId, pu
     createdAtMs: Date.now(),
   });
   return layerRef.id;
-}
-
-/** FIFO consume — returns total COGS and consumption detail. */
-export async function consumeInventoryLayersFifo(tx, uid, productId, quantityNeeded) {
-  let need = Number(quantityNeeded) || 0;
-  if (!(need > 0)) return { cogs: 0, layers: [] };
-
-  const q = query(layersCol(uid), where('productId', '==', productId));
-  const snap = await tx.get(q);
-  const layers = snap.docs
-    .map((d) => ({ id: d.id, ref: d.ref, ...d.data() }))
-    .filter((l) => (Number(l.remainingQuantity) || 0) > 0)
-    .sort((a, b) => (Number(a.purchaseDateMs) || 0) - (Number(b.purchaseDateMs) || 0));
-
-  let cogs = 0;
-  const consumed = [];
-  for (const layer of layers) {
-    if (need <= 0) break;
-    const rem = Number(layer.remainingQuantity) || 0;
-    if (rem <= 0) continue;
-    const take = Math.min(rem, need);
-    const unit = Number(layer.unitCost) || 0;
-    cogs += take * unit;
-    need -= take;
-    tx.update(layer.ref, {
-      remainingQuantity: roundMoney(rem - take),
-      updatedAt: serverTimestamp(),
-    });
-    consumed.push({ layerId: layer.id, quantity: take, unitCost: unit });
-  }
-
-  if (need > 0.0001) {
-    return { cogs: roundMoney(cogs), layers: consumed, shortfall: need };
-  }
-  return { cogs: roundMoney(cogs), layers: consumed, shortfall: 0 };
-}
-
-/** LIFO restore — add quantity back to cost layers newest-first (reverse of FIFO sale). */
-export async function restoreInventoryLayersLifo(tx, uid, productId, quantityToRestore) {
-  let need = Number(quantityToRestore) || 0;
-  if (!(need > 0)) return { restored: 0, layers: [], shortfall: 0 };
-
-  const q = query(layersCol(uid), where('productId', '==', productId));
-  const snap = await tx.get(q);
-  const layers = snap.docs
-    .map((d) => ({ id: d.id, ref: d.ref, ...d.data() }))
-    .sort((a, b) => (Number(b.purchaseDateMs) || 0) - (Number(a.purchaseDateMs) || 0));
-
-  let restored = 0;
-  const restoredLayers = [];
-  for (const layer of layers) {
-    if (need <= 0) break;
-    const initial = Number(layer.initialQuantity) || 0;
-    const rem = Number(layer.remainingQuantity) || 0;
-    const room = initial - rem;
-    if (room <= 0.0001) continue;
-    const add = Math.min(room, need);
-    tx.update(layer.ref, {
-      remainingQuantity: roundMoney(rem + add),
-      updatedAt: serverTimestamp(),
-    });
-    restored += add;
-    need -= add;
-    restoredLayers.push({ layerId: layer.id, quantity: add });
-  }
-
-  return {
-    restored: roundMoney(restored),
-    layers: restoredLayers,
-    shortfall: need > 0.0001 ? need : 0,
-  };
 }
 
 /**

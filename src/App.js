@@ -51,7 +51,12 @@ import DailyArchivePanel from './components/DailyArchivePanel';
 import { closeBusinessDay, recordBusinessDayAdjustment } from './services/businessDayService';
 import { migrateEmployeeProfilesV1 } from './services/migrateEmployeeProfiles';
 import { useShiftOverdueWarning } from './hooks/useShiftOverdueWarning';
-import { consumeInventoryLayersFifo, legacyProductCogs, restoreInventoryLayersLifo } from './services/inventoryLayerService';
+import {
+  applyInventoryLayerUpdates,
+  legacyProductCogs,
+  planInventoryLayersFifo,
+  planInventoryLayersLifoRestore,
+} from './services/inventoryLayerService';
 import RemoveTestSalesModal from './components/RemoveTestSalesModal';
 import RemoveOldPlaystationModal from './components/RemoveOldPlaystationModal';
 import SystemResetModal from './components/SystemResetModal';
@@ -3068,6 +3073,23 @@ const AppCore = () => {
 
         let orderCogsTotal = 0;
         const itemFifoConsumption = new Map();
+        const inventoryLayerUpdates = [];
+
+        if (existingOrderData && existingOrderData.status !== 'cancelled') {
+          for (const item of existingOrderData.items) {
+            const units = stockUnitsForItem(item);
+            const pid = normalizeDocId(item.id);
+            if (!productDocs[pid] || !(units > 0)) continue;
+            const p = productDocs[pid];
+            p.data.stock = (p.data.stock || 0) + units;
+            const pType = getProductType(p.data);
+            if (pType !== 'time' && pType !== 'service') {
+              const restorePlan = await planInventoryLayersLifoRestore(transaction, user.uid, pid, units);
+              inventoryLayerUpdates.push(...restorePlan.updates);
+            }
+          }
+        }
+
         for (const item of currentOrder.items) {
           const pid = normalizeDocId(item.id);
           const p = productDocs[pid];
@@ -3076,33 +3098,18 @@ const AppCore = () => {
           if (pType === 'time' || pType === 'service') continue;
           const units = stockUnitsForItem(item);
           if (!(units > 0)) continue;
-          const fifo = await consumeInventoryLayersFifo(transaction, user.uid, pid, units);
-          itemFifoConsumption.set(item.cartItemId || item.id, fifo.layers || []);
-          let lineCogs = fifo.cogs || 0;
-          if (fifo.shortfall > 0) {
-            lineCogs += legacyProductCogs(p.data, fifo.shortfall);
+          const fifoPlan = await planInventoryLayersFifo(transaction, user.uid, pid, units);
+          inventoryLayerUpdates.push(...fifoPlan.updates);
+          itemFifoConsumption.set(item.cartItemId || item.id, fifoPlan.layers || []);
+          let lineCogs = fifoPlan.cogs || 0;
+          if (fifoPlan.shortfall > 0) {
+            lineCogs += legacyProductCogs(p.data, fifoPlan.shortfall);
           }
           orderCogsTotal += lineCogs;
         }
         orderCogsTotal = roundMoney(orderCogsTotal);
 
         // 2. LOGIC & WRITES
-        
-        // Restore stock if editing
-        if (existingOrderData && existingOrderData.status !== 'cancelled') {
-            for (const item of existingOrderData.items) {
-                const units = stockUnitsForItem(item);
-                const pid = normalizeDocId(item.id);
-                if (productDocs[pid] && units > 0) {
-                    const p = productDocs[pid];
-                    p.data.stock = (p.data.stock || 0) + units;
-                    const pType = getProductType(p.data);
-                    if (pType !== 'time' && pType !== 'service') {
-                      await restoreInventoryLayersLifo(transaction, user.uid, pid, units);
-                    }
-                }
-            }
-        }
 
         // Deduct stock for new items
         for (const item of currentOrder.items) {
@@ -3141,6 +3148,7 @@ const AppCore = () => {
         }
 
         // Apply product updates (time-based products have no stock)
+        applyInventoryLayerUpdates(transaction, inventoryLayerUpdates);
         for (const pid of productIds) {
             if (productDocs[pid] && getProductType(productDocs[pid].data) !== 'time' && getProductType(productDocs[pid].data) !== 'service') {
                 transaction.update(productDocs[pid].ref, { stock: productDocs[pid].data.stock });
