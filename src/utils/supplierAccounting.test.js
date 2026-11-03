@@ -1,5 +1,8 @@
 import {
   computeSupplierPayableFromExpenses,
+  computeSupplierTotalPayable,
+  resolveSupplierOutstandingBalance,
+  supplierLedgerEntries,
   expenseCountsInReportTotals,
   isSupplierPaymentExpense,
   nextBalanceAfterPayment,
@@ -44,5 +47,22 @@ describe('supplierAccounting', () => {
 
   test('next balance after payment', () => {
     expect(nextBalanceAfterPayment(100, 30)).toBe(70);
+  });
+
+  test('total payable includes opening balance', () => {
+    const supplier = { openingBalanceRecorded: true, openingBalanceAmount: 500, balance: 0 };
+    expect(computeSupplierTotalPayable(supplier, [], 's1')).toBe(500);
+    expect(resolveSupplierOutstandingBalance(supplier, [], 's1')).toBe(500);
+  });
+
+  test('ledger includes opening balance row', () => {
+    const supplier = {
+      id: 's1',
+      openingBalanceRecorded: true,
+      openingBalanceAmount: 200,
+      openingBalanceNature: 'payable',
+    };
+    const rows = supplierLedgerEntries([], 's1', supplier);
+    expect(rows.some((r) => r.kind === 'opening_balance')).toBe(true);
   });
 });

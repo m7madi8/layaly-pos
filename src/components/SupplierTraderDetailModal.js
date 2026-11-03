@@ -74,8 +74,8 @@ export default function SupplierTraderDetailModal({
   );
 
   const ledger = useMemo(
-    () => supplierLedgerEntries(expenses, supplier?.id),
-    [expenses, supplier?.id]
+    () => supplierLedgerEntries(expenses, supplier?.id, supplier),
+    [expenses, supplier]
   );
 
   if (!supplier) return null;
@@ -495,8 +495,20 @@ export default function SupplierTraderDetailModal({
                     {ledger.map((row) => (
                       <div key={row.id} className="px-3 py-2.5 text-xs flex justify-between gap-2 hover:bg-gray-50">
                         <div className="min-w-0">
-                          <span className={`font-semibold ${row.kind === 'payment' ? 'text-green-700' : 'text-orange-700'}`}>
-                            {row.kind === 'payment' ? 'دفعة' : 'مشتريات'}
+                          <span
+                            className={`font-semibold ${
+                              row.kind === 'payment'
+                                ? 'text-green-700'
+                                : row.kind === 'opening_balance'
+                                  ? 'text-blue-700'
+                                  : 'text-orange-700'
+                            }`}
+                          >
+                            {row.kind === 'payment'
+                              ? 'دفعة'
+                              : row.kind === 'opening_balance'
+                                ? 'رصيد افتتاحي'
+                                : 'مشتريات'}
                           </span>
                           <span className="text-gray-400"> · {formatLedgerDate(row)}</span>
                           {row.kind === 'payment' && row.paymentRef && (
@@ -510,7 +522,11 @@ export default function SupplierTraderDetailModal({
                           )}
                         </div>
                         <div className="text-left shrink-0">
-                          <span className="font-bold text-gray-900">{fmtMoney(row.amount)}</span>
+                          <span className="font-bold text-gray-900">
+                            {row.kind === 'opening_balance' && row.signedAmount < 0
+                              ? `−${fmtMoney(row.amount)}`
+                              : fmtMoney(row.amount)}
+                          </span>
                           {row.kind === 'payment' && row.paymentMethod && (
                             <span className="block text-[10px] text-gray-500">{supplierPaymentMethodLabel(row.paymentMethod)}</span>
                           )}

@@ -36,6 +36,8 @@ async function recordSupplierOpeningBalance(db, uid, supplierId, input, { actor 
       openingBalanceRecorded: true,
       openingBalanceAmount: signed,
       openingBalanceNature: nature,
+      openingBalanceNote: String(input.note || '').trim(),
+      openingBalanceAtMs: input.asOfDateMs || Date.now(),
       updatedAt: serverTimestamp(db),
     });
 

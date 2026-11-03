@@ -1,4 +1,4 @@
-import { db, doc, collection, runTransaction, serverTimestamp, updateDoc } from '../firebaseClient';
+import { db, doc, collection, runTransaction, serverTimestamp, updateDoc, getDoc } from '../firebaseClient';
 import {
   readOpenCashShiftInTransaction,
   appendCashMovementInTransaction,
@@ -8,6 +8,7 @@ import {
   SUPPLIER_PAYMENT_SECTION,
   buildPaymentReference,
   computeSupplierPayableFromExpenses,
+  computeSupplierTotalPayable,
   roundMoney,
   validateSupplierPaymentInput,
 } from '../utils/supplierAccounting';
@@ -182,10 +183,14 @@ export async function applySupplierPurchaseBalanceInTransaction(
   applySupplierPurchaseBalanceWrite(tx, sRef, snap, supplierId, amount, expensesSnapshot);
 }
 
-/** Align stored payable with purchase/payment history (legacy suppliers). */
+/** Align stored payable with opening balance + purchase/payment history. */
 export async function reconcileSupplierBalance(uid, supplierId, expenses) {
-  const computed = computeSupplierPayableFromExpenses(expenses, supplierId);
-  await updateDoc(supplierRef(uid, supplierId), {
+  const sRef = supplierRef(uid, supplierId);
+  const snap = await getDoc(sRef);
+  if (!snap.exists()) return 0;
+  const supplier = { id: snap.id, ...snap.data() };
+  const computed = computeSupplierTotalPayable(supplier, expenses, supplierId);
+  await updateDoc(sRef, {
     balance: computed,
     updatedAt: serverTimestamp(),
   });

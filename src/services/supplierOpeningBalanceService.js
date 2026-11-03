@@ -35,6 +35,8 @@ export async function recordSupplierOpeningBalance(uid, supplierId, { amount, na
       openingBalanceRecorded: true,
       openingBalanceAmount: signed,
       openingBalanceNature: nature === 'receivable' ? 'receivable' : 'payable',
+      openingBalanceNote: String(note || '').trim(),
+      openingBalanceAtMs: asOfDateMs || Date.now(),
       updatedAt: serverTimestamp(),
     });
 

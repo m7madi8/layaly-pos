@@ -34,12 +34,25 @@ export function computeSupplierPayableFromExpenses(expenses, supplierId) {
   return roundMoney(purchases - payments);
 }
 
+/** Opening balance (if any) + net purchases/payments from expense history. */
+export function computeSupplierTotalPayable(supplier, expenses, supplierId) {
+  const activity = computeSupplierPayableFromExpenses(expenses, supplierId);
+  if (supplier?.openingBalanceRecorded && supplier.openingBalanceAmount != null && supplier.openingBalanceAmount !== '') {
+    return roundMoney(Number(supplier.openingBalanceAmount) + activity);
+  }
+  return activity;
+}
+
 export function resolveSupplierOutstandingBalance(supplier, expenses, supplierId) {
   const stored = supplier?.balance;
+  const fromFormula = computeSupplierTotalPayable(supplier, expenses, supplierId);
+  if (supplier?.openingBalanceRecorded) {
+    return fromFormula;
+  }
   if (stored != null && stored !== '' && Number.isFinite(Number(stored))) {
     return roundMoney(stored);
   }
-  return computeSupplierPayableFromExpenses(expenses, supplierId);
+  return fromFormula;
 }
 
 export function expenseCountsInReportTotals(expense) {
@@ -77,9 +90,29 @@ export function buildPaymentReference(date = new Date()) {
   return `SP-${y}${m}${day}-${suffix}`;
 }
 
-export function supplierLedgerEntries(expenses, supplierId) {
+export function supplierLedgerEntries(expenses, supplierId, supplier = null) {
   if (!supplierId) return [];
   const rows = [];
+  if (
+    supplier?.openingBalanceRecorded &&
+    supplier.openingBalanceAmount != null &&
+    supplier.openingBalanceAmount !== ''
+  ) {
+    const signed = roundMoney(supplier.openingBalanceAmount);
+    if (Math.abs(signed) > 0.009) {
+      rows.push({
+        id: `opening_${supplierId}`,
+        kind: 'opening_balance',
+        date: supplier.openingBalanceAtMs ? new Date(supplier.openingBalanceAtMs) : null,
+        amount: Math.abs(signed),
+        signedAmount: signed,
+        nature: supplier.openingBalanceNature || (signed >= 0 ? 'payable' : 'receivable'),
+        notes: supplier.openingBalanceNote || 'رصيد افتتاحي',
+        paymentRef: null,
+        recordedBy: supplier.openingBalanceBy || null,
+      });
+    }
+  }
   for (const e of expenses || []) {
     if (String(e.supplierId || '') !== String(supplierId)) continue;
     const amt = roundMoney(e.amount);
