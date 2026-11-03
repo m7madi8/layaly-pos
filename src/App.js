@@ -48,7 +48,6 @@ import {
   sumReportExpenses,
   resolveSupplierOutstandingBalance,
   SUPPLIER_PAYMENT_CASH,
-  SUPPLIER_PAYMENT_VAULT,
   normalizeSupplierPaymentMethod,
 } from './utils/supplierAccounting';
 import PosProductCard from './components/PosProductCard';
