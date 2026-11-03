@@ -1120,11 +1120,21 @@ const AppCore = () => {
         alert('تسجيل الاستفادة معطّل لهذا الموظف — راجع صلاحياته من قسم الموظفين.');
         return;
       }
+      const openShiftForBenefit = cashShifts.find((s) => s.status === 'open');
+      if (!openShiftForBenefit) {
+        alert('افتح وردية صندوق من شاشة الكاش قبل تسجيل الاستفادة.');
+        return;
+      }
+      try {
+        assertStaffOnDutyForShift(openShiftForBenefit, staffMember.id);
+      } catch (dutyErr) {
+        alert(dutyErr.message || 'الموظف غير مداوم في الشفت الحالي');
+        return;
+      }
       setUploadProgress(true);
       const idem = employeeBenefitIdemRef.current || newIdempotencyKey('emp_ben');
       employeeBenefitIdemRef.current = idem;
       try {
-        const openShift = cashShifts.find((s) => s.status === 'open');
         const cashDayKey = getCashDayKey();
         const usedToday = sumApprovedBenefitsUsage(employeeBenefits, staffMember.id, cashDayKey);
         const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
@@ -1137,7 +1147,7 @@ const AppCore = () => {
             inventoryLines: expenseForm.inventoryLines || [],
             date: expenseForm.date,
             notes: expenseForm.notes || expenseForm.description,
-            shiftId: openShift?.id || null,
+            shiftId: openShiftForBenefit.id,
             usedToday,
             override: Boolean(expenseForm.override),
             overrideReason: expenseForm.overrideReason,

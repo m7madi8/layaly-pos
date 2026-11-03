@@ -247,8 +247,8 @@ function computeBenefitQuota({ limit, used, proposed }) {
 
 function assertBenefitPermission(actor, { allowOverride = false } = {}) {
   const role = actor?.role;
-  if (role !== 'admin') {
-    throw new Error('صلاحية غير كافية — تسجيل استفادة الموظفين للمدير فقط');
+  if (role !== 'admin' && role !== 'employee') {
+    throw new Error('صلاحية غير كافية — سجّل الدخول كمدير أو موظف');
   }
   if (allowOverride && role !== 'admin') {
     throw new Error('تجاوز الحد مسموح للمدير فقط');

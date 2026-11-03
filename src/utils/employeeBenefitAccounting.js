@@ -259,11 +259,94 @@ export function computeBenefitQuota({ limit, used, proposed }) {
 
 export function assertBenefitPermission(actor, { allowOverride = false } = {}) {
   const role = actor?.role;
-  if (role !== 'admin') {
-    throw new Error('صلاحية غير كافية — تسجيل استفادة الموظفين للمدير فقط');
+  if (role !== 'admin' && role !== 'employee') {
+    throw new Error('صلاحية غير كافية — سجّل الدخول كمدير أو موظف');
   }
   if (allowOverride && role !== 'admin') {
     throw new Error('تجاوز الحد مسموح للمدير فقط');
+  }
+}
+
+/** معاينة واجهة استفادة الموظف — تحدد إن كان زر «مراجعة وتأكيد» متاحاً */
+export function evaluateEmployeeBenefitPreview({
+  benefitType,
+  cashAmount,
+  inventoryLines,
+  productsById,
+  usedToday,
+  staffMember,
+  openShift,
+  isAdmin,
+  override,
+  overrideReason,
+}) {
+  const empty = { ok: false, total: 0, lines: [], quota: null, error: null, needsOverride: false };
+  if (!staffMember?.id) {
+    return { ...empty, error: 'اختر الموظف' };
+  }
+  const shiftOpen =
+    openShift &&
+    (openShift.status === 'open' ||
+      (openShift.id && openShift.status !== 'closed' && openShift.status !== 'cancelled'));
+  if (!shiftOpen) {
+    return { ...empty, error: 'افتح وردية صندوق لتسجيل الاستفادة' };
+  }
+  const limit = roundMoney(staffMember.benefitLimitILS);
+  if (!(limit > 0)) {
+    return { ...empty, error: 'حد الاستفادة غير مضبوط لهذا الموظف' };
+  }
+  const used = roundMoney(usedToday ?? 0);
+  try {
+    let total = 0;
+    let lines = [];
+    if (benefitType === BENEFIT_TYPE_CASH) {
+      total = roundMoney(parseFloat(cashAmount) || cashAmount);
+      if (!(total > 0)) {
+        return { ...empty, error: 'أدخل مبلغ كاش أكبر من صفر' };
+      }
+    } else if (benefitType === BENEFIT_TYPE_PERSONAL) {
+      const resolved = resolvePersonalConsumptionLines(productsById, inventoryLines || []);
+      lines = resolved.lines;
+      total = resolved.totalValue;
+      if (!(total > 0)) {
+        return { ...empty, error: 'أضف أصنافاً للاستهلاك الشخصي' };
+      }
+    } else if (benefitType === BENEFIT_TYPE_INVENTORY) {
+      const resolved = resolveBenefitLines(productsById, inventoryLines || []);
+      lines = resolved.lines;
+      total = resolved.totalValue;
+      if (!(total > 0)) {
+        return { ...empty, error: 'أضف أصنافاً واحداً على الأقل' };
+      }
+    } else {
+      return { ...empty, error: 'نوع الاستفادة غير صالح' };
+    }
+    const quota = computeBenefitQuota({ limit, used, proposed: total });
+    if (benefitType !== BENEFIT_TYPE_PERSONAL && quota.exceeds) {
+      if (!isAdmin) {
+        return {
+          ok: false,
+          total,
+          lines,
+          quota,
+          error: `تجاوز الحد (المتبقي ${quota.remaining} ₪) — اطلب موافقة المدير`,
+          needsOverride: false,
+        };
+      }
+      if (!override || !String(overrideReason || '').trim()) {
+        return {
+          ok: false,
+          total,
+          lines,
+          quota,
+          error: 'فعّل الموافقة الإدارية وأدخل سبب التجاوز',
+          needsOverride: true,
+        };
+      }
+    }
+    return { ok: true, total, lines, quota, error: null, needsOverride: false };
+  } catch (e) {
+    return { ...empty, error: e.message || 'تعذّر حساب الاستفادة' };
   }
 }
 

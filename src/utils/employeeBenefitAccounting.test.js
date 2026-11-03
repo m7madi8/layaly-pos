@@ -9,6 +9,7 @@ import {
   BENEFIT_STATUS_APPROVED,
   BENEFIT_TYPE_CASH,
   BENEFIT_TYPE_INVENTORY,
+  evaluateEmployeeBenefitPreview,
 } from './employeeBenefitAccounting';
 
 describe('DEFAULT_CAFE_STAFF', () => {
@@ -118,9 +119,67 @@ describe('validateBenefitInput', () => {
     expect(v.proposed).toBe(6);
   });
 
-  it('rejects employee role', () => {
-    expect(() =>
-      assertBenefitPermission({ role: 'employee' })
-    ).toThrow(/صلاحية غير كافية/);
+  it('allows employee role without override', () => {
+    expect(() => assertBenefitPermission({ role: 'employee' })).not.toThrow();
+  });
+
+  it('rejects unknown role', () => {
+    expect(() => assertBenefitPermission({ role: 'guest' })).toThrow(/صلاحية غير كافية/);
+  });
+});
+
+describe('evaluateEmployeeBenefitPreview', () => {
+  const staff = { id: 's1', name: 'رضا', benefitLimitILS: 5, active: true };
+  const openShift = { id: 'shift1', status: 'open', onDutyStaffIds: ['s1'] };
+
+  it('requires cash amount for cash benefit', () => {
+    const p = evaluateEmployeeBenefitPreview({
+      benefitType: BENEFIT_TYPE_CASH,
+      cashAmount: '',
+      inventoryLines: [],
+      productsById: {},
+      usedToday: 0,
+      staffMember: staff,
+      openShift,
+      isAdmin: true,
+      override: false,
+      overrideReason: '',
+    });
+    expect(p.ok).toBe(false);
+    expect(p.error).toMatch(/مبلغ/);
+  });
+
+  it('blocks exceed without admin override', () => {
+    const p = evaluateEmployeeBenefitPreview({
+      benefitType: BENEFIT_TYPE_CASH,
+      cashAmount: 6,
+      inventoryLines: [],
+      productsById: {},
+      usedToday: 0,
+      staffMember: staff,
+      openShift,
+      isAdmin: true,
+      override: false,
+      overrideReason: '',
+    });
+    expect(p.ok).toBe(false);
+    expect(p.needsOverride).toBe(true);
+  });
+
+  it('allows cash within limit', () => {
+    const p = evaluateEmployeeBenefitPreview({
+      benefitType: BENEFIT_TYPE_CASH,
+      cashAmount: 5,
+      inventoryLines: [],
+      productsById: {},
+      usedToday: 0,
+      staffMember: staff,
+      openShift,
+      isAdmin: false,
+      override: false,
+      overrideReason: '',
+    });
+    expect(p.ok).toBe(true);
+    expect(p.total).toBe(5);
   });
 });

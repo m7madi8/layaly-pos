@@ -17,11 +17,18 @@ export function getProductType(product) {
 }
 
 function roundTo(value, decimals) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return NaN;
   const f = 10 ** decimals;
-  return Math.round((value + Number.EPSILON) * f) / f;
+  return Math.round((n + Number.EPSILON) * f) / f;
 }
 
-export const roundMoney = (value) => roundTo(value, 2);
+/** يُحوّل النص من حقول الإدخال إلى رقم قبل التقريب */
+export const roundMoney = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return roundTo(n, 2);
+};
 export const roundWeight = (value) => roundTo(value, 2);
 
 /** سعر الغرام = السعر الأساسي ÷ الوزن الأساسي (مثال: 1₪ لكل 2غ = 0.5₪/غ) */

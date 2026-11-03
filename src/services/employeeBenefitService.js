@@ -90,9 +90,15 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
     const staffSnap = await tx.get(sRef);
     if (!staffSnap.exists()) throw new Error('سجل الموظف غير موجود');
 
-    let cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, input.shiftId || null);
+    const shiftId = String(input.shiftId || '').trim();
+    if (!shiftId) {
+      throw new Error('لا توجد وردية كاش مفتوحة — افتح الوردية من شاشة الصندوق');
+    }
+    let cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, shiftId, {
+      allowQueryFallback: false,
+    });
     if (!cashShiftCtx) {
-      throw new Error('لا توجد وردية كاش مفتوحة لتسجيل الاستفادة');
+      throw new Error('وردية الكاش غير مفتوحة أو غير موجودة — حدّث الصفحة وتحقق من الشفت');
     }
     assertStaffOnDutyForShift(
       { status: 'open', onDutyStaffIds: cashShiftCtx.shiftSnap.data().onDutyStaffIds },

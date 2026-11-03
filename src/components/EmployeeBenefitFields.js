@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { fmtMoney } from '../i18n';
 import StaffSearchSelect from './StaffSearchSelect';
@@ -9,12 +9,11 @@ import {
   sumApprovedBenefitsUsage,
   resolveBenefitLines,
   resolvePersonalConsumptionLines,
-  computeBenefitQuota,
-  roundMoney,
+  evaluateEmployeeBenefitPreview,
 } from '../utils/employeeBenefitAccounting';
 import { getCashDayKey } from '../utils/cashDayPeriod';
 import { getProductType } from '../utils/productPricing';
-import { filterStaffByOnDuty } from '../utils/shiftOnDuty';
+import { filterStaffByOnDuty, openShiftNeedsOnDutyAssignment } from '../utils/shiftOnDuty';
 import { filterStaffForEmployeeBenefit } from '../utils/staffPermissions';
 
 export default function EmployeeBenefitFields({
@@ -36,7 +35,8 @@ export default function EmployeeBenefitFields({
     () => filterStaffForEmployeeBenefit(filterStaffByOnDuty(staffMembers, openShift)),
     [staffMembers, openShift]
   );
-  const selectedStaff = eligibleStaff.find((s) => s.id === staffId) || staffMembers.find((s) => s.id === staffId);
+  const selectedStaff =
+    eligibleStaff.find((s) => s.id === staffId) || staffMembers.find((s) => s.id === staffId);
 
   const usedToday = useMemo(
     () => sumApprovedBenefitsUsage(employeeBenefits, staffId, cashDayKey),
@@ -57,43 +57,45 @@ export default function EmployeeBenefitFields({
     [products]
   );
 
-  const preview = useMemo(() => {
-    try {
-      if (expenseForm.benefitType === BENEFIT_TYPE_CASH) {
-        const proposed = roundMoney(expenseForm.amount);
-        const limit = roundMoney(selectedStaff?.benefitLimitILS);
-        return {
-          ok: proposed > 0,
-          total: proposed,
-          quota: computeBenefitQuota({ limit, used: usedToday, proposed }),
-          lines: [],
-        };
-      }
-      if (expenseForm.benefitType === BENEFIT_TYPE_PERSONAL) {
-        const { lines, totalValue } = resolvePersonalConsumptionLines(
-          productsById,
-          expenseForm.inventoryLines || []
-        );
-        const limit = roundMoney(selectedStaff?.benefitLimitILS);
-        return {
-          ok: true,
-          total: totalValue,
-          lines,
-          quota: computeBenefitQuota({ limit, used: usedToday, proposed: totalValue }),
-        };
-      }
-      const { lines, totalValue } = resolveBenefitLines(productsById, expenseForm.inventoryLines || []);
-      const limit = roundMoney(selectedStaff?.benefitLimitILS);
-      return {
-        ok: true,
-        total: totalValue,
-        lines,
-        quota: computeBenefitQuota({ limit, used: usedToday, proposed: totalValue }),
-      };
-    } catch (e) {
-      return { ok: false, error: e.message, total: 0, lines: [], quota: null };
-    }
-  }, [expenseForm, selectedStaff, usedToday, productsById]);
+  const preview = useMemo(
+    () =>
+      evaluateEmployeeBenefitPreview({
+        benefitType: expenseForm.benefitType,
+        cashAmount: expenseForm.amount,
+        inventoryLines: expenseForm.inventoryLines,
+        productsById,
+        usedToday,
+        staffMember: selectedStaff,
+        openShift,
+        isAdmin,
+        override: expenseForm.override,
+        overrideReason: expenseForm.overrideReason,
+      }),
+    [
+      expenseForm.benefitType,
+      expenseForm.amount,
+      expenseForm.inventoryLines,
+      expenseForm.override,
+      expenseForm.overrideReason,
+      productsById,
+      usedToday,
+      selectedStaff,
+      openShift,
+      isAdmin,
+    ]
+  );
+
+  useEffect(() => {
+    setConfirmOpen(false);
+  }, [
+    expenseForm.benefitType,
+    expenseForm.amount,
+    expenseForm.staffMemberId,
+    expenseForm.inventoryLines,
+    expenseForm.override,
+    expenseForm.overrideReason,
+    staffId,
+  ]);
 
   const addLine = () => {
     const lines = [...(expenseForm.inventoryLines || []), { productId: '', quantity: 1, weightGrams: '' }];
@@ -110,8 +112,30 @@ export default function EmployeeBenefitFields({
     setExpenseForm({ ...expenseForm, inventoryLines: lines });
   };
 
+  const shiftBlockMessage = useMemo(() => {
+    if (!openShift || openShift.status !== 'open') {
+      return 'افتح وردية صندوق من شاشة الكاش قبل تسجيل الاستفادة (الكاش يُخصم من الصندوق).';
+    }
+    if (openShiftNeedsOnDutyAssignment(openShift)) {
+      return 'عيّن الموظفين المداومين في هذه الوردية من شاشة الصندوق ثم أعد المحاولة.';
+    }
+    if (!lockedStaffId && eligibleStaff.length === 0) {
+      return 'لا يوجد موظف مداوم بصلاحية استفادة في الشفت الحالي.';
+    }
+    if (lockedStaffId && staffId && !eligibleStaff.some((s) => s.id === staffId)) {
+      return 'هذا الموظف غير مداوم في الشفت الحالي.';
+    }
+    return null;
+  }, [openShift, eligibleStaff, lockedStaffId, staffId]);
+
   return (
     <div className="space-y-3 border-t border-gray-100 pt-3">
+      {shiftBlockMessage && (
+        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+          {shiftBlockMessage}
+        </p>
+      )}
+
       {!lockedStaffId && (
         <StaffSearchSelect
           staffMembers={eligibleStaff}
@@ -143,7 +167,17 @@ export default function EmployeeBenefitFields({
               key={opt.id}
               type="button"
               disabled={disabled}
-              onClick={() => setExpenseForm({ ...expenseForm, benefitType: opt.id })}
+              onClick={() =>
+                setExpenseForm({
+                  ...expenseForm,
+                  benefitType: opt.id,
+                  amount: opt.id === BENEFIT_TYPE_CASH ? expenseForm.amount : '',
+                  inventoryLines:
+                    opt.id === BENEFIT_TYPE_CASH ? [] : expenseForm.inventoryLines?.length
+                      ? expenseForm.inventoryLines
+                      : [{ productId: '', quantity: 1, weightGrams: '' }],
+                })
+              }
               className={`py-2.5 rounded-xl text-sm font-semibold border ${
                 expenseForm.benefitType === opt.id
                   ? 'bg-primary text-white border-primary'
@@ -167,6 +201,7 @@ export default function EmployeeBenefitFields({
             onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })}
             className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
             disabled={disabled}
+            placeholder="0.00"
           />
         </div>
       )}
@@ -293,7 +328,9 @@ export default function EmployeeBenefitFields({
         </div>
       )}
 
-      {preview.error && <p className="text-xs text-red-600">{preview.error}</p>}
+      {preview.error && !preview.ok && (
+        <p className="text-xs text-red-600">{preview.error}</p>
+      )}
 
       {preview.ok && preview.quota && (
         <div className="rounded-xl bg-gray-50 border border-gray-100 p-3 text-xs space-y-1">
@@ -304,6 +341,10 @@ export default function EmployeeBenefitFields({
             بعد الحفظ: {fmtMoney(preview.quota.proposedTotal)} من {fmtMoney(preview.quota.limit)}
           </p>
         </div>
+      )}
+
+      {!preview.ok && staffId && !preview.error && (
+        <p className="text-xs text-amber-700">أكمل البيانات أعلاه لتفعيل زر الحفظ.</p>
       )}
 
       {!confirmOpen ? (
@@ -320,8 +361,13 @@ export default function EmployeeBenefitFields({
         <div className="space-y-2 border border-primary/20 rounded-xl p-3">
           <p className="text-sm font-bold text-primary">تأكيد استفادة الموظف</p>
           <p className="text-xs text-gray-600">
-            {selectedStaff?.name} — {expenseForm.benefitType === BENEFIT_TYPE_CASH ? 'كاش' : 'أصناف'} —{' '}
-            {fmtMoney(preview.total)}
+            {selectedStaff?.name} —{' '}
+            {expenseForm.benefitType === BENEFIT_TYPE_CASH
+              ? 'كاش'
+              : expenseForm.benefitType === BENEFIT_TYPE_PERSONAL
+                ? 'استهلاك شخصي'
+                : 'أصناف'}{' '}
+            — {fmtMoney(preview.total)}
           </p>
           <div className="flex gap-2">
             <button
@@ -331,7 +377,11 @@ export default function EmployeeBenefitFields({
             >
               رجوع
             </button>
-            <button type="submit" className="flex-1 py-2 rounded-xl bg-primary text-white text-sm font-semibold">
+            <button
+              type="submit"
+              disabled={disabled || !preview.ok}
+              className="flex-1 py-2 rounded-xl bg-primary text-white text-sm font-semibold disabled:opacity-40"
+            >
               تأكيد الحفظ
             </button>
           </div>
