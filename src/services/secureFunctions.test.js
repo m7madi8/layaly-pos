@@ -5,6 +5,9 @@ describe('isCloudCallableUnavailableError', () => {
     expect(isCloudCallableUnavailableError({ code: 'functions/unavailable' })).toBe(true);
     expect(isCloudCallableUnavailableError(new Error('Failed to fetch'))).toBe(true);
     expect(isCloudCallableUnavailableError({ code: 'functions/permission-denied' })).toBe(false);
+    expect(
+      isCloudCallableUnavailableError(new TypeError("Cannot read properties of undefined (reading 'path')"))
+    ).toBe(true);
   });
 });
 

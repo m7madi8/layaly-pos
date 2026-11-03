@@ -3,6 +3,7 @@
  */
 
 import { newIdempotencyKey } from '../utils/idempotencyKey';
+import { normalizeDocId } from '../utils/firestoreIds';
 
 export function buildTrustedCompleteOrderPayload({
   currentOrder,
@@ -29,7 +30,7 @@ export function buildTrustedCompleteOrderPayload({
     notes: currentOrder.notes || '',
     assetMovementIds: currentOrder.assetMovementIds || [],
     lines: (currentOrder.items || []).map((item) => ({
-      productId: item.id,
+      productId: normalizeDocId(item.id),
       quantity: item.quantity,
       lineId: item.cartItemId || item.lineId || item.id,
       weightGrams: item.weightGrams,

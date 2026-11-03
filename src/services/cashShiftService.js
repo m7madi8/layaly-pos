@@ -1,5 +1,6 @@
 import { db, doc, collection, addDoc, getDocs, query, orderBy, where, limit, runTransaction, serverTimestamp } from '../firebaseClient';
 import { computeExpectedCash } from '../utils/cashShiftMath';
+import { assertDocId, assertFirestoreDocRef } from '../utils/firestoreIds';
 import { vaultDocRef, applyVaultCredit } from './vaultService';
 import {
   appendOnDutyRosterEntry,
@@ -166,13 +167,25 @@ export async function removeOnDutyStaffFromOpenShift(uid, { shiftId, staffId, ac
 }
 
 /** Read open shift inside a transaction — must run before any writes in the same transaction. */
-export async function readOpenCashShiftInTransaction(tx, uid, preferredShiftId = null) {
+export async function readOpenCashShiftInTransaction(
+  tx,
+  uid,
+  preferredShiftId = null,
+  { allowQueryFallback = true } = {}
+) {
+  const safeUid = assertDocId(uid, 'معرّف المستخدم غير صالح');
   if (preferredShiftId) {
-    const snap = await tx.get(cashShiftRef(uid, preferredShiftId));
+    const shiftId = assertDocId(preferredShiftId, 'معرّف وردية الكاش غير صالح');
+    const ref = assertFirestoreDocRef(
+      cashShiftRef(safeUid, shiftId),
+      'مرجع وردية الكاش غير صالح — حدّث الصفحة وافتح الوردية من شاشة الكاش'
+    );
+    const snap = await tx.get(ref);
     if (!snap.exists() || snap.data().status !== 'open') return null;
-    return { shiftId: preferredShiftId, shiftSnap: snap };
+    return { shiftId, shiftSnap: snap };
   }
-  const q = query(shiftsCol(uid), where('status', '==', 'open'), limit(1));
+  if (!allowQueryFallback) return null;
+  const q = query(shiftsCol(safeUid), where('status', '==', 'open'), limit(1));
   const qSnap = await tx.get(q);
   if (qSnap.empty) return null;
   const shiftSnap = qSnap.docs[0];

@@ -3024,6 +3024,14 @@ const AppCore = () => {
       if (!usedTrustedOrderPath) {
       const cost = currentOrder.items.reduce((sum, i) => sum + ((i.cost || 0) * i.quantity), 0);
 
+      let requiredCashShiftId = null;
+      if (!editingOrderId && cashPaid > 0) {
+        requiredCashShiftId = normalizeDocId(cashShifts.find((s) => s.status === 'open')?.id);
+        if (!requiredCashShiftId) {
+          throw new Error('لا توجد وردية كاش مفتوحة لتسجيل النقد — افتح الوردية من شاشة الكاش أولاً');
+        }
+      }
+
       await runTransaction(db, async (transaction) => {
         const ownerUid = assertDocId(user?.uid, 'يجب تسجيل الدخول لحفظ الطلب');
         if (!db) throw new Error('قاعدة البيانات غير جاهزة — حدّث الصفحة وأعد المحاولة');
@@ -3051,7 +3059,10 @@ const AppCore = () => {
             if (counterDoc.exists()) {
               currentCount = counterDoc.data().count || 0;
             }
-            newOrderRef = doc(collection(db, 'users', ownerUid, 'orders'));
+            newOrderRef = assertFirestoreDocRef(
+              doc(collection(db, 'users', ownerUid, 'orders')),
+              'تعذّر إنشاء مرجع الطلب — حدّث الصفحة وأعد المحاولة'
+            );
         }
         
         // Collect all product IDs to read (both new and old items)
@@ -3169,18 +3180,20 @@ const AppCore = () => {
         }
 
         let cashShiftCtx = null;
-        if (!editingOrderId && cashPaid > 0) {
-          const openShiftIdForTx = cashShifts.find((s) => s.status === 'open')?.id || null;
-          cashShiftCtx = await readOpenCashShiftInTransaction(transaction, ownerUid, openShiftIdForTx);
+        if (requiredCashShiftId) {
+          cashShiftCtx = await readOpenCashShiftInTransaction(transaction, ownerUid, requiredCashShiftId, {
+            allowQueryFallback: false,
+          });
           if (!cashShiftCtx) {
-            throw new Error('لا توجد وردية كاش مفتوحة لتسجيل النقد — افتح الوردية من شاشة الكاش أولاً');
+            throw new Error('وردية الكاش لم تعد مفتوحة — حدّث الصفحة من شاشة الكاش ثم أعد الدفع');
           }
         }
 
         let orderCogsTotal = 0;
         const itemFifoConsumption = new Map();
         const inventoryLayerUpdates = [];
-        const useClientInventoryLayers = process.env.REACT_APP_POS_INVENTORY_LAYERS === 'true';
+        /** Client checkout never uses inventoryLayers queries (avoids Firestore tx path errors). */
+        const useClientInventoryLayers = false;
 
         if (existingOrderData && existingOrderData.status !== 'cancelled') {
           for (const item of existingOrderData.items) {
@@ -3306,7 +3319,7 @@ const AppCore = () => {
           items: currentOrder.items.map((i) => {
             const type = getProductType(i);
             const line = {
-              id: i.id,
+              id: normalizeDocId(i.id),
               name: i.name,
               price: i.price,
               cost: i.cost || 0,

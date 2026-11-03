@@ -42,12 +42,18 @@ function isCloudFunctionsReadyEnv() {
 }
 
 /** Callable missing or blocked (404/CORS/network) — safe to fall back to legacy Firestore paths. */
+export function isFirestorePathError(error) {
+  const msg = String(error?.message || error || '');
+  return /reading 'path'|invalid document reference|cannot read properties of undefined/i.test(msg);
+}
+
 export function isCloudCallableUnavailableError(error) {
   const code = String(error?.code || '');
   const msg = String(error?.message || error || '').toLowerCase();
   if (code === 'functions/permission-denied' || code === 'functions/unauthenticated') {
     return false;
   }
+  if (isFirestorePathError(error)) return true;
   return (
     code === 'functions/unavailable' ||
     code === 'functions/internal' ||
