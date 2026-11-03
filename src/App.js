@@ -594,11 +594,9 @@ const AppCore = () => {
     userRole,
     currentView,
     orderFilter,
-    customDateRange.start,
-    customDateRange.end,
+    customDateRange,
     reportFilter,
-    reportCustomDates.start,
-    reportCustomDates.end,
+    reportCustomDates,
   ]);
 
   useEffect(() => {
