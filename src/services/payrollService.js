@@ -1,5 +1,10 @@
 import { db, doc, collection, addDoc, runTransaction, serverTimestamp, query, where, getDocs } from '../firebaseClient';
 import { roundMoney } from '../utils/employeeBenefitAccounting';
+import { normalizeDocId } from '../utils/firestoreIds';
+import {
+  readOpenCashShiftInTransaction,
+  appendCashMovementInTransaction,
+} from './cashShiftService';
 
 const accrualsCol = (uid) => collection(db, 'users', uid, 'payrollAccruals');
 const paymentsCol = (uid) => collection(db, 'users', uid, 'payrollPayments');
@@ -9,6 +14,11 @@ const expensesCol = (uid) => collection(db, 'users', uid, 'expenses');
 export const PAYROLL_STATUS_DUE = 'due';
 export const PAYROLL_STATUS_PARTIAL = 'partial';
 export const PAYROLL_STATUS_PAID = 'paid';
+
+function isCashPayment(method) {
+  const m = String(method || 'Cash').trim().toLowerCase();
+  return m === 'cash' || m === 'نقد' || m === 'نقدي';
+}
 
 /** Create salary accrual (not an expense until payment). */
 export async function createPayrollAccrual(uid, { staffMemberId, staffName, amount, periodLabel, dueDate }) {
@@ -30,7 +40,15 @@ export async function createPayrollAccrual(uid, { staffMemberId, staffName, amou
 }
 
 /** Pay salary (partial or full) — single expense + payment row. */
-export async function recordPayrollPayment(uid, { accrualId, amount, paymentMethod = 'Cash', note = '', actor, shiftId, idempotencyKey }) {
+export async function recordPayrollPayment(uid, {
+  accrualId,
+  amount,
+  paymentMethod = 'Cash',
+  note = '',
+  actor,
+  shiftId,
+  idempotencyKey,
+}) {
   const pay = roundMoney(amount);
   if (!(pay > 0)) throw new Error('أدخل مبلغ الدفعة');
 
@@ -41,6 +59,18 @@ export async function recordPayrollPayment(uid, { accrualId, amount, paymentMeth
     const acc = aSnap.data();
     const remaining = roundMoney((Number(acc.amountDue) || 0) - (Number(acc.amountPaid) || 0));
     if (pay > remaining + 0.009) throw new Error(`المتبقي على الراتب ${remaining} ₪ فقط`);
+
+    let cashShiftCtx = null;
+    if (isCashPayment(paymentMethod)) {
+      const safeShiftId = normalizeDocId(shiftId);
+      if (!safeShiftId) {
+        throw new Error('لا توجد وردية كاش مفتوحة لصرف الراتب نقداً — افتح الوردية أولاً');
+      }
+      cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, safeShiftId, { allowQueryFallback: false });
+      if (!cashShiftCtx) {
+        throw new Error('وردية الكاش غير متاحة — حدّث الصفحة من شاشة الصندوق');
+      }
+    }
 
     const newPaid = roundMoney((Number(acc.amountPaid) || 0) + pay);
     const newStatus =
@@ -81,16 +111,48 @@ export async function recordPayrollPayment(uid, { accrualId, amount, paymentMeth
       updatedAtMs: Date.now(),
     });
 
-    return { expenseId: expenseRef.id, paymentId: pRef.id, status: newStatus };
+    let cashRecorded = false;
+    if (cashShiftCtx && isCashPayment(paymentMethod)) {
+      await appendCashMovementInTransaction(tx, uid, cashShiftCtx.shiftId, cashShiftCtx.shiftSnap, {
+        type: 'withdrawal',
+        amount: pay,
+        reason: `راتب — ${acc.staffName || ''}`,
+        actor,
+        expenseId: expenseRef.id,
+      });
+      cashRecorded = true;
+    }
+
+    return { expenseId: expenseRef.id, paymentId: pRef.id, status: newStatus, cashRecorded };
   });
 }
 
-export async function recordEmployeeAdvance(uid, { staffMemberId, staffName, amount, note = '', actor, paymentMethod = 'Cash' }) {
+export async function recordEmployeeAdvance(uid, {
+  staffMemberId,
+  staffName,
+  amount,
+  note = '',
+  actor,
+  paymentMethod = 'Cash',
+  shiftId,
+}) {
   const amt = roundMoney(amount);
   if (!(amt > 0)) throw new Error('أدخل مبلغ السلفة');
   if (!staffMemberId) throw new Error('اختر الموظف');
 
   return runTransaction(db, async (tx) => {
+    let cashShiftCtx = null;
+    if (isCashPayment(paymentMethod)) {
+      const safeShiftId = normalizeDocId(shiftId);
+      if (!safeShiftId) {
+        throw new Error('لا توجد وردية كاش مفتوحة لتسجيل السلفة نقداً — افتح الوردية أولاً');
+      }
+      cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, safeShiftId, { allowQueryFallback: false });
+      if (!cashShiftCtx) {
+        throw new Error('وردية الكاش غير متاحة — حدّث الصفحة من شاشة الصندوق');
+      }
+    }
+
     const advRef = doc(advancesCol(uid));
     const expenseRef = doc(expensesCol(uid));
     tx.set(advRef, {
@@ -117,7 +179,20 @@ export async function recordEmployeeAdvance(uid, { staffMemberId, staffName, amo
       createdAtMs: Date.now(),
       createdBy: actor || null,
     });
-    return { advanceId: advRef.id, expenseId: expenseRef.id };
+
+    let cashRecorded = false;
+    if (cashShiftCtx && isCashPayment(paymentMethod)) {
+      await appendCashMovementInTransaction(tx, uid, cashShiftCtx.shiftId, cashShiftCtx.shiftSnap, {
+        type: 'withdrawal',
+        amount: amt,
+        reason: `سلفة — ${staffName || ''}`,
+        actor,
+        expenseId: expenseRef.id,
+      });
+      cashRecorded = true;
+    }
+
+    return { advanceId: advRef.id, expenseId: expenseRef.id, cashRecorded };
   });
 }
 

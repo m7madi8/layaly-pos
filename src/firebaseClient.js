@@ -10,6 +10,7 @@ import {
 } from 'firebase/auth';
 import {
   initializeFirestore,
+  memoryLocalCache,
   persistentLocalCache,
   persistentMultipleTabManager,
   collection as firestoreCollection,
@@ -90,13 +91,17 @@ if (isDemoMode) {
   };
   const app = initializeApp(firebaseConfig);
   auth = getAuth(app);
+  const useIndexedDbPersistence = envValue('REACT_APP_FIRESTORE_PERSISTENCE').toLowerCase() === 'true';
   try {
-    db = initializeFirestore(app, {
-      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
-    });
+    db = initializeFirestore(
+      app,
+      useIndexedDbPersistence
+        ? { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) }
+        : { localCache: memoryLocalCache() }
+    );
   } catch (persistErr) {
     console.warn('Firestore persistence unavailable, using memory cache.', persistErr);
-    db = initializeFirestore(app, {});
+    db = initializeFirestore(app, { localCache: memoryLocalCache() });
   }
 } else {
   auth = null;

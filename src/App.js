@@ -1237,7 +1237,7 @@ const AppCore = () => {
         const openShift = cashShifts.find((s) => s.status === 'open');
         const note = String(expenseForm.notes || expenseForm.description || '').trim();
         if (expenseForm.category === 'Advance') {
-          await gatewayRecordEmployeeAdvance(
+          const result = await gatewayRecordEmployeeAdvance(
             user.uid,
             {
               staffMemberId: staffMember.id,
@@ -1245,11 +1245,16 @@ const AppCore = () => {
               amount: payAmount,
               note,
               paymentMethod: expenseForm.paymentMethod || 'Cash',
+              shiftId: openShift?.id || null,
             },
             { actor: sessionActor(), idempotencyKey: newIdempotencyKey('exp_adv') },
             businessProfile
           );
-          alert(`تم تسجيل السلفة وربطها بسجل ${staffMember.name}`);
+          if ((expenseForm.paymentMethod || 'Cash') === 'Cash' && result && !result.cashRecorded) {
+            alert('تم تسجيل السلفة في ملف الموظف لكن لم تُخصم من الصندوق — لا توجد وردية كاش مفتوحة.');
+          } else {
+            alert(`تم تسجيل السلفة وربطها بسجل ${staffMember.name}`);
+          }
         } else {
           let accrualId = expenseForm.payrollAccrualId;
           if (accrualId === PAYROLL_NEW_ACCRUAL_OPTION) {
@@ -3018,7 +3023,12 @@ const AppCore = () => {
             });
           }
         } catch (callErr) {
-          if (!isCloudCallableUnavailableError(callErr)) throw callErr;
+          const code = String(callErr?.code || '');
+          if (code === 'functions/permission-denied' || code === 'functions/unauthenticated') {
+            throw callErr;
+          }
+          // أي فشل آخر (CORS، internal، path…) → مسار Firestore العادي في المتصفح
+          console.warn('completeOrder callable failed, using client transaction', callErr);
         }
       }
       if (!usedTrustedOrderPath) {
@@ -3279,7 +3289,9 @@ const AppCore = () => {
         }
 
         // Apply product updates (time-based products have no stock)
-        applyInventoryLayerUpdates(transaction, inventoryLayerUpdates);
+        if (inventoryLayerUpdates.length > 0) {
+          applyInventoryLayerUpdates(transaction, inventoryLayerUpdates);
+        }
         for (const pid of productIds) {
             if (productDocs[pid] && getProductType(productDocs[pid].data) !== 'time' && getProductType(productDocs[pid].data) !== 'service') {
                 transaction.update(assertFirestoreDocRef(productDocs[pid].ref, 'مرجع صنف غير صالح'), {
@@ -3379,7 +3391,11 @@ const AppCore = () => {
         transaction.set(assertFirestoreDocRef(newOrderRef, 'مرجع الطلب غير صالح'), orderPayload, { merge: true });
 
         if (existingOrderData) {
-          transaction.set(doc(collection(db, 'users', ownerUid, 'orderEdits')), {
+          const editRef = assertFirestoreDocRef(
+            doc(collection(db, 'users', ownerUid, 'orderEdits')),
+            'تعذّر توثيق تعديل الطلب'
+          );
+          transaction.set(editRef, {
             orderId: newOrderRef.id,
             orderNumber,
             orderDate: existingOrderData.timestamp || null,

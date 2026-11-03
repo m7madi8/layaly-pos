@@ -415,6 +415,8 @@ function ProfilePanel({
                       staffName: employee.name,
                       amount: advanceForm.amount,
                       note: advanceForm.note,
+                      paymentMethod: 'Cash',
+                      shiftId: openShiftId || openShift?.id || null,
                     },
                     { actor: sessionActor(), idempotencyKey: newIdempotencyKey('adv') },
                     businessProfile

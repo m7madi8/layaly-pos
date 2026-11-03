@@ -274,14 +274,11 @@ export async function recordCashSaleInTransaction(tx, uid, { amount, orderId, or
 
 export async function recordCashWithdrawalInTransaction(tx, uid, { amount, reason, actor, shiftId, expenseId, shiftSnap }) {
   if (!(Number(amount) > 0)) return null;
-  let shiftDocId = shiftId;
-  let snap = shiftSnap;
-  if (!snap) {
-    const ctx = await readOpenCashShiftInTransaction(tx, uid, shiftId || null);
-    if (!ctx) return null;
-    shiftDocId = ctx.shiftId;
-    snap = ctx.shiftSnap;
+  const snap = shiftSnap;
+  if (!snap?.exists?.()) {
+    throw new Error('وردية الكاش غير محمّلة داخل المعاملة — افتح الوردية ثم أعد المحاولة');
   }
+  const shiftDocId = shiftId || snap.id;
   await appendMovementInTx(tx, uid, shiftDocId, snap, {
     type: 'withdrawal',
     amount,
