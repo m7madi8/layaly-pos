@@ -100,10 +100,11 @@ export function buildEmployeeBenefitExpenseFields(benefit, { payDate, uid, benef
     benefitType,
     paymentMethod:
       benefitType === BENEFIT_TYPE_CASH
-        ? 'Cash'
+        ? (benefit.paymentMethod || 'Cash')
         : benefitType === BENEFIT_TYPE_PERSONAL
           ? 'PersonalConsumption'
           : 'Inventory',
+    paymentSource: benefitType === BENEFIT_TYPE_CASH ? benefit.paymentSource || null : null,
     cogsAmount: benefit.cogsAmount != null ? roundMoney(benefit.cogsAmount) : null,
     recordedBy: benefit.recordedBy || null,
     userId: uid,
