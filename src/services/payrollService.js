@@ -6,11 +6,7 @@ import {
   appendCashMovementInTransaction,
 } from './cashShiftService';
 import { vaultDocRef, applyVaultDebit, applyVaultCredit } from './vaultService';
-import {
-  PAYMENT_SOURCE_DRAWER,
-  PAYMENT_SOURCE_VAULT,
-  paymentSourceToLegacyMethod,
-} from '../utils/expensePaymentSource';
+import { PAYMENT_SOURCE_DRAWER, PAYMENT_SOURCE_VAULT } from '../utils/expensePaymentSource';
 
 function paymentSourceFromMethod(method) {
   if (String(method || '').trim() === 'Vault') return PAYMENT_SOURCE_VAULT;

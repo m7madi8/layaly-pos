@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Plus, User, ChevronRight } from 'lucide-react';
 import { FONT_HEADING, FONT_UI } from '../branding';
 import { fmtMoney } from '../i18n';
@@ -629,7 +629,7 @@ export default function EmployeesView({
   const [loading, setLoading] = useState(false);
   const [financeIndex, setFinanceIndex] = useState({ accruals: [], advances: [], posDebts: [] });
 
-  const refreshFinanceIndex = async () => {
+  const refreshFinanceIndex = useCallback(async () => {
     if (!uid) return;
     try {
       const [aSnap, advSnap, posSnap] = await Promise.all([
@@ -645,11 +645,11 @@ export default function EmployeesView({
     } catch {
       /* ignore */
     }
-  };
+  }, [uid]);
 
   useEffect(() => {
     refreshFinanceIndex();
-  }, [uid, staffMembers.length]);
+  }, [refreshFinanceIndex, staffMembers.length]);
 
   const netBalanceForStaff = (staffId) => {
     const acc = financeIndex.accruals.filter((a) => a.staffMemberId === staffId);
