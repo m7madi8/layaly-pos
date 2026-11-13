@@ -1,5 +1,16 @@
 import React, { useMemo, useState } from 'react';
-import { Landmark, Plus, ArrowDownToLine } from 'lucide-react';
+import { Landmark, Plus, ArrowDownToLine, ArrowUpFromLine } from 'lucide-react';
+
+const DEBIT_VAULT_TYPES = new Set([
+  'purchase',
+  'supplier_payment',
+  'operating_expense',
+  'salary',
+  'advance',
+  'employee_benefit',
+  'safe_withdrawal',
+  'withdrawal',
+]);
 
 const typeLabel = (type) => {
   switch (type) {
@@ -11,6 +22,22 @@ const typeLabel = (type) => {
       return 'من إغلاق الكاش';
     case 'from_cash':
       return 'من الصندوق';
+    case 'safe_withdrawal':
+      return 'سحب من الخزنة';
+    case 'operating_expense':
+      return 'مصروف تشغيلي';
+    case 'purchase':
+      return 'مشتريات';
+    case 'supplier_payment':
+      return 'دفع تاجر';
+    case 'salary':
+      return 'رواتب';
+    case 'advance':
+      return 'سلف';
+    case 'employee_benefit':
+      return 'استفادة موظف';
+    case 'expense_reversal':
+      return 'عكس مصروف';
     default:
       return type || 'حركة';
   }
@@ -26,11 +53,15 @@ export default function VaultView({
   busy,
   onAddCapital,
   onManualDeposit,
+  onWithdraw,
 }) {
   const [capitalAmount, setCapitalAmount] = useState('');
   const [capitalNote, setCapitalNote] = useState('');
   const [depositAmount, setDepositAmount] = useState('');
   const [depositNote, setDepositNote] = useState('');
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawNote, setWithdrawNote] = useState('');
+  const [withdrawConfirm, setWithdrawConfirm] = useState(false);
 
   const balance = Number(vault?.balance) || 0;
   const totalCapitalIn = Number(vault?.totalCapitalIn) || 0;
@@ -145,6 +176,88 @@ export default function VaultView({
         </div>
       </div>
 
+      <div className="bg-white rounded-2xl border border-amber-200 p-4 space-y-3 mb-6">
+        <p className="text-sm font-semibold flex items-center gap-2 text-amber-900" style={{ fontFamily: FONT_UI }}>
+          <ArrowUpFromLine size={16} className="text-amber-700" /> سحب من الخزنة
+        </p>
+        <p className="text-[11px] text-gray-600">
+          الرصيد المتاح: <span className="font-bold text-primary tabular-nums">{fmtMoney(balance)}</span>
+        </p>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          max={balance}
+          value={withdrawAmount}
+          onChange={(e) => {
+            setWithdrawAmount(e.target.value);
+            setWithdrawConfirm(false);
+          }}
+          placeholder="مبلغ السحب (₪)"
+          className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
+        />
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={busy || !(balance > 0)}
+            onClick={() => {
+              setWithdrawAmount(String(balance));
+              setWithdrawConfirm(false);
+            }}
+            className="flex-1 py-2 rounded-xl border border-amber-300 text-amber-900 text-xs font-semibold disabled:opacity-40"
+          >
+            سحب كامل الرصيد
+          </button>
+        </div>
+        <input
+          type="text"
+          value={withdrawNote}
+          onChange={(e) => setWithdrawNote(e.target.value)}
+          placeholder="سبب السحب (اختياري)"
+          className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
+        />
+        {!withdrawConfirm ? (
+          <button
+            type="button"
+            disabled={busy || !(parseFloat(withdrawAmount) > 0) || parseFloat(withdrawAmount) > balance + 0.001}
+            onClick={() => setWithdrawConfirm(true)}
+            className="w-full py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50"
+            style={{ backgroundColor: '#b45309', fontFamily: FONT_UI }}
+          >
+            مراجعة السحب
+          </button>
+        ) : (
+          <div className="space-y-2 border border-amber-200 rounded-xl p-3 bg-amber-50/50">
+            <p className="text-xs font-bold text-amber-900">تأكيد سحب {fmtMoney(withdrawAmount)} من الخزنة؟</p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="flex-1 py-2 rounded-xl border border-gray-200 text-sm"
+                onClick={() => setWithdrawConfirm(false)}
+              >
+                رجوع
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  await onWithdraw(withdrawAmount, withdrawNote);
+                  setWithdrawAmount('');
+                  setWithdrawNote('');
+                  setWithdrawConfirm(false);
+                }}
+                className="flex-1 py-2 rounded-xl bg-amber-700 text-white text-sm font-semibold disabled:opacity-50"
+              >
+                تأكيد السحب
+              </button>
+            </div>
+          </div>
+        )}
+        <p className="text-[10px] text-gray-500">
+          السحب ليس مصروفاً تشغيلياً — يُسجَّل كحركة خزنة منفصلة. إن كان المبلغ لمصروف، سجّله لاحقاً من المصروفات مع مصدر «الخزنة».
+        </p>
+      </div>
+
       <div className="bg-white rounded-2xl border border-gray-200 p-4">
         <p className="text-sm font-semibold mb-3" style={{ fontFamily: FONT_UI }}>سجل الخزنة</p>
         <div className="space-y-2 max-h-80 overflow-y-auto layali-scrollbar-none">
@@ -153,17 +266,24 @@ export default function VaultView({
               لا حركات بعد — أضف رأس مال أو أغلق الكاش لنقل الفائض هنا.
             </p>
           )}
-          {list.map((m) => (
+          {list.map((m) => {
+            const debit = DEBIT_VAULT_TYPES.has(m.type);
+            return (
             <div key={m.id} className="flex justify-between gap-3 text-sm border-b border-gray-100 py-2">
               <div className="min-w-0">
                 <p className="font-medium text-primary" style={{ fontFamily: FONT_UI }}>{typeLabel(m.type)}</p>
                 <p className="text-xs text-gray-500 truncate">{m.reason || '—'}</p>
               </div>
-              <p className="font-bold text-green-700 shrink-0 tabular-nums" style={{ fontFamily: FONT_UI }}>
-                +{fmtMoney(m.amount)}
+              <p
+                className={`font-bold shrink-0 tabular-nums ${debit ? 'text-red-700' : 'text-green-700'}`}
+                style={{ fontFamily: FONT_UI }}
+              >
+                {debit ? '−' : '+'}
+                {fmtMoney(m.amount)}
               </p>
             </div>
-          ))}
+          );
+          })}
         </div>
       </div>
     </div>

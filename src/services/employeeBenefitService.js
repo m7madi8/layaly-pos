@@ -20,6 +20,13 @@ import {
 import { getProductType, stockUnitsForItem } from '../utils/productPricing';
 import { consumeInventoryLayersFifo, legacyProductCogs, restoreInventoryLayersLifo } from './inventoryLayerService';
 import { assertStaffOnDutyForShift } from '../utils/shiftOnDuty';
+import { vaultDocRef, applyVaultDebit, applyVaultCredit } from './vaultService';
+import {
+  assertExpensePaymentSourceSelected,
+  PAYMENT_SOURCE_DRAWER,
+  PAYMENT_SOURCE_VAULT,
+  paymentSourceToLegacyMethod,
+} from '../utils/expensePaymentSource';
 
 const benefitsCol = (uid) => collection(db, 'users', uid, 'employeeBenefits');
 const benefitRef = (uid, id) => doc(db, 'users', uid, 'employeeBenefits', id);
@@ -65,6 +72,12 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
   const payDate = input.date ? new Date(input.date) : new Date();
   if (Number.isNaN(payDate.getTime())) throw new Error('تاريخ غير صالح');
 
+  let paymentSource = null;
+  if (benefitType === BENEFIT_TYPE_CASH) {
+    paymentSource = input.paymentSource;
+    assertExpensePaymentSourceSelected(paymentSource);
+  }
+
   const idemKey = String(idempotencyKey || '').trim();
   const benefitNumber = buildBenefitReference(payDate);
   const notes = String(input.notes || '').trim();
@@ -99,6 +112,10 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
     });
     if (!cashShiftCtx) {
       throw new Error('وردية الكاش غير مفتوحة أو غير موجودة — حدّث الصفحة وتحقق من الشفت');
+    }
+    let vaultSnap = null;
+    if (benefitType === BENEFIT_TYPE_CASH && paymentSource === PAYMENT_SOURCE_VAULT) {
+      vaultSnap = await tx.get(vaultDocRef(uid));
     }
     assertStaffOnDutyForShift(
       { status: 'open', onDutyStaffIds: cashShiftCtx.shiftSnap.data().onDutyStaffIds },
@@ -206,6 +223,9 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
       override: validated.override,
       overrideReason: validated.override ? validated.overrideReason : '',
       originalLimit: limit,
+      paymentSource: benefitType === BENEFIT_TYPE_CASH ? paymentSource : null,
+      paymentMethod:
+        benefitType === BENEFIT_TYPE_CASH ? paymentSourceToLegacyMethod(paymentSource) : null,
       expenseId: expenseRef.id,
       createdAt: serverTimestamp(),
       createdAtMs: Date.now(),
@@ -269,7 +289,8 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
     }
 
     let cashRecorded = false;
-    if (benefitType === BENEFIT_TYPE_CASH && cashShiftCtx) {
+    let vaultRecorded = false;
+    if (benefitType === BENEFIT_TYPE_CASH && paymentSource === PAYMENT_SOURCE_DRAWER && cashShiftCtx) {
       await appendCashMovementInTransaction(tx, uid, cashShiftCtx.shiftId, cashShiftCtx.shiftSnap, {
         type: 'withdrawal',
         amount: totalValue,
@@ -279,6 +300,17 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
       });
       cashRecorded = true;
     }
+    if (benefitType === BENEFIT_TYPE_CASH && paymentSource === PAYMENT_SOURCE_VAULT) {
+      applyVaultDebit(tx, uid, vaultSnap, {
+        amount: totalValue,
+        type: 'employee_benefit',
+        reason: `استفادة موظف — ${benefitPayload.staffName} (${benefitNumber})`,
+        actor,
+        expenseId: expenseRef.id,
+      });
+      vaultRecorded = true;
+    }
+    tx.update(expenseRef, { cashRecorded, vaultRecorded });
 
     if (idemKey && idemRef) {
       tx.set(idemRef, {
@@ -286,6 +318,7 @@ export async function executeEmployeeBenefit(uid, input, { actor, idempotencyKey
         expenseId: expenseRef.id,
         benefitNumber,
         cashRecorded,
+        vaultRecorded,
         staffMemberId: staffMember.id,
         totalValue,
         createdAt: serverTimestamp(),
@@ -348,8 +381,13 @@ export async function cancelEmployeeBenefit(uid, benefitId, { actor, reason }) {
     }
 
     let cashShiftCtx = null;
+    let vaultSnap = null;
     if (benefit.benefitType === BENEFIT_TYPE_CASH && totalValue > 0) {
-      cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, benefit.shiftId || null);
+      if (benefit.paymentSource === PAYMENT_SOURCE_VAULT) {
+        vaultSnap = await tx.get(vaultDocRef(uid));
+      } else {
+        cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, benefit.shiftId || null);
+      }
     }
 
     const stockBenefitTypes = [BENEFIT_TYPE_INVENTORY, BENEFIT_TYPE_PERSONAL];
@@ -422,6 +460,7 @@ export async function cancelEmployeeBenefit(uid, benefitId, { actor, reason }) {
     }
 
     let cashReversed = false;
+    let vaultReversed = false;
     if (benefit.benefitType === BENEFIT_TYPE_CASH && totalValue > 0 && cashShiftCtx) {
       await appendCashMovementInTransaction(tx, uid, cashShiftCtx.shiftId, cashShiftCtx.shiftSnap, {
         type: 'deposit',
@@ -432,8 +471,17 @@ export async function cancelEmployeeBenefit(uid, benefitId, { actor, reason }) {
       });
       cashReversed = true;
     }
+    if (benefit.benefitType === BENEFIT_TYPE_CASH && totalValue > 0 && benefit.paymentSource === PAYMENT_SOURCE_VAULT) {
+      applyVaultCredit(tx, uid, vaultSnap, {
+        amount: totalValue,
+        type: 'benefit_reversal',
+        reason: `إلغاء استفادة موظف — ${benefit.staffName} (${benefit.benefitNumber})`,
+        actor,
+      });
+      vaultReversed = true;
+    }
 
-    return { benefitId, cashReversed, cancelled: true };
+    return { benefitId, cashReversed, vaultReversed, cancelled: true };
   });
 }
 

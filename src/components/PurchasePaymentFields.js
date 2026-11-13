@@ -1,5 +1,7 @@
 import React from 'react';
-import { PURCHASE_PAYMENT_METHODS } from '../utils/purchasePayment';
+import { PURCHASE_PAYMENT_METHODS, PURCHASE_PAYMENT_CASH, PURCHASE_PAYMENT_VAULT } from '../utils/purchasePayment';
+import ExpensePaymentSourceFields from './ExpensePaymentSourceFields';
+import { legacyMethodToPaymentSource } from '../utils/expensePaymentSource';
 
 export default function PurchasePaymentFields({
   expenseForm,
@@ -15,7 +17,11 @@ export default function PurchasePaymentFields({
       <div>
         <select
           value={method}
-          onChange={(e) => setExpenseForm({ ...expenseForm, paymentMethod: e.target.value })}
+          onChange={(e) => {
+            const nextMethod = e.target.value;
+            const paymentSource = legacyMethodToPaymentSource(nextMethod) || '';
+            setExpenseForm({ ...expenseForm, paymentMethod: nextMethod, paymentSource });
+          }}
           className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm bg-white"
           disabled={disabled}
         >
@@ -38,6 +44,15 @@ export default function PurchasePaymentFields({
       )}
       {method === 'Debt' && (
         <p className="text-[11px] text-gray-600">يُضاف المبلغ إلى رصيد المستحق على التاجر المختار.</p>
+      )}
+      {(method === PURCHASE_PAYMENT_CASH || method === PURCHASE_PAYMENT_VAULT) && (
+        <ExpensePaymentSourceFields
+          expenseForm={expenseForm}
+          setExpenseForm={setExpenseForm}
+          openShift={openShift}
+          vaultBalance={vaultBalance}
+          disabled={disabled}
+        />
       )}
       <div>
         <label className="block text-xs mb-1 font-medium text-gray-600">ملاحظات الدفع</label>

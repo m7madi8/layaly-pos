@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
 import { createPortal } from 'react-dom';
 import { APP_NAME, APP_TAGLINE, APP_LOGO, resolveAppLogo, FONT_UI, FONT_HEADING, theme } from './branding';
-import { fmtMoney, fmtMoneyPlain, orderFilterLabel, orderStatusLabel, categoryLabel, paymentMethodLabel, paymentTypeLabel, expenseCategoryLabel, expenseFilterLabel, reportFilterLabel } from './i18n';
+import { fmtMoney, fmtMoneyPlain, orderFilterLabel, orderStatusLabel, categoryLabel, paymentMethodLabel, paymentTypeLabel, expenseCategoryLabel, expenseFilterLabel, reportFilterLabel, expensePaymentSourceLabel as fmtExpenseSource } from './i18n';
 import {
   OPERATING_EXPENSE_CATEGORIES,
   PURCHASE_CATEGORY,
@@ -14,6 +14,7 @@ import {
 } from './expenseConfig';
 import SupplierTraderDetailModal, { SupplierPaymentFields } from './components/SupplierTraderDetailModal';
 import EmployeeBenefitFields from './components/EmployeeBenefitFields';
+import ExpensePaymentSourceFields from './components/ExpensePaymentSourceFields';
 import PayrollAdvanceExpenseFields, { PAYROLL_NEW_ACCRUAL_OPTION } from './components/PayrollAdvanceExpenseFields';
 import PurchasePaymentFields from './components/PurchasePaymentFields';
 import EmployeeBenefitsPanel from './components/EmployeeBenefitsPanel';
@@ -28,7 +29,25 @@ import {
   updateSupplierProfile,
 } from './services/supplierProfileService';
 import { executePurchase, reversePurchaseEffectsInTransaction } from './services/purchaseService';
-import { PURCHASE_PAYMENT_CASH, purchasePaymentMethodLabel } from './utils/purchasePayment';
+import { executeOperatingExpense, reverseOperatingExpenseInTransaction, resolvePaymentSourceFromExpense } from './services/operatingExpenseService';
+import { withdrawFromVault } from './services/vaultService';
+import {
+  recordEmployeePosDebtInTransaction,
+  cancelEmployeePosDebtForOrderInTransaction,
+} from './services/employeeLedgerService';
+import {
+  resolvePaymentSourceFromForm,
+  assertExpensePaymentSourceSelected,
+  PAYMENT_SOURCE_DRAWER,
+  legacyMethodToPaymentSource,
+  paymentSourceToLegacyMethod,
+} from './utils/expensePaymentSource';
+import {
+  PURCHASE_PAYMENT_CASH,
+  PURCHASE_PAYMENT_VAULT,
+  purchasePaymentMethodLabel,
+  normalizePurchasePaymentMethod,
+} from './utils/purchasePayment';
 import { syncEmployeeBenefitExpenses } from './services/employeeBenefitService';
 import { ensureDefaultStaffMembers, updateStaffBenefitLimit, uniqueStaffMembersByName } from './services/staffMembersService';
 import { findDuplicateCustomer, normalizeCustomerName } from './utils/customerIdentity';
@@ -37,6 +56,7 @@ import {
   sumApprovedBenefitsUsage,
   evaluateEmployeeBenefitPreview,
   normalizeBenefitType,
+  BENEFIT_TYPE_CASH,
 } from './utils/employeeBenefitAccounting';
 import {
   staffAllowsEmployeeAdvance,
@@ -51,6 +71,7 @@ import {
   resolveSupplierOutstandingBalance,
   computeTotalOutstandingSupplierPayable,
   SUPPLIER_PAYMENT_CASH,
+  SUPPLIER_PAYMENT_VAULT,
   normalizeSupplierPaymentMethod,
 } from './utils/supplierAccounting';
 import PosProductCard from './components/PosProductCard';
@@ -430,6 +451,8 @@ const AppCore = () => {
   const [selectedSupplierId, setSelectedSupplierId] = useState(null);
   const supplierPaymentIdemRef = useRef(null);
   const employeeBenefitIdemRef = useRef(null);
+  const operatingExpenseIdemRef = useRef(null);
+  const vaultWithdrawIdemRef = useRef(null);
   const employeeBenefitExpenseSyncRef = useRef(false);
   const completeOrderLockRef = useRef(false);
   const customerSaveInFlightRef = useRef(false);
@@ -1124,8 +1147,16 @@ const AppCore = () => {
       }
       const openShiftForBenefit = cashShifts.find((s) => s.status === 'open');
       if (!openShiftForBenefit) {
-        alert('افتح وردية صندوق من شاشة الكاش قبل تسجيل الاستفادة.');
+        alert('افتح وردية صندوق من شاشة الكاش قبل تسجيل الاستفادة (مطلوبة لتسجيل المداومين).');
         return;
+      }
+      if (normalizeBenefitType(expenseForm.benefitType) === BENEFIT_TYPE_CASH) {
+        try {
+          assertExpensePaymentSourceSelected(resolvePaymentSourceFromForm(expenseForm));
+        } catch (srcErr) {
+          alert(srcErr.message);
+          return;
+        }
       }
       try {
         assertStaffOnDutyForShift(openShiftForBenefit, staffMember.id);
@@ -1170,6 +1201,7 @@ const AppCore = () => {
             override: Boolean(expenseForm.override),
             overrideReason: expenseForm.overrideReason,
             productsById,
+            paymentSource: resolvePaymentSourceFromForm(expenseForm),
           },
           { actor: sessionActor(), idempotencyKey: idem },
           businessProfile
@@ -1203,6 +1235,14 @@ const AppCore = () => {
       supplierPaymentIdemRef.current = idem;
       try {
         const openShift = cashShifts.find((s) => s.status === 'open');
+        const pmNorm = normalizeSupplierPaymentMethod(expenseForm.paymentMethod);
+        if (pmNorm === SUPPLIER_PAYMENT_CASH || pmNorm === SUPPLIER_PAYMENT_VAULT) {
+          assertExpensePaymentSourceSelected(resolvePaymentSourceFromForm(expenseForm));
+        }
+        const payMethod =
+          pmNorm === SUPPLIER_PAYMENT_CASH || pmNorm === SUPPLIER_PAYMENT_VAULT
+            ? paymentSourceToLegacyMethod(resolvePaymentSourceFromForm(expenseForm))
+            : expenseForm.paymentMethod;
         const result = await executeSupplierPayment(
           user.uid,
           {
@@ -1210,7 +1250,7 @@ const AppCore = () => {
             supplierId: expenseForm.supplierId,
             suppliers,
             date: expenseForm.date,
-            paymentMethod: expenseForm.paymentMethod || 'Cash',
+            paymentMethod: payMethod || SUPPLIER_PAYMENT_CASH,
             notes: expenseForm.notes || expenseForm.description,
             shiftId: openShift?.id || null,
             expensesSnapshot: expenses,
@@ -1260,9 +1300,22 @@ const AppCore = () => {
         alert('أدخل المبلغ');
         return;
       }
+      let paySource;
+      try {
+        paySource = resolvePaymentSourceFromForm(expenseForm);
+        assertExpensePaymentSourceSelected(paySource);
+      } catch (srcErr) {
+        alert(srcErr.message);
+        return;
+      }
+      const openShift = cashShifts.find((s) => s.status === 'open');
+      if (paySource === PAYMENT_SOURCE_DRAWER && !openShift) {
+        alert('لا توجد وردية كاش مفتوحة — افتح الصندوق أو اختر الخزنة كمصدر للصرف.');
+        return;
+      }
+      const paymentMethod = paymentSourceToLegacyMethod(paySource);
       setUploadProgress(true);
       try {
-        const openShift = cashShifts.find((s) => s.status === 'open');
         const note = String(expenseForm.notes || expenseForm.description || '').trim();
         if (expenseForm.category === 'Advance') {
           const result = await gatewayRecordEmployeeAdvance(
@@ -1272,13 +1325,13 @@ const AppCore = () => {
               staffName: staffMember.name,
               amount: payAmount,
               note,
-              paymentMethod: expenseForm.paymentMethod || 'Cash',
+              paymentMethod,
               shiftId: openShift?.id || null,
             },
             { actor: sessionActor(), idempotencyKey: newIdempotencyKey('exp_adv') },
             businessProfile
           );
-          if ((expenseForm.paymentMethod || 'Cash') === 'Cash' && result && !result.cashRecorded) {
+          if (paymentMethod === 'Cash' && result && !result.cashRecorded) {
             alert('تم تسجيل السلفة في ملف الموظف لكن لم تُخصم من الصندوق — لا توجد وردية كاش مفتوحة.');
           } else {
             alert(`تم تسجيل السلفة وربطها بسجل ${staffMember.name}`);
@@ -1307,7 +1360,7 @@ const AppCore = () => {
               accrualId,
               amount: payAmount,
               note,
-              paymentMethod: expenseForm.paymentMethod || 'Cash',
+              paymentMethod,
               shiftId: openShift?.id || null,
             },
             { actor: sessionActor(), idempotencyKey: newIdempotencyKey('exp_pay') },
@@ -1371,6 +1424,11 @@ const AppCore = () => {
       if (editingExpenseId) {
         await updateDoc(doc(db, 'users', user.uid, 'expenses', editingExpenseId), expenseData);
       } else if (section === 'purchase') {
+        const pm = normalizePurchasePaymentMethod(expenseForm.paymentMethod);
+        if (pm === PURCHASE_PAYMENT_CASH || pm === PURCHASE_PAYMENT_VAULT) {
+          assertExpensePaymentSourceSelected(resolvePaymentSourceFromForm(expenseForm));
+          expenseForm.paymentMethod = paymentSourceToLegacyMethod(resolvePaymentSourceFromForm(expenseForm));
+        }
         const supplier = suppliers.find((s) => s.id === expenseForm.supplierId);
         const openShift = cashShifts.find((s) => s.status === 'open');
         const result = await executePurchase(
@@ -1397,8 +1455,31 @@ const AppCore = () => {
           alert('تم حفظ المشتريات. لم يُسجَّل سحب من الصندوق — لا توجد وردية مفتوحة.');
         }
       } else {
-        expenseData.createdAt = serverTimestamp();
-        await addDoc(collection(db, 'users', user.uid, 'expenses'), expenseData);
+        const paySource = resolvePaymentSourceFromForm(expenseForm);
+        assertExpensePaymentSourceSelected(paySource);
+        const openShift = cashShifts.find((s) => s.status === 'open');
+        if (paySource === PAYMENT_SOURCE_DRAWER && !openShift) {
+          throw new Error('لا توجد وردية كاش مفتوحة — افتح الصندوق أو اختر الخزنة');
+        }
+        const idem = operatingExpenseIdemRef.current || newIdempotencyKey('op_exp');
+        operatingExpenseIdemRef.current = idem;
+        try {
+          await executeOperatingExpense(
+            user.uid,
+            {
+              amount: expenseData.amount,
+              date: expenseForm.date,
+              category,
+              description: expenseData.description,
+              notes: expenseForm.notes,
+              receiptUrl,
+              paymentSource: paySource,
+            },
+            { actor: sessionActor(), shiftId: openShift?.id || null, idempotencyKey: idem }
+          );
+        } finally {
+          operatingExpenseIdemRef.current = null;
+        }
       }
 
       setShowExpenseModal(false);
@@ -1430,6 +1511,8 @@ const AppCore = () => {
       linkedProductId: expense.linkedProductId || '',
       quantityBought: expense.quantityBought || 0,
       paymentMethod: expense.paymentMethod || 'Debt',
+      paymentSource:
+        expense.paymentSource || legacyMethodToPaymentSource(expense.paymentMethod) || '',
       notes: expense.notes || '',
     });
     setCurrentView(section === 'purchase' ? 'purchases' : 'expenses');
@@ -1459,10 +1542,22 @@ const AppCore = () => {
       message = 'حذف دفعة التاجر؟ سيتم استرجاع الرصيد المستحق وإلغاء تأثيرها على الصندوق أو الخزنة إن وُجد.';
     } else if (isPurchase && expense.supplierId) {
       message = 'حذف المشتريات؟ سيتم عكس تأثيرها على التاجر والصندوق أو الخزنة إن وُجد.';
+    } else if (
+      resolveExpenseSection(expense) === 'operating' &&
+      (expense.cashRecorded || expense.vaultRecorded || resolvePaymentSourceFromExpense(expense))
+    ) {
+      message = 'حذف المصروف؟ سيتم استرجاع المبلغ إلى مصدر الصرف (الصندوق أو الخزنة) إن وُجد.';
     }
     if (window.confirm(message)) {
       try {
         const expenseRef = doc(db, 'users', user.uid, 'expenses', expenseId);
+        const needsOperatingReverse =
+          resolveExpenseSection(expense) === 'operating' &&
+          !isEmployeeBenefitExpense(expense) &&
+          !isSupplierPaymentExpense(expense) &&
+          !isPayrollStaffLinkedCategory(expense.category) &&
+          (expense.cashRecorded || expense.vaultRecorded || resolvePaymentSourceFromExpense(expense));
+
         if (reversesStock || isSupplierPay || (isPurchase && expense.supplierId)) {
           await runTransaction(db, async (transaction) => {
             let productRef = null;
@@ -1517,6 +1612,18 @@ const AppCore = () => {
               alert('تم حذف الدفعة. لم يُرجَع المبلغ للصندوق — لا توجد وردية مفتوحة.');
             }
           }
+        } else if (needsOperatingReverse) {
+          await runTransaction(db, async (transaction) => {
+            const snap = await transaction.get(expenseRef);
+            if (!snap.exists()) return;
+            const row = { id: expenseId, ...snap.data() };
+            const openShift = cashShifts.find((s) => s.status === 'open');
+            await reverseOperatingExpenseInTransaction(transaction, user.uid, row, {
+              actor: sessionActor(),
+              shiftId: row.shiftId || openShift?.id || null,
+            });
+            transaction.delete(expenseRef);
+          });
         } else {
           await deleteDoc(expenseRef);
         }
@@ -2220,6 +2327,16 @@ const AppCore = () => {
               balance: Math.round(((Number(customerDoc.data.balance) || 0) - reversedDebt) * 100) / 100,
               transactions: replaceOrderDebtEntry(customerDoc.data.transactions, orderData.orderNumber, null),
               updatedAt: serverTimestamp(),
+            });
+          }
+
+          const empDebt =
+            Number(orderData.employeeDebtAmount) ||
+            (orderData.employeeSaleStaffId && reversedDebt > 0 && !cancelCustomerId ? reversedDebt : 0);
+          if (orderData.employeeSaleStaffId && empDebt > 0) {
+            await cancelEmployeePosDebtForOrderInTransaction(transaction, user.uid, orderId, {
+              actor: sessionActor(),
+              reason: 'إلغاء طلب — نقطة البيع',
             });
           }
 
@@ -2967,7 +3084,9 @@ const AppCore = () => {
       let finalStatus = status;
       let cashPaid = 0;
       let debtAmount = 0;
+      let employeeDebtAmount = 0;
       const customerId = normalizeDocId(payment.customerId || currentOrder.customerId || '');
+      const employeeStaffId = normalizeDocId(posEmployeeStaffId);
 
       if (paymentType === 'compliment' || methodEarly === 'Compliment') {
         finalStatus = 'paid';
@@ -2983,11 +3102,20 @@ const AppCore = () => {
         finalStatus = 'paid';
         paymentMethod = 'Cash';
       } else if (paymentType === 'debt') {
-        if (!customerId) throw new Error('اختر عميلاً من القائمة لتسجيل الدين');
-        cashPaid = 0;
-        debtAmount = total;
-        finalStatus = 'unpaid';
-        paymentMethod = 'Debt';
+        if (employeeStaffId && !customerId) {
+          cashPaid = 0;
+          debtAmount = total;
+          employeeDebtAmount = total;
+          finalStatus = 'unpaid';
+          paymentMethod = 'EmployeeDebt';
+        } else if (!customerId) {
+          throw new Error('اختر عميلاً أو فعّل بيع موظف لتسجيل الدين على حسابه');
+        } else {
+          cashPaid = 0;
+          debtAmount = total;
+          finalStatus = 'unpaid';
+          paymentMethod = 'Debt';
+        }
       } else if (paymentType === 'mixed') {
         if (!customerId) throw new Error('اختر عميلاً للدفع الجزئي (كاش + دين)');
         cashPaid = Math.min(total, Math.max(0, parseFloat(payment.cashPaid) || 0));
@@ -3205,7 +3333,7 @@ const AppCore = () => {
         };
         Object.keys(balanceDeltas).forEach(trackCustomerId);
         trackCustomerId(existingOrderData?.customerId);
-        if (customerId && debtAmount > 0) trackCustomerId(customerId);
+        if (customerId && debtAmount > 0 && !employeeDebtAmount) trackCustomerId(customerId);
         const customerDocs = {};
         for (const cid of affectedCustomerIds) {
           const cRef = assertFirestoreDocRef(
@@ -3354,6 +3482,8 @@ const AppCore = () => {
           orderNumber,
           customer: currentOrder.customer || 'ضيف',
           customerId: customerId || null,
+          employeeSaleStaffId: employeeStaffId || null,
+          employeeDebtAmount: employeeDebtAmount || (employeeStaffId && debtAmount > 0 && !customerId ? debtAmount : 0),
           notes: currentOrder.notes || '',
           assetMovementIds: currentOrder.assetMovementIds || [],
           items: currentOrder.items.map((i) => {
@@ -3477,10 +3607,28 @@ const AppCore = () => {
           });
         }
 
+        const empDebtToRecord = employeeDebtAmount > 0 ? employeeDebtAmount : 0;
+        if (empDebtToRecord > 0 && employeeStaffId) {
+          const staffRow = staffMembers.find((s) => s.id === employeeStaffId);
+          const itemsSummary = currentOrder.items
+            .map((i) => `${i.name}×${i.quantity}`)
+            .slice(0, 8)
+            .join('، ');
+          await recordEmployeePosDebtInTransaction(transaction, ownerUid, {
+            staffMemberId: employeeStaffId,
+            staffName: staffRow?.name || '',
+            orderId: newOrderRef.id,
+            orderNumber,
+            amount: empDebtToRecord,
+            itemsSummary,
+            actor: sessionActor(),
+          });
+        }
+
         for (const cid of affectedCustomerIds) {
           const customerDoc = customerDocs[cid];
           if (!customerDoc) continue;
-          const keepsDebt = cid === customerId && debtAmount > 0;
+          const keepsDebt = cid === customerId && debtAmount > 0 && !employeeDebtAmount;
           const hadEntry = existingOrderData?.customerId === cid;
           const delta = balanceDeltas[cid] || 0;
           if (!delta && !keepsDebt && !hadEntry) continue;
@@ -3908,6 +4056,26 @@ const AppCore = () => {
       alert(error.message);
     } finally {
       setVaultBusy(false);
+    }
+  };
+
+  const withdrawVaultBusy = async (amount, note) => {
+    if (vaultBusy) return;
+    setVaultBusy(true);
+    vaultWithdrawIdemRef.current = vaultWithdrawIdemRef.current || newIdempotencyKey('vault_wd');
+    try {
+      await withdrawFromVault(user.uid, {
+        amount,
+        reason: note,
+        actor: sessionActor(),
+        idempotencyKey: vaultWithdrawIdemRef.current,
+      });
+      alert('تم تسجيل السحب من الخزنة بنجاح');
+    } catch (error) {
+      alert(error.message || 'تعذّر السحب من الخزنة');
+    } finally {
+      setVaultBusy(false);
+      vaultWithdrawIdemRef.current = null;
     }
   };
 
@@ -5288,6 +5456,7 @@ const AppCore = () => {
               sessionActor={sessionActor}
               openShiftId={openCashShiftDoc?.id || null}
               newIdempotencyKey={newIdempotencyKey}
+              vaultBalance={vaultSummary?.balance}
               onRefreshStaff={async () => {
                 const snap = await getDocs(
                   query(collection(db, 'users', user.uid, 'staffMembers'), orderBy('name', 'asc'))
@@ -5723,6 +5892,9 @@ const AppCore = () => {
                           {isOperatingView && (
                             <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">النوع</th>
                           )}
+                          {isOperatingView && (
+                            <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">مصدر الصرف</th>
+                          )}
                           <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">البيان</th>
                           {isPurchaseView && (
                             <th className="p-3 text-xs font-bold text-gray-700 border-r border-gray-300 text-right">التاجر</th>
@@ -5746,6 +5918,11 @@ const AppCore = () => {
                                 <span className="px-2 py-1 rounded-md bg-gray-100 text-gray-700 text-xs font-medium border border-gray-300">
                                   {expenseCategoryLabel(expense.category)}
                                 </span>
+                              </td>
+                            )}
+                            {isOperatingView && (
+                              <td className="p-3 text-sm text-gray-600 border-r border-gray-200">
+                                {fmtExpenseSource(expense)}
                               </td>
                             )}
                             <td className="p-3 text-sm text-gray-600 border-r border-gray-200">{expense.description || '—'}</td>
@@ -5795,7 +5972,7 @@ const AppCore = () => {
                         ))}
                         {getFilteredExpenses().length === 0 && (
                           <tr>
-                            <td colSpan={isPurchaseView ? 7 : 6} className="p-8 text-center text-gray-500 text-sm bg-gray-50">
+                            <td colSpan={isPurchaseView ? 7 : isOperatingView ? 8 : 6} className="p-8 text-center text-gray-500 text-sm bg-gray-50">
                               {isPurchaseView ? 'لا توجد مشتريات في هذه الفترة' : 'لا توجد مصروفات في هذه الفترة'}
                             </td>
                           </tr>
@@ -6948,6 +7125,7 @@ const AppCore = () => {
               busy={vaultBusy}
               onAddCapital={addVaultCapitalBusy}
               onManualDeposit={depositVaultManualBusy}
+              onWithdraw={withdrawVaultBusy}
             />
           ) : (
             <VaultPinScreen theme={theme} onUnlocked={() => setVaultPinUnlocked(true)} />
@@ -7774,14 +7952,11 @@ const AppCore = () => {
       <PaymentChooserSheet
         open={showPaymentModal}
         total={cartTotal}
-        customerName={
-          currentOrder.customer ||
-          (posEmployeeStaffId
-            ? (() => {
-                const sn = staffMembers.find((s) => s.id === posEmployeeStaffId)?.name;
-                return sn ? `بيع موظف: ${sn}` : 'بيع بسعر موظف';
-              })()
-            : '')
+        customerName={currentOrder.customer || ''}
+        employeeSaleName={
+          posEmployeeStaffId
+            ? staffMembers.find((s) => s.id === posEmployeeStaffId)?.name || ''
+            : ''
         }
         busy={uploadProgress}
         onClose={() => setShowPaymentModal(false)}
@@ -7801,11 +7976,14 @@ const AppCore = () => {
           setShowMixedPaymentModal(true);
         }}
         onDebt={() => {
-          if (!currentOrder.customerId) {
-            alert('لتسجيل الدين اختر العميل من قائمة العملاء في السلة أولاً.');
+          if (!currentOrder.customerId && !posEmployeeStaffId) {
+            alert('لتسجيل الدين اختر العميل من السلة أو فعّل بيع موظف لتسجيل الدين على حسابه.');
             return;
           }
-          completeOrder('unpaid', { paymentType: 'debt', customerId: currentOrder.customerId });
+          completeOrder('unpaid', {
+            paymentType: 'debt',
+            customerId: currentOrder.customerId || '',
+          });
         }}
       />
 
@@ -7928,6 +8106,7 @@ const AppCore = () => {
                   employeeBenefits={employeeBenefits}
                   products={products}
                   openShift={openCashShiftDoc}
+                  vaultBalance={vaultSummary?.balance}
                   isAdmin={userRole === 'admin'}
                   disabled={Boolean(editingExpenseId) || uploadProgress}
                 />
@@ -7940,6 +8119,20 @@ const AppCore = () => {
                     setExpenseForm={setExpenseForm}
                     staffMembers={staffMembers}
                     uid={user?.uid}
+                    openShift={cashShifts.find((s) => s.status === 'open') || null}
+                    vaultBalance={vaultSummary?.balance}
+                    disabled={Boolean(editingExpenseId) || uploadProgress}
+                  />
+                )}
+              {expenseForm.section !== 'purchase' &&
+                !isSupplierPaymentForm(expenseForm) &&
+                !isEmployeeBenefitForm(expenseForm) &&
+                !isPayrollStaffLinkedCategory(expenseForm.category) && (
+                  <ExpensePaymentSourceFields
+                    expenseForm={expenseForm}
+                    setExpenseForm={setExpenseForm}
+                    openShift={cashShifts.find((s) => s.status === 'open') || null}
+                    vaultBalance={vaultSummary?.balance}
                     disabled={Boolean(editingExpenseId) || uploadProgress}
                   />
                 )}

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import StaffSearchSelect from './StaffSearchSelect';
+import ExpensePaymentSourceFields from './ExpensePaymentSourceFields';
 import { fmtMoney } from '../i18n';
 import { listPayrollAccrualsForStaff } from '../services/payrollService';
 import { uniqueStaffMembersByName } from '../utils/employeeBenefitAccounting';
@@ -13,6 +14,8 @@ export default function PayrollAdvanceExpenseFields({
   staffMembers,
   uid,
   disabled,
+  openShift,
+  vaultBalance,
 }) {
   const [accruals, setAccruals] = useState([]);
   const [loadingAccruals, setLoadingAccruals] = useState(false);
@@ -86,6 +89,14 @@ export default function PayrollAdvanceExpenseFields({
           تلقائياً بسجل السلف في النظام.
         </p>
       )}
+
+      <ExpensePaymentSourceFields
+        expenseForm={expenseForm}
+        setExpenseForm={setExpenseForm}
+        openShift={openShift}
+        vaultBalance={vaultBalance}
+        disabled={disabled}
+      />
 
       {isSalary && staffId && (
         <div className="space-y-2">

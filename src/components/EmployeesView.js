@@ -14,7 +14,19 @@ import {
 import {
   listPayrollAccrualsForStaff,
   listAdvancesForStaff,
+  listAdvanceRepaymentsForStaff,
 } from '../services/payrollService';
+import {
+  listPosDebtsForStaff,
+  listEmployeeDebtRepaymentsForStaff,
+  listPayrollPaymentsForStaff,
+} from '../services/employeeLedgerService';
+import { collection, getDocs, db } from '../firebaseClient';
+import {
+  computeEmployeeObligationsAndEntitlements,
+  formatEmployeeNetBalance,
+} from '../utils/employeeAccounting';
+import EmployeeFinancialPanel from './EmployeeFinancialPanel';
 import {
   gatewayCreatePayrollAccrual,
   gatewayRecordPayrollPayment,
@@ -25,8 +37,18 @@ import { gatewayExecuteEmployeeBenefit } from '../services/operationalGateway';
 import { defaultExpenseForm } from '../expenseConfig';
 import EmployeeBenefitFields from './EmployeeBenefitFields';
 import { getCashDayKey } from '../utils/cashDayPeriod';
-import { sumApprovedBenefitsUsage } from '../utils/employeeBenefitAccounting';
+import {
+  sumApprovedBenefitsUsage,
+  BENEFIT_TYPE_CASH,
+  normalizeBenefitType,
+} from '../utils/employeeBenefitAccounting';
 import { filterStaffByOnDuty } from '../utils/shiftOnDuty';
+import {
+  resolvePaymentSourceFromForm,
+  assertExpensePaymentSourceSelected,
+  paymentSourceToLegacyMethod,
+} from '../utils/expensePaymentSource';
+import ExpensePaymentSourceFields from './ExpensePaymentSourceFields';
 
 function ProfilePanel({
   employee,
@@ -41,6 +63,7 @@ function ProfilePanel({
   sessionActor,
   openShiftId,
   newIdempotencyKey,
+  vaultBalance,
 }) {
   const [form, setForm] = useState({
     name: employee.name,
@@ -53,11 +76,16 @@ function ProfilePanel({
   });
   const [accruals, setAccruals] = useState([]);
   const [advances, setAdvances] = useState([]);
+  const [posDebts, setPosDebts] = useState([]);
+  const [debtRepayments, setDebtRepayments] = useState([]);
+  const [payrollPayments, setPayrollPayments] = useState([]);
+  const [advanceRepayments, setAdvanceRepayments] = useState([]);
+  const [staffExpenses, setStaffExpenses] = useState([]);
   const [busy, setBusy] = useState(false);
   const [payrollForm, setPayrollForm] = useState({ amountDue: '', periodLabel: 'راتب الشهر' });
-  const [payForm, setPayForm] = useState({ accrualId: '', amount: '' });
-  const [advanceForm, setAdvanceForm] = useState({ amount: '', note: '' });
-  const [repayForm, setRepayForm] = useState({ advanceId: '', amount: '' });
+  const [payForm, setPayForm] = useState({ accrualId: '', amount: '', paymentSource: '' });
+  const [advanceForm, setAdvanceForm] = useState({ amount: '', note: '', paymentSource: '' });
+  const [repayForm, setRepayForm] = useState({ advanceId: '', amount: '', paymentSource: '' });
   const [benefitForm, setBenefitForm] = useState(() => ({
     ...defaultExpenseForm('employee_benefit'),
     staffMemberId: employee.id,
@@ -69,29 +97,45 @@ function ProfilePanel({
   }, [employee.id]);
 
   const reloadFinancial = async () => {
-    const [a, adv] = await Promise.all([
-      listPayrollAccrualsForStaff(employee._uid, employee.id),
-      listAdvancesForStaff(employee._uid, employee.id),
+    const uid = employee._uid;
+    const sid = employee.id;
+    const [a, adv, pos, rep, pay, advRep, expSnap] = await Promise.all([
+      listPayrollAccrualsForStaff(uid, sid),
+      listAdvancesForStaff(uid, sid),
+      listPosDebtsForStaff(uid, sid),
+      listEmployeeDebtRepaymentsForStaff(uid, sid),
+      listPayrollPaymentsForStaff(uid, sid),
+      listAdvanceRepaymentsForStaff(uid, sid),
+      getDocs(collection(db, 'users', uid, 'expenses')),
     ]);
     setAccruals(a);
     setAdvances(adv);
+    setPosDebts(pos);
+    setDebtRepayments(rep);
+    setPayrollPayments(pay);
+    setAdvanceRepayments(advRep);
+    setStaffExpenses(
+      expSnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((e) => e.staffMemberId === sid)
+    );
   };
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [a, adv] = await Promise.all([
-        listPayrollAccrualsForStaff(employee._uid, employee.id),
-        listAdvancesForStaff(employee._uid, employee.id),
-      ]);
-      if (!cancelled) {
-        setAccruals(a);
-        setAdvances(adv);
+      try {
+        await reloadFinancial();
+      } catch {
+        /* ignore */
       }
+      if (cancelled) return undefined;
+      return undefined;
     })();
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employee.id, employee._uid]);
 
   const staffBenefits = useMemo(
@@ -197,6 +241,24 @@ function ProfilePanel({
         حفظ البيانات
       </button>
 
+      <EmployeeFinancialPanel
+        uid={employee._uid}
+        employee={employee}
+        accruals={accruals}
+        advances={advances}
+        posDebts={posDebts}
+        debtRepayments={debtRepayments}
+        payrollPayments={payrollPayments}
+        advanceRepayments={advanceRepayments}
+        benefits={staffBenefits}
+        expenses={staffExpenses}
+        openShift={openShift}
+        vaultBalance={vaultBalance}
+        sessionActor={sessionActor}
+        openShiftId={openShiftId}
+        onRefresh={reloadFinancial}
+      />
+
       <div className="border-t pt-4">
         <p className="font-semibold text-primary mb-2">سجل الاستفادة ({staffBenefits.length})</p>
         {!staffPerms.canRecordEmployeeBenefit && (
@@ -234,6 +296,14 @@ function ProfilePanel({
                   alert('الموظف غير مداوم في الشفت الحالي.');
                   return;
                 }
+                if (normalizeBenefitType(benefitForm.benefitType) === BENEFIT_TYPE_CASH) {
+                  try {
+                    assertExpensePaymentSourceSelected(resolvePaymentSourceFromForm(benefitForm));
+                  } catch (srcErr) {
+                    alert(srcErr.message);
+                    return;
+                  }
+                }
                 setBenefitBusy(true);
                 const idem = newIdempotencyKey('emp_ben');
                 try {
@@ -254,6 +324,7 @@ function ProfilePanel({
                       override: Boolean(benefitForm.override),
                       overrideReason: benefitForm.overrideReason,
                       productsById,
+                      paymentSource: resolvePaymentSourceFromForm(benefitForm),
                     },
                     { actor: sessionActor(), idempotencyKey: idem },
                     businessProfile
@@ -276,6 +347,7 @@ function ProfilePanel({
                 employeeBenefits={benefits}
                 products={products}
                 openShift={openShift}
+                vaultBalance={vaultBalance}
                 isAdmin
                 disabled={benefitBusy || !openShift}
                 lockedStaffId={employee.id}
@@ -352,11 +424,24 @@ function ProfilePanel({
               onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))}
               className="w-20 px-2 py-1 rounded border border-gray-200"
             />
+            <ExpensePaymentSourceFields
+              expenseForm={payForm}
+              setExpenseForm={setPayForm}
+              openShift={openShift}
+              vaultBalance={vaultBalance}
+              disabled={busy}
+            />
             <button
               type="button"
               disabled={busy || !payForm.accrualId}
               className="px-2 py-1 rounded bg-accent text-white text-xs"
               onClick={async () => {
+                try {
+                  assertExpensePaymentSourceSelected(resolvePaymentSourceFromForm(payForm));
+                } catch (srcErr) {
+                  alert(srcErr.message);
+                  return;
+                }
                 setBusy(true);
                 try {
                   await gatewayRecordPayrollPayment(
@@ -364,6 +449,7 @@ function ProfilePanel({
                     {
                       accrualId: payForm.accrualId,
                       amount: payForm.amount,
+                      paymentMethod: paymentSourceToLegacyMethod(resolvePaymentSourceFromForm(payForm)),
                       shiftId: openShiftId,
                     },
                     { actor: sessionActor(), idempotencyKey: newIdempotencyKey('pay') },
@@ -401,11 +487,24 @@ function ProfilePanel({
               onChange={(e) => setAdvanceForm((f) => ({ ...f, amount: e.target.value }))}
               className="w-24 px-2 py-1 rounded border border-gray-200"
             />
+            <ExpensePaymentSourceFields
+              expenseForm={advanceForm}
+              setExpenseForm={setAdvanceForm}
+              openShift={openShift}
+              vaultBalance={vaultBalance}
+              disabled={busy}
+            />
             <button
               type="button"
               disabled={busy}
               className="px-2 py-1 rounded bg-primary text-white text-xs"
               onClick={async () => {
+                try {
+                  assertExpensePaymentSourceSelected(resolvePaymentSourceFromForm(advanceForm));
+                } catch (srcErr) {
+                  alert(srcErr.message);
+                  return;
+                }
                 setBusy(true);
                 try {
                   await gatewayRecordEmployeeAdvance(
@@ -415,7 +514,7 @@ function ProfilePanel({
                       staffName: employee.name,
                       amount: advanceForm.amount,
                       note: advanceForm.note,
-                      paymentMethod: 'Cash',
+                      paymentMethod: paymentSourceToLegacyMethod(resolvePaymentSourceFromForm(advanceForm)),
                       shiftId: openShiftId || openShift?.id || null,
                     },
                     { actor: sessionActor(), idempotencyKey: newIdempotencyKey('adv') },
@@ -453,11 +552,24 @@ function ProfilePanel({
               onChange={(e) => setRepayForm((f) => ({ ...f, amount: e.target.value }))}
               className="w-16 px-2 py-1 rounded border border-gray-200"
             />
+            <ExpensePaymentSourceFields
+              expenseForm={repayForm}
+              setExpenseForm={setRepayForm}
+              openShift={openShift}
+              vaultBalance={vaultBalance}
+              disabled={busy}
+            />
             <button
               type="button"
               disabled={busy || !repayForm.advanceId}
               className="px-2 py-1 rounded bg-gray-800 text-white text-xs"
               onClick={async () => {
+                try {
+                  assertExpensePaymentSourceSelected(resolvePaymentSourceFromForm(repayForm));
+                } catch (srcErr) {
+                  alert(srcErr.message);
+                  return;
+                }
                 setBusy(true);
                 try {
                   await gatewayRecordAdvanceRepayment(
@@ -465,12 +577,15 @@ function ProfilePanel({
                     {
                       advanceId: repayForm.advanceId,
                       amount: repayForm.amount,
+                      paymentMethod: paymentSourceToLegacyMethod(resolvePaymentSourceFromForm(repayForm)),
+                      paymentSource: resolvePaymentSourceFromForm(repayForm),
+                      shiftId: openShiftId || openShift?.id || null,
                     },
                     { actor: sessionActor(), idempotencyKey: newIdempotencyKey('adv_repay') },
                     businessProfile
                   );
                   await reloadFinancial();
-                  setRepayForm({ advanceId: '', amount: '' });
+                  setRepayForm({ advanceId: '', amount: '', paymentSource: '' });
                 } catch (e) {
                   alert(e.message);
                 } finally {
@@ -506,11 +621,42 @@ export default function EmployeesView({
   sessionActor,
   openShiftId,
   newIdempotencyKey,
+  vaultBalance,
 }) {
   const [detail, setDetail] = useState(null);
   const [showNew, setShowNew] = useState(false);
   const [newForm, setNewForm] = useState({ name: '', benefitLimitILS: '20', phone: '' });
   const [loading, setLoading] = useState(false);
+  const [financeIndex, setFinanceIndex] = useState({ accruals: [], advances: [], posDebts: [] });
+
+  const refreshFinanceIndex = async () => {
+    if (!uid) return;
+    try {
+      const [aSnap, advSnap, posSnap] = await Promise.all([
+        getDocs(collection(db, 'users', uid, 'payrollAccruals')),
+        getDocs(collection(db, 'users', uid, 'employeeAdvances')),
+        getDocs(collection(db, 'users', uid, 'employeePosDebts')),
+      ]);
+      setFinanceIndex({
+        accruals: aSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+        advances: advSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+        posDebts: posSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      });
+    } catch {
+      /* ignore */
+    }
+  };
+
+  useEffect(() => {
+    refreshFinanceIndex();
+  }, [uid, staffMembers.length]);
+
+  const netBalanceForStaff = (staffId) => {
+    const acc = financeIndex.accruals.filter((a) => a.staffMemberId === staffId);
+    const adv = financeIndex.advances.filter((a) => a.staffMemberId === staffId);
+    const pos = financeIndex.posDebts.filter((p) => p.staffMemberId === staffId);
+    return computeEmployeeObligationsAndEntitlements({ accruals: acc, advances: adv, posDebts: pos }).net;
+  };
 
   useEffect(() => {
     if (!uid) return;
@@ -536,7 +682,11 @@ export default function EmployeesView({
         sessionActor={sessionActor}
         openShiftId={openShiftId}
         newIdempotencyKey={newIdempotencyKey}
-        onBack={() => setDetail(null)}
+        vaultBalance={vaultBalance}
+        onBack={() => {
+          setDetail(null);
+          refreshFinanceIndex();
+        }}
         onSaveBasic={async (form) => {
           await updateEmployee(uid, detail.id, {
             name: form.name,
@@ -589,6 +739,17 @@ export default function EmployeesView({
                   {s.active === false ? ' · معطّل' : ''}
                 </p>
               </div>
+            </div>
+            <div className="text-end shrink-0 me-2">
+              {(() => {
+                const pres = formatEmployeeNetBalance(netBalanceForStaff(s.id));
+                return (
+                  <p className={`text-xs font-bold ${pres.tone === 'positive' ? 'text-emerald-700' : pres.tone === 'negative' ? 'text-rose-700' : 'text-gray-500'}`}>
+                    {pres.label}
+                    {pres.amount > 0 ? `: ${fmtMoney(pres.amount)}` : pres.kind === 'settled' ? '' : ''}
+                  </p>
+                );
+              })()}
             </div>
             <ChevronRight size={16} className="text-gray-400 rotate-180" />
           </button>

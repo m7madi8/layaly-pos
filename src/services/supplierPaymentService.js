@@ -4,6 +4,7 @@ import {
   appendCashMovementInTransaction,
 } from './cashShiftService';
 import { vaultDocRef, applyVaultDebit, applyVaultCredit } from './vaultService';
+import { legacyMethodToPaymentSource } from '../utils/expensePaymentSource';
 import {
   SUPPLIER_PAYMENT_CATEGORY,
   SUPPLIER_PAYMENT_SECTION,
@@ -106,6 +107,7 @@ export async function executeSupplierPayment(uid, input, { actor, idempotencyKey
       supplierId,
       supplierName,
       paymentMethod,
+      paymentSource: legacyMethodToPaymentSource(paymentMethod) || null,
       paymentRef,
       recordedBy: actor || null,
       excludeFromReportTotals: true,

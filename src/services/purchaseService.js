@@ -12,6 +12,7 @@ import {
   PURCHASE_PAYMENT_VAULT,
   purchaseIncreasesSupplierDebt,
 } from '../utils/purchasePayment';
+import { legacyMethodToPaymentSource } from '../utils/expensePaymentSource';
 import { roundMoney } from '../utils/supplierAccounting';
 import { applySupplierPurchaseBalanceWrite } from './supplierPaymentService';
 import {
@@ -84,6 +85,7 @@ export async function executePurchase(uid, input, { actor, shiftId = null }) {
       supplierId: input.supplierId,
       supplierName: supplierName || supplierSnap?.data()?.name || '',
       paymentMethod,
+      paymentSource: legacyMethodToPaymentSource(paymentMethod) || null,
       notes: String(input.notes || '').trim(),
       linkedIngredientId: input.linkedIngredientId || null,
       linkedProductId: input.linkedProductId || null,

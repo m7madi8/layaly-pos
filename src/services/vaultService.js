@@ -60,6 +60,45 @@ export async function addVaultCapital(uid, { amount, note, actor }) {
   });
 }
 
+export async function withdrawFromVault(uid, { amount, reason, actor, idempotencyKey }) {
+  const amt = Math.round((Number(amount) || 0) * 100) / 100;
+  if (!(amt > 0)) throw new Error('أدخل مبلغ السحب أكبر من صفر');
+
+  const idemKey = String(idempotencyKey || '').trim();
+  const reasonText = String(reason || '').trim() || 'سحب من الخزنة';
+
+  return runTransaction(db, async (tx) => {
+    if (idemKey) {
+      const idemRef = doc(collection(db, 'users', uid, 'vaultWithdrawIdempotency'), idemKey);
+      const idemSnap = await tx.get(idemRef);
+      if (idemSnap.exists()) {
+        return { ok: true, duplicate: true, amount: idemSnap.data().amount };
+      }
+    }
+
+    const vRef = vaultDocRef(uid);
+    const snap = await tx.get(vRef);
+    applyVaultDebit(tx, uid, snap, {
+      amount: amt,
+      type: 'safe_withdrawal',
+      reason: reasonText,
+      actor,
+    });
+
+    if (idemKey) {
+      const idemRef = doc(collection(db, 'users', uid, 'vaultWithdrawIdempotency'), idemKey);
+      tx.set(idemRef, {
+        amount: amt,
+        reason: reasonText,
+        createdAt: serverTimestamp(),
+        createdAtMs: Date.now(),
+      });
+    }
+
+    return { ok: true, duplicate: false, amount: amt };
+  });
+}
+
 export async function depositVaultManual(uid, { amount, note, actor }) {
   const amt = Math.round((Number(amount) || 0) * 100) / 100;
   if (!(amt > 0)) throw new Error('أدخل مبلغاً أكبر من صفر');

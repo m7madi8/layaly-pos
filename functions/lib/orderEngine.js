@@ -22,6 +22,7 @@ const {
 const { buildRequestFingerprint } = require('./idempotency');
 
 const { computePaymentBreakdown, applyDiscount } = require('./pricingAndPayment');
+const { recordEmployeePosDebtInTx, cancelEmployeePosDebtForOrderInTx } = require('./employeeLedgerEngine');
 
 function validateAddons(product, selectedAddonNames) {
   const names = Array.isArray(selectedAddonNames) ? selectedAddonNames.map(String) : [];
@@ -196,11 +197,13 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
   }
 
   const customerId = payload.customerId ? String(payload.customerId) : '';
+  const employeeSaleStaffId = payload.employeeSaleStaffId ? String(payload.employeeSaleStaffId).trim() : '';
   const pay = computePaymentBreakdown({
     payment: payload.payment,
     total,
     customerId,
     isAdmin,
+    employeeSaleStaffId,
   });
 
   const customerName = String(payload.customerName || payload.customer || 'ضيف').trim() || 'ضيف';
@@ -322,7 +325,13 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
     });
     const affectedCustomerIds = new Set(Object.keys(balanceDeltas));
     if (existingOrderData?.customerId) affectedCustomerIds.add(existingOrderData.customerId);
-    if (customerId && pay.debtAmount > 0) affectedCustomerIds.add(customerId);
+    const employeeDebtAmount =
+      pay.employeeDebtAmount > 0
+        ? pay.employeeDebtAmount
+        : employeeSaleStaffId && pay.debtAmount > 0 && !customerId
+          ? pay.debtAmount
+          : 0;
+    if (customerId && pay.debtAmount > 0 && !employeeDebtAmount) affectedCustomerIds.add(customerId);
 
     const customerDocs = {};
     for (const cid of affectedCustomerIds) {
@@ -390,6 +399,8 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
       orderNumber,
       customer: customerName,
       customerId: customerId || null,
+      employeeSaleStaffId: employeeSaleStaffId || null,
+      employeeDebtAmount,
       notes,
       assetMovementIds,
       items: orderItems,
@@ -473,10 +484,28 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
       });
     }
 
+    if (employeeDebtAmount > 0 && employeeSaleStaffId) {
+      const staffSnap = await tx.get(db.doc(`users/${uid}/staffMembers/${employeeSaleStaffId}`));
+      const staffName = staffSnap.exists ? staffSnap.data().name : '';
+      const itemsSummary = orderItems
+        .map((i) => `${i.name}×${i.quantity}`)
+        .slice(0, 8)
+        .join('، ');
+      await recordEmployeePosDebtInTx(tx, db, uid, {
+        staffMemberId: employeeSaleStaffId,
+        staffName,
+        orderId: orderRef.id,
+        orderNumber,
+        amount: employeeDebtAmount,
+        itemsSummary,
+        actor,
+      });
+    }
+
     for (const cid of affectedCustomerIds) {
       const customerDoc = customerDocs[cid];
       if (!customerDoc) continue;
-      const keepsDebt = cid === customerId && pay.debtAmount > 0;
+      const keepsDebt = cid === customerId && pay.debtAmount > 0 && !employeeDebtAmount;
       const hadEntry = existingOrderData?.customerId === cid;
       const delta = balanceDeltas[cid] || 0;
       if (!delta && !keepsDebt && !hadEntry) continue;
@@ -574,6 +603,13 @@ async function executeCancelOrder(db, uid, { orderId }, { actor }) {
         balance: customerCancel.balance,
         transactions: customerCancel.transactions,
         updatedAt: serverTimestamp(db),
+      });
+    }
+
+    if (data.employeeSaleStaffId && (Number(data.employeeDebtAmount) || 0) > 0) {
+      await cancelEmployeePosDebtForOrderInTx(tx, db, uid, orderId, {
+        actor,
+        reason: 'إلغاء طلب — نقطة البيع',
       });
     }
 

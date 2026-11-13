@@ -2,7 +2,8 @@ const { roundMoney } = require('./productPricing');
 
 const SUPPORTED_PAYMENT_TYPES = new Set(['cash', 'debt', 'mixed', 'pending', 'compliment']);
 
-function computePaymentBreakdown({ payment, total, customerId, isAdmin }) {
+function computePaymentBreakdown({ payment, total, customerId, isAdmin, employeeSaleStaffId }) {
+  const empId = employeeSaleStaffId ? String(employeeSaleStaffId).trim() : '';
   const paymentType = String(payment?.paymentType || 'cash');
   if (!SUPPORTED_PAYMENT_TYPES.has(paymentType)) {
     throw new Error('طريقة دفع غير مدعومة');
@@ -22,7 +23,17 @@ function computePaymentBreakdown({ payment, total, customerId, isAdmin }) {
     return { finalStatus: 'paid', paymentMethod: 'Cash', paymentType: 'cash', cashPaid: total, debtAmount: 0 };
   }
   if (paymentType === 'debt') {
-    if (!customerId) throw new Error('اختر عميلاً لتسجيل الدين');
+    if (empId && !customerId) {
+      return {
+        finalStatus: 'unpaid',
+        paymentMethod: 'EmployeeDebt',
+        paymentType: 'employee_debt',
+        cashPaid: 0,
+        debtAmount: total,
+        employeeDebtAmount: total,
+      };
+    }
+    if (!customerId) throw new Error('اختر عميلاً أو بيع موظف لتسجيل الدين');
     return { finalStatus: 'unpaid', paymentMethod: 'Debt', paymentType: 'debt', cashPaid: 0, debtAmount: total };
   }
   if (paymentType === 'mixed') {

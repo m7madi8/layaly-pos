@@ -16,6 +16,8 @@ import { newIdempotencyKey } from '../utils/idempotencyKey';
 import { gatewayRecordSupplierOpeningBalance } from '../services/financialGateway';
 import SupplierSearchSelect from './SupplierSearchSelect';
 import ChecksPanel from './ChecksPanel';
+import ExpensePaymentSourceFields from './ExpensePaymentSourceFields';
+import { legacyMethodToPaymentSource } from '../utils/expensePaymentSource';
 
 function formatLedgerDate(entry) {
   if (!entry?.date) return '—';
@@ -604,7 +606,11 @@ export function SupplierPaymentFields({
         <label className="block text-xs mb-1 font-medium text-gray-600">طريقة الدفع</label>
         <select
           value={method}
-          onChange={(e) => setExpenseForm({ ...expenseForm, paymentMethod: e.target.value })}
+          onChange={(e) => {
+            const nextMethod = e.target.value;
+            const paymentSource = legacyMethodToPaymentSource(nextMethod) || '';
+            setExpenseForm({ ...expenseForm, paymentMethod: nextMethod, paymentSource });
+          }}
           className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm bg-white"
           disabled={disabled}
         >
@@ -612,6 +618,15 @@ export function SupplierPaymentFields({
             <option key={m.id} value={m.id}>{m.label}</option>
           ))}
         </select>
+        {(method === SUPPLIER_PAYMENT_CASH || method === SUPPLIER_PAYMENT_VAULT) && (
+          <ExpensePaymentSourceFields
+            expenseForm={expenseForm}
+            setExpenseForm={setExpenseForm}
+            openShift={openShift}
+            vaultBalance={vaultBalance}
+            disabled={disabled}
+          />
+        )}
         {method === SUPPLIER_PAYMENT_CASH && (
           <p className="text-[11px] text-gray-600 mt-1">
             {openShift

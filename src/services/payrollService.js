@@ -5,6 +5,18 @@ import {
   readOpenCashShiftInTransaction,
   appendCashMovementInTransaction,
 } from './cashShiftService';
+import { vaultDocRef, applyVaultDebit, applyVaultCredit } from './vaultService';
+import {
+  PAYMENT_SOURCE_DRAWER,
+  PAYMENT_SOURCE_VAULT,
+  paymentSourceToLegacyMethod,
+} from '../utils/expensePaymentSource';
+
+function paymentSourceFromMethod(method) {
+  if (String(method || '').trim() === 'Vault') return PAYMENT_SOURCE_VAULT;
+  if (String(method || '').trim() === 'Cash') return PAYMENT_SOURCE_DRAWER;
+  return null;
+}
 
 const accrualsCol = (uid) => collection(db, 'users', uid, 'payrollAccruals');
 const paymentsCol = (uid) => collection(db, 'users', uid, 'payrollPayments');
@@ -16,9 +28,13 @@ export const PAYROLL_STATUS_PARTIAL = 'partial';
 export const PAYROLL_STATUS_PAID = 'paid';
 
 function isCashPayment(method) {
-  const m = String(method || 'Cash').trim().toLowerCase();
-  return m === 'cash' || m === 'نقد' || m === 'نقدي';
+  return String(method || '').trim() === 'Cash';
 }
+
+function isVaultPayment(method) {
+  return String(method || '').trim() === 'Vault';
+}
+
 
 /** Create salary accrual (not an expense until payment). */
 export async function createPayrollAccrual(uid, { staffMemberId, staffName, amount, periodLabel, dueDate }) {
@@ -51,6 +67,9 @@ export async function recordPayrollPayment(uid, {
 }) {
   const pay = roundMoney(amount);
   if (!(pay > 0)) throw new Error('أدخل مبلغ الدفعة');
+  if (!isCashPayment(paymentMethod) && !isVaultPayment(paymentMethod)) {
+    throw new Error('اختر مصدر الصرف — الصندوق أو الخزنة');
+  }
 
   return runTransaction(db, async (tx) => {
     const aRef = doc(accrualsCol(uid), accrualId);
@@ -72,6 +91,11 @@ export async function recordPayrollPayment(uid, {
       }
     }
 
+    let vaultSnap = null;
+    if (isVaultPayment(paymentMethod)) {
+      vaultSnap = await tx.get(vaultDocRef(uid));
+    }
+
     const newPaid = roundMoney((Number(acc.amountPaid) || 0) + pay);
     const newStatus =
       newPaid >= (Number(acc.amountDue) || 0) - 0.009 ? PAYROLL_STATUS_PAID : PAYROLL_STATUS_PARTIAL;
@@ -86,11 +110,15 @@ export async function recordPayrollPayment(uid, {
       staffMemberId: acc.staffMemberId,
       payrollAccrualId: accrualId,
       paymentMethod,
+      paymentSource: paymentSourceFromMethod(paymentMethod),
+      shiftId: cashShiftCtx?.shiftId || null,
       notes: String(note || '').trim(),
       createdAt: serverTimestamp(),
       createdAtMs: Date.now(),
       createdBy: actor || null,
       idempotencyKey: idempotencyKey || null,
+      cashRecorded: false,
+      vaultRecorded: false,
     });
 
     const pRef = doc(paymentsCol(uid));
@@ -123,7 +151,21 @@ export async function recordPayrollPayment(uid, {
       cashRecorded = true;
     }
 
-    return { expenseId: expenseRef.id, paymentId: pRef.id, status: newStatus, cashRecorded };
+    let vaultRecorded = false;
+    if (isVaultPayment(paymentMethod)) {
+      applyVaultDebit(tx, uid, vaultSnap, {
+        amount: pay,
+        type: 'salary',
+        reason: `راتب — ${acc.staffName || ''}`,
+        actor,
+        expenseId: expenseRef.id,
+      });
+      vaultRecorded = true;
+    }
+
+    tx.update(expenseRef, { cashRecorded, vaultRecorded });
+
+    return { expenseId: expenseRef.id, paymentId: pRef.id, status: newStatus, cashRecorded, vaultRecorded };
   });
 }
 
@@ -139,6 +181,9 @@ export async function recordEmployeeAdvance(uid, {
   const amt = roundMoney(amount);
   if (!(amt > 0)) throw new Error('أدخل مبلغ السلفة');
   if (!staffMemberId) throw new Error('اختر الموظف');
+  if (!isCashPayment(paymentMethod) && !isVaultPayment(paymentMethod)) {
+    throw new Error('اختر مصدر الصرف — الصندوق أو الخزنة');
+  }
 
   return runTransaction(db, async (tx) => {
     let cashShiftCtx = null;
@@ -151,6 +196,11 @@ export async function recordEmployeeAdvance(uid, {
       if (!cashShiftCtx) {
         throw new Error('وردية الكاش غير متاحة — حدّث الصفحة من شاشة الصندوق');
       }
+    }
+
+    let vaultSnap = null;
+    if (isVaultPayment(paymentMethod)) {
+      vaultSnap = await tx.get(vaultDocRef(uid));
     }
 
     const advRef = doc(advancesCol(uid));
@@ -174,10 +224,14 @@ export async function recordEmployeeAdvance(uid, {
       staffMemberId,
       employeeAdvanceId: advRef.id,
       paymentMethod,
+      paymentSource: paymentSourceFromMethod(paymentMethod),
+      shiftId: cashShiftCtx?.shiftId || null,
       notes: String(note || '').trim(),
       createdAt: serverTimestamp(),
       createdAtMs: Date.now(),
       createdBy: actor || null,
+      cashRecorded: false,
+      vaultRecorded: false,
     });
 
     let cashRecorded = false;
@@ -192,14 +246,43 @@ export async function recordEmployeeAdvance(uid, {
       cashRecorded = true;
     }
 
-    return { advanceId: advRef.id, expenseId: expenseRef.id, cashRecorded };
+    let vaultRecorded = false;
+    if (isVaultPayment(paymentMethod)) {
+      applyVaultDebit(tx, uid, vaultSnap, {
+        amount: amt,
+        type: 'advance',
+        reason: `سلفة — ${staffName || ''}`,
+        actor,
+        expenseId: expenseRef.id,
+      });
+      vaultRecorded = true;
+    }
+
+    tx.update(expenseRef, { cashRecorded, vaultRecorded });
+
+    return { advanceId: advRef.id, expenseId: expenseRef.id, cashRecorded, vaultRecorded };
   });
 }
 
 /** Repay advance (deduct from remaining balance). */
-export async function recordAdvanceRepayment(uid, { advanceId, amount, note = '', actor, paymentMethod = 'Cash' }) {
+export async function recordAdvanceRepayment(
+  uid,
+  {
+    advanceId,
+    amount,
+    note = '',
+    actor,
+    paymentMethod = 'Cash',
+    paymentSource,
+    shiftId,
+  }
+) {
   const pay = roundMoney(amount);
   if (!(pay > 0)) throw new Error('أدخل مبلغ التسديد');
+
+  const isVault = String(paymentMethod || '').trim() === 'Vault';
+  const isCash = String(paymentMethod || '').trim() === 'Cash';
+  const isPayrollDeduct = String(paymentMethod || '').trim() === 'payroll_deduct';
 
   return runTransaction(db, async (tx) => {
     const advRef = doc(advancesCol(uid), advanceId);
@@ -210,30 +293,95 @@ export async function recordAdvanceRepayment(uid, { advanceId, amount, note = ''
     if (pay > rem + 0.009) throw new Error(`المتبقي على السلفة ${rem} ₪ فقط`);
 
     const nextRem = roundMoney(rem - pay);
-    const expenseRef = doc(expensesCol(uid));
-    tx.set(expenseRef, {
-      amount: pay,
-      date: new Date(),
-      category: 'Advance',
-      section: 'operating',
-      description: `تسديد سلفة — ${adv.staffName || ''}`,
+    let cashShiftCtx = null;
+    let vaultSnap = null;
+    if (isCash) {
+      const safeShiftId = normalizeDocId(shiftId);
+      if (!safeShiftId) {
+        throw new Error('لا توجد وردية كاش مفتوحة لتسديد السلفة نقداً');
+      }
+      cashShiftCtx = await readOpenCashShiftInTransaction(tx, uid, safeShiftId, { allowQueryFallback: false });
+      if (!cashShiftCtx) throw new Error('وردية الكاش غير متاحة');
+    }
+    if (isVault) {
+      vaultSnap = await tx.get(vaultDocRef(uid));
+    }
+
+  const repayRef = doc(collection(db, 'users', uid, 'advanceRepayments'));
+    const expenseRef = isPayrollDeduct ? null : doc(expensesCol(uid));
+
+    tx.set(repayRef, {
+      advanceId,
       staffMemberId: adv.staffMemberId,
-      employeeAdvanceId: advanceId,
+      staffName: adv.staffName || '',
+      amount: pay,
       paymentMethod,
+      paymentSource: paymentSource || paymentSourceFromMethod(paymentMethod),
       notes: String(note || '').trim(),
-      isAdvanceRepayment: true,
+      expenseId: expenseRef ? expenseRef.id : null,
       createdAt: serverTimestamp(),
       createdAtMs: Date.now(),
       createdBy: actor || null,
     });
 
+    if (expenseRef && !isPayrollDeduct) {
+      tx.set(expenseRef, {
+        amount: pay,
+        date: new Date(),
+        category: 'Advance',
+        section: 'operating',
+        description: `تسديد سلفة — ${adv.staffName || ''}`,
+        staffMemberId: adv.staffMemberId,
+        employeeAdvanceId: advanceId,
+        advanceRepaymentId: repayRef.id,
+        paymentMethod,
+        paymentSource: paymentSource || paymentSourceFromMethod(paymentMethod),
+        notes: String(note || '').trim(),
+        isAdvanceRepayment: true,
+        excludeFromReportTotals: true,
+        createdAt: serverTimestamp(),
+        createdAtMs: Date.now(),
+        createdBy: actor || null,
+        cashRecorded: false,
+        vaultRecorded: false,
+      });
+    }
+
     tx.update(advRef, {
       balanceRemaining: nextRem,
       status: nextRem <= 0.009 ? 'closed' : 'open',
       updatedAt: serverTimestamp(),
+      updatedAtMs: Date.now(),
     });
 
-    return { expenseId: expenseRef.id, balanceRemaining: nextRem };
+    if (cashShiftCtx && isCash) {
+      await appendCashMovementInTransaction(tx, uid, cashShiftCtx.shiftId, cashShiftCtx.shiftSnap, {
+        type: 'deposit',
+        amount: pay,
+        reason: `تسديد سلفة — ${adv.staffName || ''}`,
+        actor,
+        expenseId: expenseRef?.id,
+      });
+      if (expenseRef) tx.update(expenseRef, { cashRecorded: true, shiftId: cashShiftCtx.shiftId });
+    }
+
+    if (isVault && vaultSnap) {
+      applyVaultCredit(tx, uid, vaultSnap, {
+        amount: pay,
+        type: 'advance_repay',
+        reason: `تسديد سلفة — ${adv.staffName || ''}`,
+        actor,
+        expenseId: expenseRef?.id,
+      });
+      if (expenseRef) tx.update(expenseRef, { vaultRecorded: true });
+    }
+
+    return {
+      expenseId: expenseRef?.id || null,
+      repaymentId: repayRef.id,
+      balanceRemaining: nextRem,
+      cashRecorded: Boolean(cashShiftCtx && isCash),
+    };
   });
 }
 
@@ -245,6 +393,12 @@ export async function listPayrollAccrualsForStaff(uid, staffMemberId) {
 
 export async function listAdvancesForStaff(uid, staffMemberId) {
   const q = query(advancesCol(uid), where('staffMemberId', '==', staffMemberId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function listAdvanceRepaymentsForStaff(uid, staffMemberId) {
+  const q = query(collection(db, 'users', uid, 'advanceRepayments'), where('staffMemberId', '==', staffMemberId));
   const snap = await getDocs(q);
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }

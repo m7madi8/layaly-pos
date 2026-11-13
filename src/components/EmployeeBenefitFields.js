@@ -15,6 +15,7 @@ import { getCashDayKey } from '../utils/cashDayPeriod';
 import { getProductType } from '../utils/productPricing';
 import { filterStaffByOnDuty, openShiftNeedsOnDutyAssignment } from '../utils/shiftOnDuty';
 import { filterStaffForEmployeeBenefit } from '../utils/staffPermissions';
+import ExpensePaymentSourceFields from './ExpensePaymentSourceFields';
 
 export default function EmployeeBenefitFields({
   expenseForm,
@@ -23,6 +24,7 @@ export default function EmployeeBenefitFields({
   employeeBenefits,
   products,
   openShift,
+  vaultBalance,
   isAdmin,
   disabled,
   lockedStaffId,
@@ -204,19 +206,28 @@ export default function EmployeeBenefitFields({
       </div>
 
       {expenseForm.benefitType === BENEFIT_TYPE_CASH && (
-        <div>
-          <label className="block text-xs mb-1.5 font-medium text-gray-600">مبلغ الكاش (₪)</label>
-          <input
-            type="text"
-            inputMode="decimal"
-            pattern="[0-9]*[.,]?[0-9]*"
-            value={expenseForm.amount}
-            onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })}
-            className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
+        <>
+          <div>
+            <label className="block text-xs mb-1.5 font-medium text-gray-600">مبلغ الكاش (₪)</label>
+            <input
+              type="text"
+              inputMode="decimal"
+              pattern="[0-9]*[.,]?[0-9]*"
+              value={expenseForm.amount}
+              onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })}
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
+              disabled={disabled}
+              placeholder="0.00"
+            />
+          </div>
+          <ExpensePaymentSourceFields
+            expenseForm={expenseForm}
+            setExpenseForm={setExpenseForm}
+            openShift={openShift}
+            vaultBalance={vaultBalance}
             disabled={disabled}
-            placeholder="0.00"
           />
-        </div>
+        </>
       )}
 
       {(expenseForm.benefitType === BENEFIT_TYPE_INVENTORY ||

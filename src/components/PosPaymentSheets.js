@@ -60,12 +60,31 @@ const confirmBtn =
   'w-full h-16 rounded-xl text-white text-xl font-extrabold shadow-md disabled:opacity-40 transition-opacity';
 
 /* ───── 1) اختيار طريقة الدفع (عميل مسجّل أو بيع بسعر موظف — الضيف العادي يذهب للكاش) ───── */
-export function PaymentChooserSheet({ open, total, customerName, busy, onClose, onCash, onDebt, onMixed }) {
+export function PaymentChooserSheet({
+  open,
+  total,
+  customerName,
+  employeeSaleName,
+  busy,
+  onClose,
+  onCash,
+  onDebt,
+  onMixed,
+}) {
   const tile =
     'w-full min-h-[84px] px-4 flex items-center gap-4 rounded-2xl border-2 text-start disabled:opacity-50 active:scale-[0.99] transition-transform';
   return (
     <Sheet open={open} onClose={onClose} title="طريقة الدفع" busy={busy}>
-      <TotalBlock total={total} caption={customerName ? `العميل: ${customerName}` : 'الإجمالي المطلوب'} />
+      <TotalBlock
+        total={total}
+        caption={
+          customerName
+            ? `العميل: ${customerName}`
+            : employeeSaleName
+              ? `بيع موظف: ${employeeSaleName}`
+              : 'الإجمالي المطلوب'
+        }
+      />
       <div className="space-y-3">
         <button type="button" onClick={onCash} disabled={busy} className={`${tile} border-[var(--color-success)] bg-[var(--color-success-soft)]`}>
           <span className="w-12 h-12 rounded-full grid place-items-center bg-[var(--color-success)] text-white shrink-0"><Wallet size={24} /></span>
@@ -85,7 +104,11 @@ export function PaymentChooserSheet({ open, total, customerName, busy, onClose, 
           <span className="w-12 h-12 rounded-full grid place-items-center bg-[var(--color-danger)] text-white shrink-0"><User size={24} /></span>
           <span>
             <span className="block text-xl font-extrabold text-primary">{busy ? 'جاري الحفظ…' : 'دين'}</span>
-            <span className="block text-sm text-[var(--color-text-secondary)]">كامل المبلغ يُسجَّل على حساب العميل</span>
+            <span className="block text-sm text-[var(--color-text-secondary)]">
+              {employeeSaleName
+                ? `يُسجَّل الدين على حساب الموظف ${employeeSaleName}`
+                : 'كامل المبلغ يُسجَّل على حساب العميل'}
+            </span>
           </span>
         </button>
       </div>

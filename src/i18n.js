@@ -90,6 +90,8 @@ export const expenseCategoryLabel = (cat) => {
     Salaries: 'رواتب',
     Rent: 'إيجار',
     Food: 'أكل',
+    Electricity: 'كهرباء',
+    Water: 'مياه',
     Advance: 'سلف',
     Purchase: 'مشتريات',
     Inventory: 'مشتريات',
@@ -102,5 +104,7 @@ export const expenseCategoryLabel = (cat) => {
   };
   return map[cat] || cat;
 };
+
+export { expensePaymentSourceLabel } from './utils/expensePaymentSource';
 
 export const supplierPaymentMethodLabel = (method) => supplierPayMethodLabel(method);
