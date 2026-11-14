@@ -631,7 +631,10 @@ const AppCore = () => {
 
   // Tenant membership (authoritative role — not localStorage)
   useEffect(() => {
-    if (!dataUid) return undefined;
+    if (!user?.uid) {
+      setTenantAuthLoading(false);
+      return undefined;
+    }
     let cancelled = false;
     setTenantAuthLoading(true);
     resolveTenantAuthContext(user.uid)
@@ -892,7 +895,7 @@ const AppCore = () => {
 
   // Load ingredients
   useEffect(() => {
-    if (!user || userRole !== 'admin' || currentView !== 'inventory') return;
+    if (!dataUid || !user || userRole !== 'admin' || currentView !== 'inventory') return;
     const unsubscribe = onSnapshot(
       collection(db, 'users', dataUid, 'ingredients'),
       (snapshot) => {
@@ -1016,7 +1019,7 @@ const AppCore = () => {
 
   // Load PlayStation sessions
   useEffect(() => {
-    if (!user || currentView !== 'pos') return;
+    if (!dataUid || !user || currentView !== 'pos') return;
     const q = query(collection(db, 'users', dataUid, 'playstationSessions'), orderBy('startedAtMs', 'desc'), limit(80));
     const unsubscribe = onSnapshot(
       q,
@@ -1028,7 +1031,7 @@ const AppCore = () => {
 
   // Load external assets (hookahs taken outside) and their movements
   useEffect(() => {
-    if (!user || currentView !== 'pos') return;
+    if (!dataUid || !user || currentView !== 'pos') return;
     const unsubAssets = onSnapshot(
       query(collection(db, 'users', dataUid, 'externalAssets'), limit(60)),
       (snapshot) => setExternalAssets(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
@@ -1047,7 +1050,7 @@ const AppCore = () => {
 
   const starterSeededRef = useRef(false);
   useEffect(() => {
-    if (!user || !businessProfile || !userRole || starterSeededRef.current) return;
+    if (!dataUid || !user || !businessProfile || !userRole || starterSeededRef.current) return;
     starterSeededRef.current = true;
     Promise.all([
       ensureStarterProducts(dataUid, businessProfile)
@@ -1159,7 +1162,7 @@ const AppCore = () => {
 
   // Open bills (parked tabs — not orders)
   useEffect(() => {
-    if (!user) return;
+    if (!dataUid || !user) return;
     if (!['pos', 'customers'].includes(currentView)) return;
     const unsubscribe = onSnapshot(
       query(collection(db, 'users', dataUid, 'openBills'), orderBy('updatedAtMs', 'desc'), limit(50)),
@@ -1182,7 +1185,7 @@ const AppCore = () => {
   }, [dataUid, cashShiftsListenerActive]);
 
   useEffect(() => {
-    if (!user || currentView !== 'cash') return;
+    if (!dataUid || !user || currentView !== 'cash') return;
     const unsubMovements = onSnapshot(
       query(collection(db, 'users', dataUid, 'cashMovements'), orderBy('createdAtMs', 'desc'), limit(200)),
       (snapshot) => setCashMovements(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
@@ -1202,7 +1205,7 @@ const AppCore = () => {
   }, [dataUid, vaultListenerActive]);
 
   useEffect(() => {
-    if (!user || userRole !== 'admin' || currentView !== 'vault') return;
+    if (!dataUid || !user || userRole !== 'admin' || currentView !== 'vault') return;
     const unsubVaultMoves = onSnapshot(
       query(collection(db, 'users', dataUid, 'vaultMovements'), orderBy('createdAtMs', 'desc'), limit(200)),
       (snapshot) => setVaultMovements(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
@@ -4959,6 +4962,17 @@ const AppCore = () => {
         <div className="text-center animate-pulse">
           <div className="w-12 h-12 border-3 border-t-transparent rounded-full animate-spin mb-3 mx-auto" style={{ borderColor: theme.primary }}></div>
           <p className="text-sm" style={{ color: theme.text, fontFamily: FONT_UI }}>جاري التحميل...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (user && userRole && !needsCashierJoin && !dataUid) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: theme.bgWarm }}>
+        <div className="text-center animate-pulse">
+          <div className="w-12 h-12 border-3 border-t-transparent rounded-full animate-spin mb-3 mx-auto" style={{ borderColor: theme.primary }}></div>
+          <p className="text-sm" style={{ color: theme.text, fontFamily: FONT_UI }}>جاري ربط حساب المقهى…</p>
         </div>
       </div>
     );
