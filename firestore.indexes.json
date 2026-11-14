@@ -23,6 +23,13 @@
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "timestamp", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "customers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "balance", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

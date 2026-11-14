@@ -19,6 +19,7 @@
   },
   "scripts": {
     "start": "react-scripts start",
+    "backup:system": "node scripts/disaster-recovery/run-backup.js",
     "prebuild": "node scripts/assert-production-env.js",
     "build": "react-scripts build",
     "test": "react-scripts test",

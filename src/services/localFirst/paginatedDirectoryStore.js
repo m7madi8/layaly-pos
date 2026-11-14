@@ -40,6 +40,8 @@ function emptyState() {
     pageCache: new Map(),
     hasMore: true,
     loading: false,
+    error: null,
+    loadSeq: 0,
   };
 }
 
@@ -67,27 +69,39 @@ export async function fetchDirectoryPage(
   { pageSize = DEFAULT_PAGE, force = false } = {}
 ) {
   const state = getStore(uid, kind);
-  if (state.loading) return { items: state.items, hasMore: state.hasMore };
+  if (state.loading) {
+    return {
+      items: state.items,
+      hasMore: state.hasMore,
+      loading: true,
+      error: state.error,
+    };
+  }
   const pageIndex = state.pageCursors.length;
   const cacheKey = `page:${pageIndex}`;
   if (!force && state.pageCache.has(cacheKey)) {
     const cached = state.pageCache.get(cacheKey);
     state.items = mergeById(state.items, cached);
-    return { items: state.items, hasMore: state.hasMore };
+    return { items: state.items, hasMore: state.hasMore, loading: false, error: null };
   }
 
   state.loading = true;
+  state.error = null;
+  const seq = ++state.loadSeq;
   try {
     let q = query(colRef(uid, kind), orderBy('name', 'asc'), limit(pageSize));
     if (pageIndex > 0) {
       const cursor = state.pageCursors[pageIndex - 1];
       if (!cursor) {
         state.hasMore = false;
-        return { items: state.items, hasMore: false };
+        return { items: state.items, hasMore: false, loading: false, error: null };
       }
       q = query(colRef(uid, kind), orderBy('name', 'asc'), startAfter(cursor), limit(pageSize));
     }
     const snap = await cachedGetDocs(getDocs, q, { ttlMs: 120_000, force });
+    if (seq !== state.loadSeq) {
+      return { items: state.items, hasMore: state.hasMore, loading: false, error: null };
+    }
     const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     if (snap.docs.length) {
       state.pageCursors.push(snap.docs[snap.docs.length - 1]);
@@ -95,7 +109,15 @@ export async function fetchDirectoryPage(
     state.pageCache.set(cacheKey, rows);
     state.hasMore = snap.docs.length >= pageSize;
     state.items = mergeById(state.items, rows);
-    return { items: state.items, hasMore: state.hasMore };
+    return { items: state.items, hasMore: state.hasMore, loading: false, error: null };
+  } catch (err) {
+    state.error = err;
+    return {
+      items: state.items,
+      hasMore: state.hasMore,
+      loading: false,
+      error: err,
+    };
   } finally {
     state.loading = false;
   }
@@ -115,6 +137,30 @@ export async function searchDirectoryByName(uid, kind, term, { max = 30 } = {}) 
   );
   const snap = await getDocs(q);
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+/** بحث بادئة على حقل الجوال — لا يغطي البحث الجزئي داخل الرقم إلا عبر بادئة مخزّنة. */
+export async function searchDirectoryByPhone(uid, kind, digits, { max = 30 } = {}) {
+  const needle = String(digits || '').replace(/\D/g, '');
+  if (!needle || needle.length < 2) return [];
+  const end = `${needle}\uf8ff`;
+  const q = query(
+    colRef(uid, kind),
+    orderBy('phone', 'asc'),
+    where('phone', '>=', needle),
+    where('phone', '<=', end),
+    limit(max)
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export function getDirectoryLoading(uid, kind) {
+  return getStore(uid, kind).loading;
+}
+
+export function getDirectoryError(uid, kind) {
+  return getStore(uid, kind).error;
 }
 
 export function upsertDirectoryRecord(uid, kind, record) {

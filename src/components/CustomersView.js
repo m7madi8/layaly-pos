@@ -1,5 +1,11 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  resolveCustomerBalanceState,
+  formatCustomerBalanceDisplay,
+  customerBalanceTone,
+} from '../utils/customerBalanceDisplay';
 import { Plus, Pencil, Trash2, Download, Phone, User, FileText, Search, X, Eye, Calendar, Clock, Printer, FileDown, Percent, Wallet, MessageCircle } from 'lucide-react';
+import CustomerBackupModal, { CustomerBackupButton } from './CustomerBackupModal';
 import { orderDiscountValue, discountedOrders } from '../utils/customerStatementData';
 import {
   printCustomerAccountStatement,
@@ -15,6 +21,8 @@ import { buildCustomerStatementWhatsAppText, buildCustomerStatementWhatsAppUrl }
 
 export default function CustomersView({
   customers,
+  customerDebtors = [],
+  customerDebtSummary = { total: 0, count: 0, loading: false, error: null, complete: true },
   orders,
   fmtMoney,
   theme,
@@ -33,8 +41,19 @@ export default function CustomersView({
   allowOpeningDebt = true,
   onLoadMoreCustomers,
   customersHasMore,
+  customersLoadMoreBusy = false,
+  customersDirectoryLoading = false,
+  customersDirectoryError = null,
+  onCustomerSearch,
+  onOpenCustomerDetail,
+  isAdmin = false,
+  tenantUid = null,
 }) {
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [listMode, setListMode] = useState('all');
+  const [remoteHits, setRemoteHits] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [detailBalanceLoading, setDetailBalanceLoading] = useState(false);
   const [customerFormSaving, setCustomerFormSaving] = useState(false);
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -65,6 +84,7 @@ export default function CustomersView({
     total: '',
   });
   const [txSaving, setTxSaving] = useState(false);
+  const [backupOpen, setBackupOpen] = useState(false);
 
   const paymentModalCustomer = customers.find((c) => c.id === paymentModalCustomerId);
 
@@ -182,20 +202,74 @@ export default function CustomersView({
     }
   };
 
+  useEffect(() => {
+    if (!onCustomerSearch || search.trim().length < 2) {
+      setRemoteHits([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const t = setTimeout(() => {
+      onCustomerSearch(search.trim())
+        .then((rows) => {
+          if (!cancelled) setRemoteHits(rows || []);
+        })
+        .catch(() => {
+          if (!cancelled) setRemoteHits([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [search, onCustomerSearch]);
+
+  const baseList = useMemo(() => {
+    if (listMode === 'debtors') {
+      return customerDebtors.length ? customerDebtors : customers.filter((c) => Number(c.balance) > 0);
+    }
+    return customers;
+  }, [listMode, customers, customerDebtors]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return customers.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar'));
-    return customers
+    let pool = baseList;
+    if (q.length >= 2 && remoteHits.length) {
+      const map = new Map(pool.map((c) => [c.id, c]));
+      remoteHits.forEach((c) => map.set(c.id, c));
+      pool = Array.from(map.values());
+    }
+    if (!q) {
+      return pool.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar'));
+    }
+    const digits = q.replace(/\D/g, '');
+    return pool
       .filter(
         (c) =>
           (c.name || '').toLowerCase().includes(q) ||
           (c.phone || '').includes(q) ||
+          (digits.length >= 2 && String(c.phone || '').replace(/\D/g, '').includes(digits)) ||
           (c.notes || '').toLowerCase().includes(q)
       )
       .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar'));
-  }, [customers, search]);
+  }, [baseList, search, remoteHits]);
 
   const detailCustomer = customers.find((c) => c.id === detailId);
+
+  const openCustomerDetail = async (customerId) => {
+    setDetailId(customerId);
+    setSelectedOrder(null);
+    if (!onOpenCustomerDetail) return;
+    setDetailBalanceLoading(true);
+    try {
+      await onOpenCustomerDetail(customerId);
+    } finally {
+      setDetailBalanceLoading(false);
+    }
+  };
   const customerOrders = useMemo(() => {
     if (!detailId || !detailCustomer) return [];
     return resolveCustomerStatementOrders(detailCustomer, orders);
@@ -365,6 +439,9 @@ export default function CustomersView({
             إضافة عميل
           </button>
           )}
+          {isAdmin && (
+            <CustomerBackupButton onClick={() => setBackupOpen(true)} FONT_UI={FONT_UI} />
+          )}
           {customers.length > 0 && onExportCustomersLedgerPdf && (
             <button
               type="button"
@@ -380,27 +457,87 @@ export default function CustomersView({
         </div>
       </div>
 
+      <div className="mb-4 layali-card p-4 border border-rose-100/80 bg-rose-50/40">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs text-rose-900/80 font-semibold" style={{ fontFamily: FONT_UI }}>
+              إجمالي ديون العملاء (من الخادم)
+            </p>
+            <p className="text-xl font-bold text-rose-700 tabular-nums" style={{ fontFamily: FONT_UI }}>
+              {customerDebtSummary.loading ? 'جاري التحميل…' : fmtMoney(customerDebtSummary.total || 0)}
+            </p>
+            <p className="text-[10px] text-gray-500 mt-1">
+              {customerDebtSummary.count || 0} عميل مدين
+              {!customerDebtSummary.complete && !customerDebtSummary.loading ? ' — الملخص غير مكتمل' : ''}
+            </p>
+            {customerDebtSummary.error ? (
+              <p className="text-[10px] text-amber-800 mt-1">{customerDebtSummary.error}</p>
+            ) : null}
+          </div>
+          <p className="text-[10px] text-gray-500 max-w-xs" style={{ fontFamily: FONT_UI }}>
+            البحث عن الاسم يستخدم بادئة Firestore (حرفين+). للجوال: بادئة الرقم. اسم غير مطابق للبادئة — حمّل المزيد أو اختر «المدينون».
+          </p>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         <div className="lg:col-span-2 space-y-4">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setListMode('all')}
+              className={`flex-1 py-2 rounded-xl text-xs font-semibold border ${
+                listMode === 'all' ? 'bg-primary text-white border-primary' : 'bg-white border-gray-200'
+              }`}
+              style={{ fontFamily: FONT_UI }}
+            >
+              كل العملاء المحمّلين
+            </button>
+            <button
+              type="button"
+              onClick={() => setListMode('debtors')}
+              className={`flex-1 py-2 rounded-xl text-xs font-semibold border ${
+                listMode === 'debtors' ? 'bg-rose-600 text-white border-rose-600' : 'bg-white border-gray-200'
+              }`}
+              style={{ fontFamily: FONT_UI }}
+            >
+              المدينون ({customerDebtSummary.count || customerDebtors.length || 0})
+            </button>
+          </div>
           <div className="relative">
             <Search className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
             <input
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="بحث بالاسم أو الجوال..."
+              placeholder="بحث بالاسم أو الجوال (حرفان على الأقل للسحابة)..."
               className="w-full pe-10 ps-4 py-3 rounded-2xl border border-gray-200 text-sm outline-none focus:ring-2 focus:ring-primary/30"
               style={{ fontFamily: FONT_UI }}
             />
+            {searching ? (
+              <span className="absolute start-3 top-1/2 -translate-y-1/2 text-[10px] text-gray-400">…</span>
+            ) : null}
           </div>
+          {customersDirectoryError ? (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">
+              {customersDirectoryError}
+            </p>
+          ) : null}
 
           <div className="layali-card divide-y divide-[var(--color-border)] max-h-[70vh] overflow-y-auto">
-            {filtered.length === 0 && (
+            {customersDirectoryLoading && filtered.length === 0 ? (
               <p className="p-8 text-center text-sm text-gray-500" style={{ fontFamily: FONT_UI }}>
-                لا يوجد عملاء — أضف عميلاً جديداً
+                جاري تحميل العملاء…
+              </p>
+            ) : null}
+            {filtered.length === 0 && !customersDirectoryLoading && (
+              <p className="p-8 text-center text-sm text-gray-500" style={{ fontFamily: FONT_UI }}>
+                لا يوجد عملاء — أضف عميلاً جديداً أو غيّر البحث/الفلتر
               </p>
             )}
-            {filtered.map((c) => (
+            {filtered.map((c) => {
+              const balState = resolveCustomerBalanceState(c);
+              return (
               <div
                 key={c.id}
                 className={`flex items-stretch gap-1 ${
@@ -409,16 +546,13 @@ export default function CustomersView({
               >
                 <button
                   type="button"
-                  onClick={() => {
-                    setDetailId(c.id);
-                    setSelectedOrder(null);
-                  }}
+                  onClick={() => openCustomerDetail(c.id)}
                   className="flex-1 min-w-0 text-start p-4 hover:bg-gray-50 transition-colors"
                 >
                   <div className="flex justify-between items-start gap-2">
                     <div>
                       <p className="font-semibold text-primary text-sm" style={{ fontFamily: FONT_UI }}>
-                        {c.name}
+                        {c.name || '— بدون اسم —'}
                       </p>
                       {c.phone ? (
                         <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1">
@@ -428,8 +562,8 @@ export default function CustomersView({
                     </div>
                     <div className="text-end shrink-0">
                       <p className="text-[10px] text-gray-400">رصيد الدين</p>
-                      <p className={`text-sm font-bold ${Number(c.balance) > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                        {fmtMoney(c.balance || 0)}
+                      <p className={`text-sm font-bold ${customerBalanceTone(balState)}`}>
+                        {formatCustomerBalanceDisplay(fmtMoney, balState)}
                       </p>
                     </div>
                   </div>
@@ -447,14 +581,16 @@ export default function CustomersView({
                   </button>
                 )}
               </div>
-            ))}
-            {customersHasMore && onLoadMoreCustomers && !search.trim() && (
+            );
+            })}
+            {customersHasMore && onLoadMoreCustomers && listMode === 'all' && !search.trim() && (
               <button
                 type="button"
                 onClick={onLoadMoreCustomers}
-                className="w-full py-3 text-sm font-semibold text-primary border-t border-gray-100"
+                disabled={customersLoadMoreBusy}
+                className="w-full py-3 text-sm font-semibold text-primary border-t border-gray-100 disabled:opacity-50"
               >
-                تحميل المزيد من العملاء
+                {customersLoadMoreBusy ? 'جاري التحميل…' : 'تحميل المزيد من العملاء'}
               </button>
             )}
           </div>
@@ -580,7 +716,12 @@ export default function CustomersView({
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-5 bg-gray-50/80 border-b border-gray-100">
                 <div className="bg-white rounded-xl p-3 border border-gray-100">
                   <p className="text-[10px] text-gray-400">إجمالي الدين</p>
-                  <p className="text-lg font-bold text-red-600">{fmtMoney(detailCustomer.balance || 0)}</p>
+                  <p className={`text-lg font-bold ${customerBalanceTone(resolveCustomerBalanceState(detailCustomer, { loading: detailBalanceLoading }))}`}>
+                    {formatCustomerBalanceDisplay(
+                      fmtMoney,
+                      resolveCustomerBalanceState(detailCustomer, { loading: detailBalanceLoading })
+                    )}
+                  </p>
                   {legacyDebtTotal > 0 && (
                     <p className="text-[10px] text-amber-700">منها دين قديم: {fmtMoney(legacyDebtTotal)}</p>
                   )}
@@ -1270,6 +1411,17 @@ export default function CustomersView({
             </form>
           </div>
         </div>
+      )}
+      {isAdmin && (
+        <CustomerBackupModal
+          open={backupOpen}
+          onClose={() => setBackupOpen(false)}
+          tenantUid={tenantUid}
+          fmtMoney={fmtMoney}
+          theme={theme}
+          FONT_UI={FONT_UI}
+          FONT_HEADING={FONT_HEADING}
+        />
       )}
     </div>
   );

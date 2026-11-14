@@ -96,6 +96,7 @@ import {
 import RemoveTestSalesModal from './components/RemoveTestSalesModal';
 import RemoveOldPlaystationModal from './components/RemoveOldPlaystationModal';
 import SystemResetModal from './components/SystemResetModal';
+import DisasterRecoveryPanel from './components/DisasterRecoveryPanel';
 import { applyPosPricingToCartItem } from './utils/employeePricing';
 import { assertStaffOnDutyForShift } from './utils/shiftOnDuty';
 import { openShiftNeedsOnDutyAssignment } from './utils/shiftOnDuty';
@@ -154,10 +155,12 @@ import {
   removeCustomerLocal,
   getCustomersLocal,
   customersHasMore as customersDirectoryHasMore,
-  loadCustomersWithPositiveBalance,
+  loadAllCustomersWithPositiveBalance,
   fetchCustomerAuthoritative,
   loadAllCustomerPages,
+  invalidateCustomerDebtorSummary,
 } from './services/localFirst/customerDirectoryStore';
+import { mergeCustomerDirectoryRows } from './services/localFirst/customerDirectoryMerge';
 import {
   loadSuppliersPage,
   upsertSupplierLocal,
@@ -263,9 +266,11 @@ import {
   canEditOrders,
   canDeleteOrders,
   canManageMerchantProfiles,
+  getEmployeeLoginPassword,
   normalizeLoginPassword,
   saveSessionRole,
 } from './adminAuth';
+import { resolveCashierLoginEmail } from './config/authSecrets';
 import {
   resolveTenantAuthContext,
   submitCashierJoinRequest,
@@ -436,7 +441,17 @@ const AppCore = () => {
   const [quickCustomerSaving, setQuickCustomerSaving] = useState(false);
   const [customers, setCustomers] = useState([]);
   const [customersHasMore, setCustomersHasMore] = useState(true);
-  const [customerDebtSummary, setCustomerDebtSummary] = useState({ total: 0, count: 0 });
+  const [customersDirectoryLoading, setCustomersDirectoryLoading] = useState(false);
+  const [customersDirectoryError, setCustomersDirectoryError] = useState(null);
+  const [customersLoadMoreBusy, setCustomersLoadMoreBusy] = useState(false);
+  const [customerDebtors, setCustomerDebtors] = useState([]);
+  const [customerDebtSummary, setCustomerDebtSummary] = useState({
+    total: 0,
+    count: 0,
+    loading: false,
+    error: null,
+    complete: true,
+  });
   const [suppliersHasMore, setSuppliersHasMore] = useState(true);
   const [dashboardWeekSummaries, setDashboardWeekSummaries] = useState([]);
   const [tradersPurchaseTotal, setTradersPurchaseTotal] = useState(0);
@@ -474,6 +489,9 @@ const AppCore = () => {
   const [tenantId, setTenantId] = useState(null);
   const [tenantAuthLoading, setTenantAuthLoading] = useState(false);
   const [needsCashierJoin, setNeedsCashierJoin] = useState(false);
+  const [tenantAuthError, setTenantAuthError] = useState('');
+  const employeeLegacyLoginRef = useRef(false);
+  const useLegacyEmployeeLogin = !resolveCashierLoginEmail();
   const [joinTenantCode, setJoinTenantCode] = useState('');
   const [joinInviteCode, setJoinInviteCode] = useState('');
   const [pendingJoinRequests, setPendingJoinRequests] = useState([]);
@@ -637,19 +655,63 @@ const AppCore = () => {
     }
     let cancelled = false;
     setTenantAuthLoading(true);
+    setTenantAuthError('');
     resolveTenantAuthContext(user.uid)
       .then((ctx) => {
         if (cancelled) return;
         if (!ctx) {
-          setTenantId(null);
-          setUserRole(null);
-          setNeedsCashierJoin(true);
-          setLoading(false);
-          return;
+          const cashierEmail = resolveCashierLoginEmail();
+          const isCashierAccount =
+            Boolean(cashierEmail) &&
+            String(user.email || '').toLowerCase() === cashierEmail.toLowerCase();
+          if (isCashierAccount) {
+            setTenantId(null);
+            setUserRole(null);
+            setNeedsCashierJoin(true);
+            setLoading(false);
+            return;
+          }
+          return getDoc(doc(db, 'users', user.uid))
+            .then((profileSnap) => {
+              if (cancelled) return;
+              if (profileSnap.exists()) {
+                setNeedsCashierJoin(false);
+                setTenantId(user.uid);
+                const role =
+                  useLegacyEmployeeLogin && employeeLegacyLoginRef.current ? 'employee' : 'admin';
+                employeeLegacyLoginRef.current = false;
+                setUserRole(role);
+                setTenantAuthError(
+                  'وضع استعادة: البيانات على users/' +
+                    user.uid +
+                    '. انشر القواعد القديمة في Firebase إن ظهرت أخطاء صلاحيات — راجع docs/DATA_RECOVERY_YESTERDAY.md'
+                );
+                setCurrentView(role === 'admin' ? 'dashboard' : 'pos');
+                return;
+              }
+              setTenantId(null);
+              setUserRole(null);
+              setNeedsCashierJoin(false);
+              setTenantAuthError(
+                'تعذّر ربط حساب المقهى. راجع docs/DATA_RECOVERY_YESTERDAY.md'
+              );
+            })
+            .catch(() => {
+              if (cancelled) return;
+              setTenantId(null);
+              setUserRole(null);
+              setTenantAuthError('تعذّر قراءة ملف المقهى — انشر القواعد القديمة في Firebase Console.');
+            })
+            .finally(() => {
+              if (!cancelled) setLoading(false);
+            });
         }
         setNeedsCashierJoin(false);
         setTenantId(ctx.tenantId);
-        setUserRole(ctx.uiRole);
+        const uiRole =
+          useLegacyEmployeeLogin && employeeLegacyLoginRef.current ? 'employee' : ctx.uiRole;
+        employeeLegacyLoginRef.current = false;
+        setUserRole(uiRole);
         setCurrentView((prev) => {
           if (prev && prev !== 'login') return prev;
           return ctx.uiRole === 'admin' ? 'dashboard' : 'pos';
@@ -660,7 +722,16 @@ const AppCore = () => {
         if (!cancelled) {
           setTenantId(null);
           setUserRole(null);
-          setNeedsCashierJoin(true);
+          const cashierEmail = resolveCashierLoginEmail();
+          const isCashierAccount =
+            Boolean(cashierEmail) &&
+            String(user.email || '').toLowerCase() === cashierEmail.toLowerCase();
+          setNeedsCashierJoin(isCashierAccount);
+          setTenantAuthError(
+            isCashierAccount
+              ? ''
+              : `تعذّر ربط الحساب (${e?.code || 'auth'}). انشر قواعد Firestore ثم أعد التحميل.`
+          );
         }
       })
       .finally(() => {
@@ -730,7 +801,7 @@ const AppCore = () => {
   const staffListenerActive = Boolean(dataUid && needsStaffListener(userRole, currentView));
   const customersDirectoryActive = Boolean(dataUid && needsCustomersListener(currentView));
   const customerDebtSummaryActive = Boolean(
-    dataUid && userRole === 'admin' && ['dashboard', 'reports'].includes(currentView)
+    dataUid && userRole === 'admin' && ['dashboard', 'reports', 'customers'].includes(currentView)
   );
   const dashboardMetricsActive = Boolean(dataUid && userRole === 'admin' && currentView === 'dashboard');
   const tradersSnapshotActive = Boolean(
@@ -1083,16 +1154,29 @@ const AppCore = () => {
   useEffect(() => {
     if (!dataUid || !customersDirectoryActive) return undefined;
     let cancelled = false;
+    setCustomersDirectoryLoading(true);
+    setCustomersDirectoryError(null);
     const local = getCustomersLocal(dataUid);
-    if (local.length) setCustomers(local);
+    if (local.length) {
+      setCustomers((prev) => mergeCustomerDirectoryRows(prev, local));
+    }
     setCustomersHasMore(customersDirectoryHasMore(dataUid));
     loadCustomersPage(dataUid, { pageSize: 25 })
       .then((r) => {
         if (cancelled) return;
-        setCustomers(r.items);
+        if (r.error) {
+          setCustomersDirectoryError(r.error.message || String(r.error));
+        }
+        setCustomers((prev) => mergeCustomerDirectoryRows(prev, r.items));
         setCustomersHasMore(r.hasMore);
       })
-      .catch((e) => console.error('Error loading customers:', e));
+      .catch((e) => {
+        if (!cancelled) setCustomersDirectoryError(e.message || 'فشل تحميل العملاء');
+        console.error('Error loading customers:', e);
+      })
+      .finally(() => {
+        if (!cancelled) setCustomersDirectoryLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -1101,15 +1185,39 @@ const AppCore = () => {
   useEffect(() => {
     if (!dataUid || !customerDebtSummaryActive) return undefined;
     let cancelled = false;
-    loadCustomersWithPositiveBalance(dataUid)
+    setCustomerDebtSummary((s) => ({ ...s, loading: true, error: null }));
+    loadAllCustomersWithPositiveBalance(dataUid)
       .then((summary) => {
-        if (!cancelled) setCustomerDebtSummary({ total: summary.total, count: summary.count });
+        if (cancelled) return;
+        if (summary.error) {
+          console.error('Customer debt summary:', summary.error);
+        }
+        setCustomerDebtors(summary.customers || []);
+        setCustomerDebtSummary({
+          total: summary.total,
+          count: summary.count,
+          loading: false,
+          error: summary.error ? summary.error.message || String(summary.error) : null,
+          complete: Boolean(summary.complete),
+        });
+        if (customersDirectoryActive) {
+          setCustomers((prev) => mergeCustomerDirectoryRows(prev, summary.customers || []));
+        }
       })
-      .catch((e) => console.error('Customer debt summary:', e));
+      .catch((e) => {
+        if (!cancelled) {
+          setCustomerDebtSummary((s) => ({
+            ...s,
+            loading: false,
+            error: e.message || 'فشل تحميل ملخص الديون',
+          }));
+        }
+        console.error('Customer debt summary:', e);
+      });
     return () => {
       cancelled = true;
     };
-  }, [dataUid, customerDebtSummaryActive]);
+  }, [dataUid, customerDebtSummaryActive, customersDirectoryActive]);
 
   useEffect(() => {
     if (!dashboardMetricsActive) return undefined;
@@ -1242,10 +1350,35 @@ const AppCore = () => {
     if (!password) return;
     setUploadProgress(true);
     try {
-      await signInWithCashierPassword(auth, password);
+      if (useLegacyEmployeeLogin) {
+        const expected = getEmployeeLoginPassword();
+        if (!expected || password !== expected) {
+          alert('كلمة مرور الموظف غير صحيحة');
+          return;
+        }
+        employeeLegacyLoginRef.current = true;
+        if (!user) {
+          await signInWithAdminPassword(auth, password);
+        } else {
+          const ctx = await resolveTenantAuthContext(user.uid);
+          if (!ctx) {
+            alert('تعذّر فتح نقطة البيع — تأكد من دخول المدير أو انشر قواعد Firestore.');
+            employeeLegacyLoginRef.current = false;
+            return;
+          }
+          setNeedsCashierJoin(false);
+          setTenantId(ctx.tenantId);
+          setUserRole('employee');
+          setCurrentView('pos');
+          setLoading(false);
+        }
+      } else {
+        await signInWithCashierPassword(auth, password);
+      }
       setAdminPassword('');
       setShowPassword(false);
     } catch (error) {
+      employeeLegacyLoginRef.current = false;
       alert(mapFirebaseAuthError(error));
     } finally {
       setUploadProgress(false);
@@ -3107,11 +3240,14 @@ const AppCore = () => {
     };
     const transactions = [...(existing.transactions || []), entry].slice(-100);
     try {
+      const newBalance = Math.round(((Number(existing.balance) || 0) + parsed) * 100) / 100;
       await updateDoc(doc(db, 'users', dataUid, 'customers', customerId), {
-        balance: (existing.balance || 0) + parsed,
+        balance: newBalance,
         transactions,
         updatedAt: serverTimestamp(),
       });
+      upsertCustomerLocal(dataUid, { ...existing, balance: newBalance, transactions });
+      invalidateCustomerDebtorSummary(dataUid);
     } catch (error) {
       alert(error.message);
     }
@@ -3126,6 +3262,11 @@ const AppCore = () => {
         balance,
         updatedAt: serverTimestamp(),
       });
+      const existing = customers.find((c) => c.id === customerId);
+      if (existing) {
+        upsertCustomerLocal(dataUid, { ...existing, balance, transactions: list });
+      }
+      invalidateCustomerDebtorSummary(dataUid);
     } catch (error) {
       alert(error.message || 'تعذّر حفظ السجل');
       throw error;
@@ -3170,6 +3311,8 @@ const AppCore = () => {
           alert(`تم تسجيل الدفعة على حساب العميل، لكن لم تُسجَّل في وردية الكاش: ${cashErr.message}`);
         }
       }
+      upsertCustomerLocal(dataUid, { ...existing, id: customerId, balance: newBalance, transactions });
+      invalidateCustomerDebtorSummary(dataUid);
     } catch (error) {
       alert(error.message);
     }
@@ -3179,6 +3322,7 @@ const AppCore = () => {
     try {
       await deleteDoc(doc(db, 'users', dataUid, 'customers', customerId));
       removeCustomerLocal(dataUid, customerId);
+      invalidateCustomerDebtorSummary(dataUid);
       setCustomers(getCustomersLocal(dataUid));
     } catch (error) {
       alert(error.message);
@@ -3250,21 +3394,39 @@ const AppCore = () => {
   };
 
   const loadMoreCustomersDirectory = async () => {
-    if (!dataUid || !customersHasMore) return;
-    const r = await loadCustomersPage(dataUid, { pageSize: 25 });
-    setCustomers(r.items);
-    setCustomersHasMore(r.hasMore);
+    if (!dataUid || !customersHasMore || customersLoadMoreBusy) return;
+    setCustomersLoadMoreBusy(true);
+    try {
+      const r = await loadCustomersPage(dataUid, { pageSize: 25 });
+      if (r.error) {
+        setCustomersDirectoryError(r.error.message || String(r.error));
+      }
+      setCustomers((prev) => mergeCustomerDirectoryRows(prev, r.items));
+      setCustomersHasMore(r.hasMore);
+    } catch (e) {
+      setCustomersDirectoryError(e.message || 'فشل تحميل المزيد');
+    } finally {
+      setCustomersLoadMoreBusy(false);
+    }
   };
 
   const handleRemoteCustomerSearch = async (term) => {
     if (!dataUid) return [];
-    const rows = await searchCustomers(dataUid, term);
-    setCustomers((prev) => {
-      const map = new Map(prev.map((c) => [c.id, c]));
-      rows.forEach((c) => map.set(c.id, c));
-      return Array.from(map.values());
-    });
+    const rows = await searchCustomers(dataUid, term, { debtorSnapshot: customerDebtors });
+    setCustomers((prev) => mergeCustomerDirectoryRows(prev, rows));
     return rows;
+  };
+
+  const handleOpenCustomerDetail = async (customerId) => {
+    if (!dataUid || !customerId) return;
+    try {
+      const row = await fetchCustomerAuthoritative(dataUid, customerId);
+      if (row) {
+        setCustomers((prev) => mergeCustomerDirectoryRows(prev, [row]));
+      }
+    } catch (e) {
+      console.error('Customer authoritative fetch:', e);
+    }
   };
 
   const loadMoreSuppliersDirectory = async () => {
@@ -4730,14 +4892,30 @@ const AppCore = () => {
   }, [currentView]);
 
   const totalOutstandingCustomerDebt = useMemo(() => {
-    if (customerDebtSummaryActive && customerDebtSummary.total > 0) {
+    if (
+      customerDebtSummaryActive &&
+      !customerDebtSummary.loading &&
+      !customerDebtSummary.error &&
+      customerDebtSummary.complete
+    ) {
       return customerDebtSummary.total;
+    }
+    if (customerDebtSummaryActive && customerDebtSummary.loading) {
+      return customerDebtSummary.total > 0 ? customerDebtSummary.total : computeTotalOutstandingCustomerDebt(customers);
     }
     return computeTotalOutstandingCustomerDebt(customers);
   }, [customers, customerDebtSummary, customerDebtSummaryActive]);
   const customersWithDebtCount = useMemo(() => {
-    if (customerDebtSummaryActive && customerDebtSummary.count > 0) {
+    if (
+      customerDebtSummaryActive &&
+      !customerDebtSummary.loading &&
+      !customerDebtSummary.error &&
+      customerDebtSummary.complete
+    ) {
       return customerDebtSummary.count;
+    }
+    if (customerDebtSummaryActive && customerDebtSummary.loading) {
+      return customerDebtSummary.count > 0 ? customerDebtSummary.count : countCustomersWithOutstandingDebt(customers);
     }
     return countCustomersWithOutstandingDebt(customers);
   }, [customers, customerDebtSummary, customerDebtSummaryActive]);
@@ -5061,10 +5239,17 @@ const AppCore = () => {
               </button>
               {loginType === 'employee' && !user && (
                 <p className="text-xs leading-relaxed text-center" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>
-                  دخول الكاشير بحساب Firebase مستقل (البريد مضبوط في REACT_APP_CASHIER_EMAIL).
+                  {useLegacyEmployeeLogin
+                    ? 'كلمة مرور الموظف كالعادة — نفس حساب Firebase للمقهى (دون طلب انضمام).'
+                    : 'دخول الكاشير بحساب Firebase مستقل (البريد مضبوط في REACT_APP_CASHIER_EMAIL).'}
                 </p>
               )}
             </form>
+            {tenantAuthError && !needsCashierJoin && (
+              <p className="text-xs text-red-700 mt-4 text-center leading-relaxed" style={{ fontFamily: FONT_UI }}>
+                {tenantAuthError}
+              </p>
+            )}
             {user && needsCashierJoin && (
               <form onSubmit={handleCashierJoinSubmit} className="mt-6 pt-6 border-t border-gray-100 space-y-3">
                 <p className="text-xs text-amber-800" style={{ fontFamily: FONT_UI }}>
@@ -6026,6 +6211,10 @@ const AppCore = () => {
               </div>
             </div>
 
+            {userRole === 'admin' && (
+              <DisasterRecoveryPanel FONT_UI={FONT_UI} FONT_HEADING={FONT_HEADING} />
+            )}
+
             {!isEmployee && (
               <div className="mt-6 bg-white rounded-xl p-5 shadow-md border border-gray-200">
                 <h3 className="text-base md:text-lg mb-2 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
@@ -6815,6 +7004,11 @@ const AppCore = () => {
                       </p>
                       <p className="text-[10px] text-gray-500 mt-2 leading-relaxed" style={{ fontFamily: FONT_UI }}>
                         رصيد مستحق حالياً على {customersWithDebtCount} عميل — لا يتأثر بفلتر التقرير
+                        {customerDebtSummary.loading ? ' · جاري التحديث…' : ''}
+                        {!customerDebtSummary.complete && !customerDebtSummary.loading
+                          ? ' · الملخص غير مكتمل — راجع الفهارس'
+                          : ''}
+                        {customerDebtSummary.error ? ` · ${customerDebtSummary.error}` : ''}
                       </p>
                     </div>
                     <div className="bg-white rounded-xl p-4 shadow-md border border-gray-200">
@@ -7556,6 +7750,8 @@ const AppCore = () => {
         {activeView === 'customers' && (
           <CustomersView
             customers={customers}
+            customerDebtors={customerDebtors}
+            customerDebtSummary={customerDebtSummary}
             orders={orders}
             fmtMoney={fmtMoney}
             theme={theme}
@@ -7574,6 +7770,13 @@ const AppCore = () => {
             allowOpeningDebt={!isEmployee}
             onLoadMoreCustomers={loadMoreCustomersDirectory}
             customersHasMore={customersHasMore}
+            customersLoadMoreBusy={customersLoadMoreBusy}
+            customersDirectoryLoading={customersDirectoryLoading}
+            customersDirectoryError={customersDirectoryError}
+            onCustomerSearch={handleRemoteCustomerSearch}
+            onOpenCustomerDetail={handleOpenCustomerDetail}
+            isAdmin={userRole === 'admin'}
+            tenantUid={dataUid}
           />
         )}
 

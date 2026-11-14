@@ -78,12 +78,44 @@ export async function resolveTenantAuthContext(authUid) {
     return { tenantId, role: memberRole, uiRole: mapUiRole(memberRole) };
   }
 
-  const legacyProfile = await getDoc(doc(db, 'users', authUid));
-  if (legacyProfile.exists()) {
-    return bootstrapLegacyTenantAsAdmin(authUid);
+  let legacyProfile;
+  try {
+    legacyProfile = await getDoc(doc(db, 'users', authUid));
+  } catch {
+    return null;
+  }
+  if (!legacyProfile.exists()) {
+    return null;
   }
 
-  return null;
+  const tenantSnap = await getDoc(tenantRef(authUid));
+  if (!tenantSnap.exists()) {
+    return {
+      tenantId: authUid,
+      role: TENANT_ROLES.ADMIN,
+      uiRole: mapUiRole(TENANT_ROLES.ADMIN),
+    };
+  }
+
+  try {
+    return await bootstrapLegacyTenantAsAdmin(authUid);
+  } catch (err) {
+    const indexAfter = await getDoc(userTenantsRef(authUid));
+    if (indexAfter.exists()) {
+      const { tenantId, role } = indexAfter.data() || {};
+      if (!tenantId) return null;
+      const memSnap = await getDoc(memberRef(tenantId, authUid));
+      if (!memSnap.exists() || memSnap.data()?.active !== true) return null;
+      const memberRole = memSnap.data()?.role || role;
+      return { tenantId, role: memberRole, uiRole: mapUiRole(memberRole) };
+    }
+    console.error('Tenant bootstrap:', err);
+    return {
+      tenantId: authUid,
+      role: TENANT_ROLES.ADMIN,
+      uiRole: mapUiRole(TENANT_ROLES.ADMIN),
+    };
+  }
 }
 
 export async function getTenantInviteCode(tenantId) {
