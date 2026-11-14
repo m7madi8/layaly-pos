@@ -85,6 +85,12 @@ service cloud.firestore {
         && request.auth.uid == authUid
         && request.resource.data.tenantId == authUid
         && request.resource.data.role == 'admin'
+        && request.auth.uid == request.resource.data.tenantId
+        && exists(/databases/$(database)/documents/tenants/$(request.resource.data.tenantId));
+      allow create: if signedIn()
+        && request.auth.uid == authUid
+        && request.resource.data.tenantId == authUid
+        && request.resource.data.role == 'admin'
         && exists(memberDocPath(request.resource.data.tenantId))
         && get(memberDocPath(request.resource.data.tenantId)).data.role == 'admin';
       allow create, update: if signedIn()
@@ -96,7 +102,8 @@ service cloud.firestore {
     }
 
     match /tenants/{tenantId} {
-      allow read: if canReadBusinessData(tenantId);
+      allow get: if signedIn();
+      allow list: if canReadBusinessData(tenantId);
       allow create: if legacyUnmigratedOwner(tenantId);
       allow update: if isTenantAdmin(tenantId);
       allow delete: if false;
@@ -135,7 +142,8 @@ service cloud.firestore {
 
   // --- Business data (unchanged paths: users/{tenantId}/...) ---
     match /users/{tenantId} {
-      allow read: if canReadBusinessData(tenantId);
+      allow read: if canReadBusinessData(tenantId)
+        || (signedIn() && request.auth.uid == tenantId);
       allow create: if legacyUnmigratedOwner(tenantId);
       allow update: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
       allow delete: if false;

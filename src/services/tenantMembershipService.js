@@ -29,17 +29,16 @@ function mapUiRole(memberRole) {
 export async function bootstrapLegacyTenantAsAdmin(authUid) {
   if (!authUid) return null;
   const tenantId = authUid;
+  const tenantSnap = await getDoc(tenantRef(tenantId));
   const batch = writeBatch(db);
-  batch.set(
-    tenantRef(tenantId),
-    {
+  if (!tenantSnap.exists()) {
+    batch.set(tenantRef(tenantId), {
       schemaVersion: 1,
       primaryDataRoot: tenantId,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  );
+    });
+  }
   batch.set(
     memberRef(tenantId, authUid),
     {
