@@ -34,8 +34,11 @@ export const ADMIN_EXPENSE_VIEWS = ['expenses', 'purchases', 'traders', 'reports
 
 export function needsExpensesListener(userRole, currentView) {
   if (!isFinanceRole(userRole)) return false;
-  if (userRole === 'admin') return ADMIN_EXPENSE_VIEWS.includes(currentView);
-  return ['expenses', 'purchases', 'traders'].includes(currentView);
+  if (currentView === 'traders') return false;
+  if (userRole === 'admin') {
+    return ['expenses', 'purchases', 'reports', 'cash'].includes(currentView);
+  }
+  return ['expenses', 'purchases'].includes(currentView);
 }
 
 export function needsSuppliersListener(userRole, currentView) {
@@ -48,13 +51,36 @@ export function needsSuppliersListener(userRole, currentView) {
 
 /** Expense snapshot limit — traders/purchases need full ledger for merchant balances. */
 export function expensesListenerLimit(currentView) {
-  if (currentView === 'reports' || currentView === 'cash') return 800;
+  if (currentView === 'reports') return 500;
+  if (currentView === 'cash') return 350;
   if (currentView === 'expenses') return 400;
   if (currentView === 'purchases' || currentView === 'traders') return 800;
   return 120;
 }
 
-export const CUSTOMER_LIST_VIEWS = ['pos', 'customers', 'orders', 'reports'];
+export function needsVaultListener(userRole, currentView) {
+  if (!userRole || !currentView) return false;
+  const adminVaultViews = ['vault', 'purchases', 'dashboard', 'expenses', 'traders'];
+  const employeeVaultViews = ['expenses', 'purchases', 'traders'];
+  return userRole === 'admin'
+    ? adminVaultViews.includes(currentView)
+    : employeeVaultViews.includes(currentView);
+}
+
+export function needsCashShiftsListener(userRole, currentView) {
+  if (!userRole || !currentView) return false;
+  return userRole === 'employee'
+    ? ['pos', 'cash', 'expenses'].includes(currentView)
+    : ['pos', 'cash', 'dashboard', 'employees'].includes(currentView);
+}
+
+export function needsEmployeeBenefitsListener(userRole, currentView) {
+  if (!isFinanceRole(userRole)) return false;
+  if (userRole === 'admin') return ['expenses', 'settings', 'employees'].includes(currentView);
+  return currentView === 'expenses';
+}
+
+export const CUSTOMER_LIST_VIEWS = ['pos', 'customers', 'orders'];
 
 export function needsCustomersListener(currentView) {
   return CUSTOMER_LIST_VIEWS.includes(currentView);

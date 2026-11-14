@@ -31,6 +31,8 @@ export default function CustomersView({
   onExportCustomersLedgerPdf,
   customersLedgerPdfLoading,
   allowOpeningDebt = true,
+  onLoadMoreCustomers,
+  customersHasMore,
 }) {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [customerFormSaving, setCustomerFormSaving] = useState(false);
@@ -446,6 +448,15 @@ export default function CustomersView({
                 )}
               </div>
             ))}
+            {customersHasMore && onLoadMoreCustomers && !search.trim() && (
+              <button
+                type="button"
+                onClick={onLoadMoreCustomers}
+                className="w-full py-3 text-sm font-semibold text-primary border-t border-gray-100"
+              >
+                تحميل المزيد من العملاء
+              </button>
+            )}
           </div>
         </div>
 

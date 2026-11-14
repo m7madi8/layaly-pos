@@ -18,6 +18,7 @@ import SupplierSearchSelect from './SupplierSearchSelect';
 import ChecksPanel from './ChecksPanel';
 import ExpensePaymentSourceFields from './ExpensePaymentSourceFields';
 import { legacyMethodToPaymentSource } from '../utils/expensePaymentSource';
+import { fetchSupplierExpensesPage, invalidateSupplierExpensePages } from '../services/supplierExpenseReads';
 
 function formatLedgerDate(entry) {
   if (!entry?.date) return '—';
@@ -31,7 +32,8 @@ export default function SupplierTraderDetailModal({
   expenses,
   theme,
   onClose,
-  onReconcile,
+  onPreviewReconciliation,
+  onApplyBalanceCorrection,
   onSubmitPayment,
   onUpdateProfile,
   onRemoveProfile,
@@ -58,6 +60,24 @@ export default function SupplierTraderDetailModal({
   const [profileForm, setProfileForm] = useState(null);
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileEditing, setProfileEditing] = useState(false);
+  const [supplierExpenses, setSupplierExpenses] = useState([]);
+  const [ledgerHasMore, setLedgerHasMore] = useState(false);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [reconPreview, setReconPreview] = useState(null);
+  const [reconBusy, setReconBusy] = useState(false);
+
+  const reloadLedgerFirstPage = () => {
+    if (!userId || !supplier?.id) return;
+    invalidateSupplierExpensePages(userId, supplier.id);
+    setLedgerLoading(true);
+    fetchSupplierExpensesPage(userId, supplier.id, { force: true })
+      .then((r) => {
+        setSupplierExpenses(r.items);
+        setLedgerHasMore(r.hasMore);
+      })
+      .catch((e) => console.error('Supplier ledger reload:', e))
+      .finally(() => setLedgerLoading(false));
+  };
 
   useEffect(() => {
     if (!supplier) return;
@@ -72,18 +92,72 @@ export default function SupplierTraderDetailModal({
   }, [supplier]);
 
   useEffect(() => {
-    if (supplier?.id && onReconcile) onReconcile(supplier.id);
-  }, [supplier?.id, onReconcile]);
+    if (!supplier?.id || !onPreviewReconciliation) {
+      setReconPreview(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setReconBusy(true);
+    onPreviewReconciliation(supplier.id)
+      .then((row) => {
+        if (!cancelled) setReconPreview(row);
+      })
+      .finally(() => {
+        if (!cancelled) setReconBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [supplier?.id, onPreviewReconciliation]);
+
+  useEffect(() => {
+    if (!userId || !supplier?.id) {
+      setSupplierExpenses([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setLedgerLoading(true);
+    fetchSupplierExpensesPage(userId, supplier.id)
+      .then((r) => {
+        if (cancelled) return;
+        setSupplierExpenses(r.items);
+        setLedgerHasMore(r.hasMore);
+      })
+      .catch((e) => console.error('Supplier ledger page:', e))
+      .finally(() => {
+        if (!cancelled) setLedgerLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, supplier?.id]);
+
+  const ledgerSource = useMemo(() => {
+    if (supplierExpenses.length) return supplierExpenses;
+    return expenses || [];
+  }, [supplierExpenses, expenses]);
 
   const outstanding = useMemo(
-    () => resolveSupplierOutstandingBalance(supplier, expenses, supplier?.id),
-    [supplier, expenses]
+    () => resolveSupplierOutstandingBalance(supplier, ledgerSource.length ? ledgerSource : null, supplier?.id),
+    [supplier, ledgerSource]
   );
 
   const ledger = useMemo(
-    () => supplierLedgerEntries(expenses, supplier?.id, supplier),
-    [expenses, supplier]
+    () => supplierLedgerEntries(ledgerSource, supplier?.id, supplier),
+    [ledgerSource, supplier]
   );
+
+  const loadMoreLedger = async () => {
+    if (!userId || !supplier?.id || !ledgerHasMore || ledgerLoading) return;
+    setLedgerLoading(true);
+    try {
+      const r = await fetchSupplierExpensesPage(userId, supplier.id);
+      setSupplierExpenses(r.items);
+      setLedgerHasMore(r.hasMore);
+    } finally {
+      setLedgerLoading(false);
+    }
+  };
 
   if (!supplier) return null;
 
@@ -147,7 +221,8 @@ export default function SupplierTraderDetailModal({
       setObAmount('');
       setObNote('');
       alert('تم تسجيل الرصيد الافتتاحي');
-      onReconcile?.(supplier.id);
+      reloadLedgerFirstPage();
+      onPreviewReconciliation?.(supplier.id)?.then(setReconPreview);
     } catch (err) {
       alert(err?.message || 'تعذّر حفظ الرصيد الافتتاحي');
     } finally {
@@ -166,7 +241,7 @@ export default function SupplierTraderDetailModal({
       await onUpdateProfile(supplier.id, profileForm);
       setProfileEditing(false);
       alert('تم حفظ بيانات التاجر');
-      onReconcile?.(supplier.id);
+      onPreviewReconciliation?.(supplier.id)?.then(setReconPreview);
     } catch (err) {
       alert(err?.message || 'تعذّر حفظ البيانات');
     } finally {
@@ -303,12 +378,59 @@ export default function SupplierTraderDetailModal({
             </div>
           )}
 
+          {(reconPreview?.state === 'INCOMPLETE' || reconPreview?.mismatch) && (
+            <div
+              className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 space-y-1"
+              role="status"
+            >
+              {reconPreview?.state === 'INCOMPLETE' && (
+                <p>سجل المصروفات غير مكتمل — الرصيد المعروض قد لا يعكس كل الحركات.</p>
+              )}
+              {reconPreview?.mismatch && reconPreview?.ledgerComplete && (
+                <p>
+                  مراجعة للقراءة فقط: الرصيد المخزَّن ({fmtMoney(reconPreview.storedBalance)}) يختلف عن المحسوب من السجل (
+                  {fmtMoney(reconPreview.computedBalance)}).
+                </p>
+              )}
+              {reconPreview?.mismatch && onApplyBalanceCorrection && (
+                <button
+                  type="button"
+                  disabled={reconBusy || !reconPreview?.ledgerComplete}
+                  className="mt-1 text-[11px] font-semibold text-amber-900 underline disabled:opacity-50"
+                  onClick={async () => {
+                    const ok = window.confirm(
+                      'تطبيق تصحيح الرصيد إلى القيمة المحسوبة من السجل الكامل؟ سيتم تسجيل عملية تدقيق.'
+                    );
+                    if (!ok) return;
+                    setReconBusy(true);
+                    try {
+                      await onApplyBalanceCorrection(supplier.id, {
+                        balance: reconPreview.computedBalance,
+                        reason: 'admin_apply_computed_from_full_ledger',
+                      });
+                      const next = await onPreviewReconciliation?.(supplier.id);
+                      setReconPreview(next);
+                      alert('تم تطبيق تصحيح الرصيد');
+                    } finally {
+                      setReconBusy(false);
+                    }
+                  }}
+                >
+                  تطبيق الرصيد المحسوب (مدير فقط)
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-xl border border-gray-100 bg-red-50/50 p-4">
               <p className="text-[10px] text-gray-500 mb-1">الرصيد المستحق للتاجر</p>
               <p className="text-2xl font-bold text-red-600" style={{ fontFamily: FONT_UI }}>
                 {fmtMoney(outstanding)}
               </p>
+              {ledgerHasMore && (
+                <p className="text-[10px] text-gray-500 mt-1">مبني على صفحات محمّلة — قد يوجد المزيد في السجل.</p>
+              )}
             </div>
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 flex flex-col justify-center">
               <button
@@ -510,7 +632,9 @@ export default function SupplierTraderDetailModal({
                 سجل المشتريات والدفعات
               </h4>
               <div className="rounded-xl border border-gray-100 overflow-hidden">
-                {ledger.length === 0 ? (
+                {ledgerLoading && ledger.length === 0 ? (
+                  <p className="text-xs text-gray-400 text-center py-6">جاري تحميل السجل…</p>
+                ) : ledger.length === 0 ? (
                   <p className="text-xs text-gray-400 text-center py-6">لا توجد حركات مالية بعد</p>
                 ) : (
                   <div className="max-h-72 overflow-y-auto divide-y divide-gray-100">
@@ -556,6 +680,16 @@ export default function SupplierTraderDetailModal({
                       </div>
                     ))}
                   </div>
+                )}
+                {ledgerHasMore && (
+                  <button
+                    type="button"
+                    onClick={loadMoreLedger}
+                    disabled={ledgerLoading}
+                    className="w-full mt-2 py-2 text-xs font-semibold text-primary border border-gray-100 rounded-lg disabled:opacity-50"
+                  >
+                    {ledgerLoading ? 'جاري التحميل…' : 'تحميل المزيد من الحركات'}
+                  </button>
                 )}
               </div>
             </div>

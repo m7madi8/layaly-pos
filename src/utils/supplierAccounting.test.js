@@ -3,6 +3,7 @@ import {
   computeSupplierTotalPayable,
   resolveSupplierOutstandingBalance,
   computeTotalOutstandingSupplierPayable,
+  computeTotalOutstandingFromStoredBalances,
   supplierLedgerEntries,
   expenseCountsInReportTotals,
   isSupplierPaymentExpense,
@@ -72,5 +73,11 @@ describe('supplierAccounting', () => {
       { id: 'c', balance: 0 },
     ];
     expect(computeTotalOutstandingSupplierPayable(traders, [])).toBe(250);
+    expect(computeTotalOutstandingFromStoredBalances(traders)).toBe(250);
+  });
+
+  test('stored balance used when expense ledger not loaded', () => {
+    const supplier = { id: 's1', balance: 75 };
+    expect(resolveSupplierOutstandingBalance(supplier, null, 's1')).toBe(75);
   });
 });

@@ -21,7 +21,8 @@ import {
   listEmployeeDebtRepaymentsForStaff,
   listPayrollPaymentsForStaff,
 } from '../services/employeeLedgerService';
-import { collection, getDocs, db } from '../firebaseClient';
+import { collection, db, cachedGetDocs, getDocs as getDocsRaw } from '../firebaseClient';
+import { listExpensesForStaffMember } from '../services/staffExpenseReads';
 import {
   computeEmployeeObligationsAndEntitlements,
   formatEmployeeNetBalance,
@@ -106,7 +107,7 @@ function ProfilePanel({
       listEmployeeDebtRepaymentsForStaff(uid, sid),
       listPayrollPaymentsForStaff(uid, sid),
       listAdvanceRepaymentsForStaff(uid, sid),
-      getDocs(collection(db, 'users', uid, 'expenses')),
+      listExpensesForStaffMember(uid, sid),
     ]);
     setAccruals(a);
     setAdvances(adv);
@@ -114,11 +115,7 @@ function ProfilePanel({
     setDebtRepayments(rep);
     setPayrollPayments(pay);
     setAdvanceRepayments(advRep);
-    setStaffExpenses(
-      expSnap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
-        .filter((e) => e.staffMemberId === sid)
-    );
+    setStaffExpenses(expSnap);
   };
 
   useEffect(() => {
@@ -633,9 +630,9 @@ export default function EmployeesView({
     if (!uid) return;
     try {
       const [aSnap, advSnap, posSnap] = await Promise.all([
-        getDocs(collection(db, 'users', uid, 'payrollAccruals')),
-        getDocs(collection(db, 'users', uid, 'employeeAdvances')),
-        getDocs(collection(db, 'users', uid, 'employeePosDebts')),
+        cachedGetDocs(getDocsRaw, collection(db, 'users', uid, 'payrollAccruals'), { ttlMs: 60_000 }),
+        cachedGetDocs(getDocsRaw, collection(db, 'users', uid, 'employeeAdvances'), { ttlMs: 60_000 }),
+        cachedGetDocs(getDocsRaw, collection(db, 'users', uid, 'employeePosDebts'), { ttlMs: 60_000 }),
       ]);
       setFinanceIndex({
         accruals: aSnap.docs.map((d) => ({ id: d.id, ...d.data() })),

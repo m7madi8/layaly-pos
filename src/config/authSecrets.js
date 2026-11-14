@@ -9,6 +9,14 @@ export function resolveEmployeeLoginPassword() {
   return '';
 }
 
+/** Email for dedicated cashier Firebase Auth user (Spark — separate UID from admin). */
+export function resolveCashierLoginEmail() {
+  const fromEnv = String(process.env.REACT_APP_CASHIER_EMAIL || '').trim();
+  if (fromEnv) return fromEnv;
+  if (process.env.NODE_ENV !== 'production') return 'cashier@layali.cafe';
+  return '';
+}
+
 export function resolveVaultPin() {
   const fromEnv = String(process.env.REACT_APP_VAULT_PIN || '').trim();
   if (fromEnv) return fromEnv;

@@ -56,6 +56,19 @@ service cloud.firestore {
       ]);
     }
 
+    function isBalanceOnlySupplierPatch() {
+      return request.resource != null
+        && resource != null
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['balance', 'balanceReconciledAtMs', 'updatedAt']);
+    }
+
+    function isAuditedSupplierBalanceCorrection() {
+      return request.resource.data.keys().hasAll([
+        'balance', 'balanceCorrectionAtMs', 'balanceCorrectionBy', 'balanceCorrectionReason'
+      ]);
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId);
@@ -63,6 +76,21 @@ service cloud.firestore {
         || (isOwner(userId) && securityMode(userId) && isAdmin()
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['securityMode', 'updatedAt']));
       allow delete: if false;
+
+      match /suppliers/{supplierId} {
+        allow read: if isOwner(userId);
+        allow write: if legacyOwnerWrite(userId);
+        allow create, delete: if isOwner(userId) && securityMode(userId) && hardenedCatalogWrite(userId);
+        allow update: if isOwner(userId) && securityMode(userId) && isAdmin() && isAuditedSupplierBalanceCorrection();
+        allow update: if isOwner(userId) && securityMode(userId) && hardenedCatalogWrite(userId)
+          && !isBalanceOnlySupplierPatch();
+      }
+
+      match /customers/{customerId} {
+        allow read: if isOwner(userId);
+        allow write: if legacyOwnerWrite(userId);
+        allow create, update, delete: if isOwner(userId) && securityMode(userId) && hardenedCatalogWrite(userId);
+      }
 
       match /{subCollection}/{docId} {
         allow read: if isOwner(userId);

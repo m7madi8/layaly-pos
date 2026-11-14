@@ -1,0 +1,173 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function memberDocPath(tenantId) {
+      return /databases/$(database)/documents/tenants/$(tenantId)/members/$(request.auth.uid);
+    }
+
+    function memberActive(tenantId) {
+      return signedIn()
+        && exists(memberDocPath(tenantId))
+        && get(memberDocPath(tenantId)).data.active == true;
+    }
+
+    function memberRole(tenantId) {
+      return get(memberDocPath(tenantId)).data.role;
+    }
+
+    function isTenantAdmin(tenantId) {
+      return memberActive(tenantId) && memberRole(tenantId) == 'admin';
+    }
+
+    function isTenantCashier(tenantId) {
+      return memberActive(tenantId) && memberRole(tenantId) == 'cashier';
+    }
+
+    function isTenantStaff(tenantId) {
+      return memberActive(tenantId)
+        && (memberRole(tenantId) == 'cashier' || memberRole(tenantId) == 'admin');
+    }
+
+    /** Legacy cafés: data at users/{authUid} before tenants/{tenantId} exists. */
+    function legacyUnmigratedOwner(tenantId) {
+      return signedIn()
+        && request.auth.uid == tenantId
+        && !exists(/databases/$(database)/documents/tenants/$(tenantId));
+    }
+
+    function canReadBusinessData(tenantId) {
+      return legacyUnmigratedOwner(tenantId) || isTenantStaff(tenantId);
+    }
+
+    function canWriteBusinessData(tenantId) {
+      return legacyUnmigratedOwner(tenantId) || isTenantStaff(tenantId);
+    }
+
+    function adminOnlyCollection(sub) {
+      return sub in [
+        'vault', 'vaultMovements', 'payrollAccruals', 'payrollPayments',
+        'businessDayAdjustments', 'orderReturnAudits'
+      ];
+    }
+
+    function isBalanceOnlySupplierPatch() {
+      return request.resource != null
+        && resource != null
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['balance', 'balanceReconciledAtMs', 'updatedAt']);
+    }
+
+    function isAuditedSupplierBalanceCorrection() {
+      return request.resource.data.keys().hasAll([
+        'balance', 'balanceCorrectionAtMs', 'balanceCorrectionBy', 'balanceCorrectionReason'
+      ]);
+    }
+
+    function sensitiveExpenseCreate() {
+      return request.resource.data.keys().hasAny([
+        'payrollAccrualId', 'employeeAdvanceId', 'advanceRepaymentId', 'isAdvanceRepayment'
+      ]);
+    }
+
+    // --- Login index (written by admin when approving cashier) ---
+    match /userTenants/{authUid} {
+      allow read: if signedIn() && request.auth.uid == authUid;
+      allow create: if signedIn() && request.auth.uid == authUid
+        && request.resource.data.tenantId == authUid
+        && request.resource.data.role == 'admin'
+        && legacyUnmigratedOwner(request.resource.data.tenantId);
+      allow create: if signedIn()
+        && request.auth.uid == authUid
+        && request.resource.data.tenantId == authUid
+        && request.resource.data.role == 'admin'
+        && exists(memberDocPath(request.resource.data.tenantId))
+        && get(memberDocPath(request.resource.data.tenantId)).data.role == 'admin';
+      allow create, update: if signedIn()
+        && isTenantAdmin(request.resource.data.tenantId)
+        && authUid != request.auth.uid;
+      allow delete: if signedIn()
+        && isTenantAdmin(resource.data.tenantId)
+        && authUid != request.auth.uid;
+    }
+
+    match /tenants/{tenantId} {
+      allow read: if canReadBusinessData(tenantId);
+      allow create: if legacyUnmigratedOwner(tenantId);
+      allow update: if isTenantAdmin(tenantId);
+      allow delete: if false;
+
+      match /members/{memberUid} {
+        allow read: if canReadBusinessData(tenantId)
+          || (signedIn() && request.auth.uid == memberUid);
+        allow create: if legacyUnmigratedOwner(tenantId) && memberUid == request.auth.uid;
+        allow create: if signedIn()
+          && memberUid == request.auth.uid
+          && request.auth.uid == tenantId
+          && request.resource.data.role == 'admin'
+          && request.resource.data.active == true
+          && exists(/databases/$(database)/documents/tenants/$(tenantId))
+          && !exists(/databases/$(database)/documents/tenants/$(tenantId)/members/$(memberUid));
+        allow create: if isTenantAdmin(tenantId) && memberUid != request.auth.uid;
+        allow update: if signedIn() && memberUid == request.auth.uid && false;
+        allow update: if isTenantAdmin(tenantId)
+          && memberUid != request.auth.uid
+          && request.resource.data.role in ['admin', 'cashier']
+          && request.resource.data.active is bool;
+        allow delete: if isTenantAdmin(tenantId) && memberUid != request.auth.uid;
+      }
+
+      match /joinRequests/{requestUid} {
+        allow read: if isTenantAdmin(tenantId);
+        allow create: if signedIn()
+          && request.auth.uid == requestUid
+          && request.resource.data.status == 'pending'
+          && request.resource.data.keys().hasOnly([
+            'email', 'status', 'createdAt', 'createdAtMs'
+          ]);
+        allow update, delete: if isTenantAdmin(tenantId);
+      }
+    }
+
+  // --- Business data (unchanged paths: users/{tenantId}/...) ---
+    match /users/{tenantId} {
+      allow read: if canReadBusinessData(tenantId);
+      allow create: if legacyUnmigratedOwner(tenantId);
+      allow update: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+      allow delete: if false;
+
+      match /suppliers/{supplierId} {
+        allow read: if canReadBusinessData(tenantId);
+        allow create, delete: if canWriteBusinessData(tenantId);
+        allow update: if resource != null
+          && canWriteBusinessData(tenantId)
+          && !isBalanceOnlySupplierPatch();
+        allow update: if resource != null
+          && isTenantAdmin(tenantId)
+          && isAuditedSupplierBalanceCorrection();
+      }
+
+      match /vault/{docId} {
+        allow read, write: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+      }
+
+      match /{subCollection}/{docId} {
+        allow read: if canReadBusinessData(tenantId);
+
+        allow write: if legacyUnmigratedOwner(tenantId);
+
+        allow create, update, delete: if isTenantAdmin(tenantId) && !adminOnlyCollection(subCollection);
+
+        allow create, update, delete: if isTenantCashier(tenantId)
+          && !adminOnlyCollection(subCollection)
+          && subCollection != 'businessDaySummaries'
+          && subCollection != 'suppliers'
+          && !(subCollection == 'expenses' && sensitiveExpenseCreate());
+      }
+    }
+  }
+}

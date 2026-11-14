@@ -7,9 +7,22 @@ import { FONT_UI, FONT_HEADING } from '../branding';
 import { getProductType, formatDuration } from '../utils/productPricing';
 
 /* ───────────── بحث العميل بالاسم (حقل مباشر + نتائج) ───────────── */
-function CustomerSearch({ customers, selectedId, selectedName, canCreate, onSelect, onAdd, disabled }) {
+function CustomerSearch({
+  customers,
+  selectedId,
+  selectedName,
+  canCreate,
+  onSelect,
+  onAdd,
+  disabled,
+  onCustomerSearch,
+  onLoadMoreCustomers,
+  customersHasMore,
+}) {
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
+  const [remoteHits, setRemoteHits] = useState([]);
+  const [searching, setSearching] = useState(false);
   const wrapRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -25,17 +38,44 @@ function CustomerSearch({ customers, selectedId, selectedName, canCreate, onSele
     return () => document.removeEventListener('mousedown', onDoc);
   }, []);
 
+  useEffect(() => {
+    if (!onCustomerSearch || q.trim().length < 2) {
+      setRemoteHits([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const t = setTimeout(() => {
+      onCustomerSearch(q.trim())
+        .then((rows) => {
+          if (!cancelled) setRemoteHits(rows || []);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 280);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [q, onCustomerSearch]);
+
   const list = useMemo(() => {
     const s = q.trim().toLowerCase();
-    const arr = s
+    const base = s
       ? customers.filter(
           (c) =>
             (c.name || '').toLowerCase().includes(s) ||
             (c.phone || '').replace(/\s/g, '').includes(s.replace(/\s/g, ''))
         )
       : customers;
-    return arr.slice(0, 40);
-  }, [customers, q]);
+    if (s.length >= 2 && remoteHits.length) {
+      const map = new Map(base.map((c) => [c.id, c]));
+      remoteHits.forEach((c) => map.set(c.id, c));
+      return Array.from(map.values()).slice(0, 40);
+    }
+    return base.slice(0, 40);
+  }, [customers, q, remoteHits]);
 
   const pick = (id) => {
     onSelect(id);
@@ -125,8 +165,20 @@ function CustomerSearch({ customers, selectedId, selectedName, canCreate, onSele
               {c.id === selectedId && <Check size={18} className="text-accent shrink-0" />}
             </button>
           ))}
-          {list.length === 0 && (
+          {searching && (
+            <p className="py-2 text-center text-xs text-[var(--color-text-muted)]">جاري البحث…</p>
+          )}
+          {list.length === 0 && !searching && (
             <p className="py-6 text-center text-sm text-[var(--color-text-muted)]">لا يوجد عميل بهذا الاسم</p>
+          )}
+          {!q.trim() && customersHasMore && onLoadMoreCustomers && (
+            <button
+              type="button"
+              onClick={() => onLoadMoreCustomers()}
+              className="w-full min-h-[44px] text-sm font-semibold text-primary border-t border-[var(--color-border)]"
+            >
+              تحميل المزيد
+            </button>
           )}
           {canCreate && (
             <button
@@ -224,6 +276,9 @@ export default function PosCart({
   customers,
   canCreateCustomers,
   onSelectCustomer,
+  onCustomerSearch,
+  onLoadMoreCustomers,
+  customersHasMore,
   onAddCustomer,
   onNotesChange,
   onGuestNameChange,
@@ -326,6 +381,9 @@ export default function PosCart({
             disabled={busy}
             onSelect={onSelectCustomer}
             onAdd={onAddCustomer}
+            onCustomerSearch={onCustomerSearch}
+            onLoadMoreCustomers={onLoadMoreCustomers}
+            customersHasMore={customersHasMore}
           />
 
           {notesOpen ? (

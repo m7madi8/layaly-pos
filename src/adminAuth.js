@@ -47,24 +47,18 @@ export function canManageMerchantProfiles(role) {
 
 const ROLE_KEY = 'layali-user-role';
 
-/** الدور محفوظ على الجهاز (localStorage) ليبقى الدخول بعد التحديث أو إغلاق التطبيق، حتى تسجيل الخروج */
+/** @deprecated UI hint only — authorization comes from Firestore tenant membership. */
 export function readSessionRole() {
-  let role = null;
-  try {
-    role = localStorage.getItem(ROLE_KEY) || sessionStorage.getItem(ROLE_KEY);
-  } catch {
-    return null;
-  }
-  return role === 'admin' || role === 'employee' ? role : null;
+  return null;
 }
 
-export function saveSessionRole(role) {
+/** @deprecated Do not use for authorization. */
+export function saveSessionRole(_role) {
   try {
-    if (role) localStorage.setItem(ROLE_KEY, role);
-    else localStorage.removeItem(ROLE_KEY);
+    localStorage.removeItem(ROLE_KEY);
     sessionStorage.removeItem(ROLE_KEY);
   } catch {
-    /* storage unavailable (private mode) — role lasts for this page only */
+    /* ignore */
   }
 }
 

@@ -1,6 +1,6 @@
 /**
- * Firestore Security Rules tests — hardened rules only (firestore.rules.hardened).
- * Run: npm run test:rules (Firebase Emulator Suite required).
+ * Spark tenant membership rules — firestore.rules
+ * Run: npm run test:rules (Firebase Emulator required)
  */
 const fs = require('fs');
 const path = require('path');
@@ -11,7 +11,7 @@ const {
 } = require('@firebase/rules-unit-testing');
 
 const PROJECT_ID = 'layali-rules-test';
-const rulesPath = path.resolve(__dirname, '../../firestore.rules.hardened');
+const rulesPath = path.resolve(__dirname, '../../firestore.rules');
 
 let testEnv;
 
@@ -31,118 +31,183 @@ beforeEach(async () => {
   await testEnv.clearFirestore();
 });
 
-function authedDb(uid, claims = {}) {
-  return testEnv
-    .authenticatedContext(uid, claims)
-    .firestore();
+function dbAs(uid) {
+  return testEnv.authenticatedContext(uid).firestore();
 }
 
-test('legacy mode: owner can write orders', async () => {
-  const db = authedDb('owner1');
+/** Trusted fixture — not the operation under test. */
+async function seedTenant(tenantId, adminUid, cashierUid = null) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.doc(`users/${tenantId}`).set({ businessName: 'Test Café', createdAtMs: Date.now() });
+    await db.doc(`tenants/${tenantId}`).set({ schemaVersion: 1, inviteCode: 'JOIN1', createdAtMs: Date.now() });
+    await db.doc(`tenants/${tenantId}/members/${adminUid}`).set({ role: 'admin', active: true });
+    await db.doc(`userTenants/${adminUid}`).set({ tenantId, role: 'admin' });
+    if (cashierUid) {
+      await db.doc(`tenants/${tenantId}/members/${cashierUid}`).set({ role: 'cashier', active: true });
+      await db.doc(`userTenants/${cashierUid}`).set({ tenantId, role: 'cashier' });
+    }
+  });
+}
+
+async function seedSupplier(tenantId, supplierId, data) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.doc(`users/${tenantId}/suppliers/${supplierId}`).set(data);
+  });
+}
+
+test('legacy unmigrated owner retains full write', async () => {
+  const owner = dbAs('legacyOwner1');
+  await assertSucceeds(owner.doc('users/legacyOwner1').set({ businessName: 'Legacy' }));
+  await assertSucceeds(owner.collection('users/legacyOwner1/orders').doc('o1').set({ total: 10, status: 'paid' }));
+});
+
+test('cashier can read/write orders under tenant', async () => {
+  const tenantId = 'cafe1';
+  const adminUid = 'admin1';
+  const cashierUid = 'cash1';
+  await seedTenant(tenantId, adminUid, cashierUid);
+  const cashierDb = dbAs(cashierUid);
   await assertSucceeds(
-    db.doc('users/owner1').set({ securityMode: 'legacy', businessName: 'Test' })
-  );
-  await assertSucceeds(
-    db.collection('users/owner1/orders').doc('o1').set({ total: 10, status: 'paid' })
+    cashierDb.collection(`users/${tenantId}/orders`).doc('o1').set({ total: 5, status: 'paid' })
   );
 });
 
-test('hardened mode: client cannot write cashShifts', async () => {
-  const adminDb = authedDb('owner2b', { role: 'admin' });
-  await assertSucceeds(
-    adminDb.doc('users/owner2b').set({ securityMode: 'hardened', businessName: 'Test' })
-  );
-  const cashierDb = authedDb('owner2b', { role: 'cashier' });
+test('cashier cannot write vault', async () => {
+  const tenantId = 'cafe2';
+  const adminUid = 'admin2';
+  const cashierUid = 'cash2';
+  await seedTenant(tenantId, adminUid, cashierUid);
+  const cashierDb = dbAs(cashierUid);
   await assertFails(
-    cashierDb.collection('users/owner2b/cashShifts').doc('s1').set({ status: 'open', openingBalance: 0 })
+    cashierDb.doc(`users/${tenantId}/vault/main`).set({ balance: 99 })
   );
 });
 
-test('hardened mode: client cannot create orders', async () => {
-  const adminDb = authedDb('owner2', { role: 'admin' });
-  await assertSucceeds(
-    adminDb.doc('users/owner2').set({ securityMode: 'hardened', businessName: 'Test' })
-  );
-
-  const cashierDb = authedDb('owner2', { role: 'cashier' });
+test('cashier cannot patch supplier balance only', async () => {
+  const tenantId = 'cafe3';
+  const adminUid = 'admin3';
+  const cashierUid = 'cash3';
+  await seedTenant(tenantId, adminUid, cashierUid);
+  await seedSupplier(tenantId, 's1', { name: 'S', balance: 10 });
+  const cashierDb = dbAs(cashierUid);
   await assertFails(
-    cashierDb.collection('users/owner2/orders').doc('o2').set({ total: 5, status: 'paid' })
+    cashierDb.collection(`users/${tenantId}/suppliers`).doc('s1').update({ balance: 0, updatedAt: new Date() })
   );
 });
 
-test('hardened mode: cashier can update products', async () => {
-  const adminDb = authedDb('owner3', { role: 'admin' });
+test('cashier can update supplier non-balance fields', async () => {
+  const tenantId = 'cafe3b';
+  const adminUid = 'admin3b';
+  const cashierUid = 'cash3b';
+  await seedTenant(tenantId, adminUid, cashierUid);
+  await seedSupplier(tenantId, 's1', { name: 'S', balance: 10 });
+  const cashierDb = dbAs(cashierUid);
   await assertSucceeds(
-    adminDb.doc('users/owner3').set({ securityMode: 'hardened', businessName: 'Test' })
-  );
-
-  const cashierDb = authedDb('owner3', { role: 'cashier' });
-  await assertSucceeds(
-    cashierDb.collection('users/owner3/products').doc('p1').set({ name: 'قهوة', price: 5 })
+    cashierDb.collection(`users/${tenantId}/suppliers`).doc('s1').update({ name: 'S2', phone: '0599' })
   );
 });
 
-test('hardened mode: cashier cannot write vault', async () => {
-  const adminDb = authedDb('owner4', { role: 'admin' });
-  await assertSucceeds(
-    adminDb.doc('users/owner4').set({ securityMode: 'hardened', businessName: 'Test' })
-  );
-
-  const cashierDb = authedDb('owner4', { role: 'cashier' });
+test('member cannot change own role', async () => {
+  const tenantId = 'cafe4';
+  const adminUid = 'admin4';
+  const cashierUid = 'cash4';
+  await seedTenant(tenantId, adminUid, cashierUid);
+  const cashierDb = dbAs(cashierUid);
   await assertFails(
-    cashierDb.doc('users/owner4/vault/main').set({ balance: 100 })
+    cashierDb.doc(`tenants/${tenantId}/members/${cashierUid}`).update({ role: 'admin', active: true })
   );
 });
 
-test('hardened mode: client cannot write cashShiftIdempotency', async () => {
-  const adminDb = authedDb('owner5b', { role: 'admin' });
+test('cross-tenant read denied', async () => {
+  const tenantId = 'cafe5';
+  const adminUid = 'admin5';
+  const other = 'intruder5';
+  await seedTenant(tenantId, adminUid);
+  const intruder = dbAs(other);
+  await assertFails(intruder.collection(`users/${tenantId}/orders`).doc('x').get());
+});
+
+test('cashier can submit a valid join request', async () => {
+  const tenantId = 'cafe6';
+  const adminUid = 'admin6';
+  const cashierUid = 'cash6';
+  await seedTenant(tenantId, adminUid);
+  const cashierDb = dbAs(cashierUid);
   await assertSucceeds(
-    adminDb.doc('users/owner5b').set({ securityMode: 'hardened', businessName: 'Test' })
-  );
-  const cashierDb = authedDb('owner5b', { role: 'cashier' });
-  await assertFails(
-    cashierDb.doc('users/owner5b/cashShiftIdempotency/k1').set({ shiftId: 'fake' })
+    cashierDb.doc(`tenants/${tenantId}/joinRequests/${cashierUid}`).set({
+      email: 'c@test',
+      status: 'pending',
+      createdAtMs: Date.now(),
+    })
   );
 });
 
-test('hardened mode: client cannot write idempotency records', async () => {
-  const adminDb = authedDb('owner5', { role: 'admin' });
+test('cashier cannot create admin membership for another user', async () => {
+  const tenantId = 'cafe7';
+  const adminUid = 'admin7';
+  const cashierUid = 'cash7';
+  await seedTenant(tenantId, adminUid, cashierUid);
+  const cashierDb = dbAs(cashierUid);
+  await assertFails(
+    cashierDb.doc(`tenants/${tenantId}/members/newuser7`).set({ role: 'admin', active: true })
+  );
+});
+
+test('forged join request with extra fields is denied', async () => {
+  const tenantId = 'cafe8';
+  const adminUid = 'admin8';
+  const cashierUid = 'cash8';
+  await seedTenant(tenantId, adminUid);
+  const cashierDb = dbAs(cashierUid);
+  await assertFails(
+    cashierDb.doc(`tenants/${tenantId}/joinRequests/${cashierUid}`).set({
+      email: 'c@test',
+      status: 'pending',
+      createdAtMs: Date.now(),
+      role: 'admin',
+    })
+  );
+});
+
+test('cashier cannot create sensitive payroll expense', async () => {
+  const tenantId = 'cafe9';
+  const adminUid = 'admin9';
+  const cashierUid = 'cash9';
+  await seedTenant(tenantId, adminUid, cashierUid);
+  const cashierDb = dbAs(cashierUid);
+  await assertFails(
+    cashierDb.collection(`users/${tenantId}/expenses`).doc('e1').set({
+      amount: 50,
+      payrollAccrualId: 'fake',
+      section: 'salaries',
+    })
+  );
+});
+
+test('legitimate tenant owner can bootstrap after users profile', async () => {
+  const authUid = 'bootstrapAdmin';
+  const adminDb = dbAs(authUid);
+  await assertSucceeds(adminDb.doc(`users/${authUid}`).set({ businessName: 'Bootstrap' }));
   await assertSucceeds(
-    adminDb.doc('users/owner5').set({ securityMode: 'hardened', businessName: 'Test' })
+    adminDb.doc(`tenants/${authUid}`).set({ schemaVersion: 1, inviteCode: 'JOIN', createdAtMs: 1 })
   );
-  const cashierDb = authedDb('owner5', { role: 'cashier' });
-  await assertFails(
-    cashierDb.doc('users/owner5/idempotency/key1').set({ orderId: 'fake', total: 1 })
-  );
-});
-
-test('hardened mode: cashier cannot write orderReturns', async () => {
-  const adminDb = authedDb('owner6', { role: 'admin' });
   await assertSucceeds(
-    adminDb.doc('users/owner6').set({ securityMode: 'hardened', businessName: 'Test' })
+    adminDb.doc(`tenants/${authUid}/members/${authUid}`).set({ role: 'admin', active: true })
   );
-  const cashierDb = authedDb('owner6', { role: 'cashier' });
-  await assertFails(
-    cashierDb.collection('users/owner6/orderReturns').doc('r1').set({ orderId: 'o1', refundAmount: 1 })
-  );
-});
-
-test('hardened mode: cashier cannot create payroll accrual doc', async () => {
-  const adminDb = authedDb('owner7', { role: 'admin' });
   await assertSucceeds(
-    adminDb.doc('users/owner7').set({ securityMode: 'hardened', businessName: 'Test' })
-  );
-  const cashierDb = authedDb('owner7', { role: 'cashier' });
-  await assertFails(
-    cashierDb.collection('users/owner7/payrollAccruals').doc('p1').set({ amountDue: 100 })
+    adminDb.doc(`userTenants/${authUid}`).set({ tenantId: authUid, role: 'admin' })
   );
 });
 
-test('cross-tenant: cannot read another user orders', async () => {
-  const a = authedDb('tenantA');
-  await assertSucceeds(a.doc('users/tenantA').set({ securityMode: 'legacy' }));
-  await assertSucceeds(a.collection('users/tenantA/orders').doc('x').set({ total: 1 }));
-
-  const b = authedDb('tenantB');
-  await assertFails(b.collection('users/tenantA/orders').doc('x').get());
+test('intruder cannot self-enroll as admin on existing tenant', async () => {
+  const tenantId = 'cafe10';
+  const adminUid = 'admin10';
+  const intruder = 'intruder10';
+  await seedTenant(tenantId, adminUid);
+  const intruderDb = dbAs(intruder);
+  await assertFails(
+    intruderDb.doc(`tenants/${tenantId}/members/${intruder}`).set({ role: 'admin', active: true })
+  );
 });

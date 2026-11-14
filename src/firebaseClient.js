@@ -33,6 +33,7 @@ import {
 } from 'firebase/firestore';
 import * as demo from './demoBackend';
 import { ADMIN_LOGIN_EMAIL, normalizeLoginPassword } from './adminAuth';
+import { resolveCashierLoginEmail } from './config/authSecrets';
 import {
   recordGetDocResult,
   recordGetDocsResult,
@@ -91,7 +92,9 @@ if (isDemoMode) {
   };
   const app = initializeApp(firebaseConfig);
   auth = getAuth(app);
-  const useIndexedDbPersistence = envValue('REACT_APP_FIRESTORE_PERSISTENCE').toLowerCase() === 'true';
+  const persistFlag = envValue('REACT_APP_FIRESTORE_PERSISTENCE').toLowerCase();
+  const useIndexedDbPersistence =
+    persistFlag === 'true' || (persistFlag !== 'false' && process.env.NODE_ENV === 'production');
   try {
     db = initializeFirestore(
       app,
@@ -201,4 +204,22 @@ export async function signInWithAdminPassword(authInstance, password) {
     throw new Error('النظام غير مربوط بالسحابة. راجع إعدادات الخادم.');
   }
   return firebaseSignIn(authInstance, ADMIN_LOGIN_EMAIL, normalized);
+}
+
+export async function signInWithCashierPassword(authInstance, password) {
+  const normalized = normalizeLoginPassword(password);
+  if (!normalized) {
+    throw new Error('يرجى إدخال كلمة المرور');
+  }
+  const email = resolveCashierLoginEmail();
+  if (!email) {
+    throw new Error('REACT_APP_CASHIER_EMAIL غير مضبوط على الاستضافة');
+  }
+  if (isDemoMode) {
+    return demo.signInWithEmailAndPassword(authInstance, email, normalized);
+  }
+  if (!authInstance || !isFirebaseConfigured) {
+    throw new Error('النظام غير مربوط بالسحابة. راجع إعدادات الخادم.');
+  }
+  return firebaseSignIn(authInstance, email, normalized);
 }

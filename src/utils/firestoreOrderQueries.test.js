@@ -1,7 +1,10 @@
 import {
   resolveOrdersQuerySpec,
+  resolveEmployeePosOpenOrdersSpec,
+  mergeOrdersById,
   ORDERS_PAGE_SIZE,
   ORDERS_DASHBOARD_LIMIT,
+  ORDERS_EMPLOYEE_OPEN_PAGE,
 } from './firestoreOrderQueries';
 import { getLocalCalendarDayStart } from './dashboardCashSales';
 
@@ -50,5 +53,40 @@ describe('resolveOrdersQuerySpec', () => {
       currentView: 'settings',
     });
     expect(spec).toBeNull();
+  });
+
+  it('scopes employee POS orders to today', () => {
+    const spec = resolveOrdersQuerySpec({
+      ...mockApis(),
+      userRole: 'employee',
+      currentView: 'pos',
+    });
+    expect(spec.mode).toBe('employee-pos-today');
+    const w = spec.q.parts.find((p) => p.type === 'where');
+    expect(w.f).toBe('timestamp');
+    expect(w.op).toBe('>=');
+  });
+
+  it('adds supplemental open-order listener for employee POS', () => {
+    const spec = resolveEmployeePosOpenOrdersSpec({
+      ...mockApis(),
+      userRole: 'employee',
+      currentView: 'pos',
+    });
+    expect(spec.mode).toBe('employee-pos-open');
+    expect(spec.q.parts.find((p) => p.type === 'limit')).toBeUndefined();
+    const w = spec.q.parts.find((p) => p.type === 'where' && p.f === 'status');
+    expect(w.op).toBe('in');
+  });
+});
+
+describe('mergeOrdersById', () => {
+  it('dedupes and prefers primary snapshot rows', () => {
+    const merged = mergeOrdersById(
+      [{ id: 'a', total: 2, timestamp: { toDate: () => new Date(2000) } }],
+      [{ id: 'a', total: 1, timestamp: { toDate: () => new Date(1000) } }, { id: 'b', total: 3, timestamp: { toDate: () => new Date(3000) } }]
+    );
+    expect(merged).toHaveLength(2);
+    expect(merged.find((o) => o.id === 'a').total).toBe(2);
   });
 });

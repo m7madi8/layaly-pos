@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { CalendarDays } from 'lucide-react';
 import { FONT_HEADING, FONT_UI } from '../branding';
-import { listBusinessDaySummaries } from '../services/businessDayService';
+import { loadRecentBusinessSummaries } from '../services/localFirst/reportSummaryCache';
 
 export default function DailyArchivePanel({ uid, fmtMoney }) {
   const [days, setDays] = useState([]);
@@ -11,7 +11,7 @@ export default function DailyArchivePanel({ uid, fmtMoney }) {
   useEffect(() => {
     if (!uid) return;
     setLoading(true);
-    listBusinessDaySummaries(uid)
+    loadRecentBusinessSummaries(uid)
       .then(setDays)
       .catch(() => setDays([]))
       .finally(() => setLoading(false));

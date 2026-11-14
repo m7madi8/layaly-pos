@@ -20,7 +20,6 @@ import PurchasePaymentFields from './components/PurchasePaymentFields';
 import EmployeeBenefitsPanel from './components/EmployeeBenefitsPanel';
 import {
   executeSupplierPayment,
-  reconcileSupplierBalance,
   reverseSupplierPaymentInTransaction,
 } from './services/supplierPaymentService';
 import {
@@ -70,6 +69,7 @@ import {
   sumReportExpenses,
   resolveSupplierOutstandingBalance,
   computeTotalOutstandingSupplierPayable,
+  computeTotalOutstandingFromStoredBalances,
   SUPPLIER_PAYMENT_CASH,
   SUPPLIER_PAYMENT_VAULT,
   normalizeSupplierPaymentMethod,
@@ -132,7 +132,7 @@ import {
   writeBatch,
   onAuthStateChanged,
   signInWithAdminPassword,
-  signInWithCustomToken,
+  signInWithCashierPassword,
   signOut,
   setFirestoreMetricsPage,
   getFirestoreReadMetrics,
@@ -142,12 +142,54 @@ import { clearFirestoreClientSessionState } from './services/firestoreSessionCle
 import { Timestamp } from 'firebase/firestore';
 import { sharedOnSnapshot } from './services/firestoreSharedListeners';
 import {
+  attachProductCatalog,
+  patchProductInCatalog,
+  removeProductFromCatalog,
+  refreshProductsForSale,
+} from './services/localFirst/productCatalogStore';
+import {
+  loadCustomersPage,
+  searchCustomers,
+  upsertCustomerLocal,
+  removeCustomerLocal,
+  getCustomersLocal,
+  customersHasMore as customersDirectoryHasMore,
+  loadCustomersWithPositiveBalance,
+  fetchCustomerAuthoritative,
+  loadAllCustomerPages,
+} from './services/localFirst/customerDirectoryStore';
+import {
+  loadSuppliersPage,
+  upsertSupplierLocal,
+  getSuppliersLocal,
+  suppliersHasMore as suppliersDirectoryHasMore,
+} from './services/localFirst/supplierDirectoryStore';
+import { loadDashboardWeekSummaries, getWeeklySalesChartData } from './services/localFirst/dashboardMetricsStore';
+import {
+  loadDashboardTodayMetrics,
+} from './services/localFirst/dashboardTodayMetricsStore';
+import { fetchAllActiveOrders } from './services/localFirst/activeOrdersStore';
+import {
+  invalidateAfterExpenseMutation,
+  invalidateAfterBusinessDayClose,
+  invalidateAfterOrderMutation,
+} from './services/localFirst/financialCacheInvalidation';
+import {
+  fetchTradersPurchaseTotalSnapshot,
+  previewSupplierReconciliation,
+  applySupplierBalanceCorrection,
+  invalidateSupplierExpensePages,
+} from './services/supplierExpenseReads';
+import {
   resolveOrdersQuerySpec,
+  resolveEmployeePosOpenOrdersSpec,
+  mergeOrdersById,
   mapOrderSnapshot,
   ORDERS_PAGE_SIZE,
   ORDERS_DASHBOARD_LIMIT,
   ORDERS_REPORTS_LIMIT,
 } from './utils/firestoreOrderQueries';
+import { DAY_SUMMARY_STATE } from './utils/dashboardSummaries';
 import { describeReportDataCoverage } from './utils/reportsOrdersCoverage';
 import { getDashboardPeriodLabels } from './utils/dashboardPeriodLabels';
 import {
@@ -156,6 +198,9 @@ import {
   needsExpensesListener,
   needsSuppliersListener,
   needsCustomersListener,
+  needsVaultListener,
+  needsCashShiftsListener,
+  needsEmployeeBenefitsListener,
   expensesListenerLimit,
 } from './utils/firestoreViewDataPolicy';
 import { fileToStoredDataUrl } from './utils/fileToDataUrl';
@@ -212,18 +257,23 @@ import {
   playstationSessionRef,
 } from './services/playstationService';
 import {
-  getEmployeeLoginPassword,
   EMPLOYEE_VIEWS,
   canCreateCustomers,
   canManageOpenBills,
   canEditOrders,
   canDeleteOrders,
   canManageMerchantProfiles,
-  isFinanceRole,
   normalizeLoginPassword,
-  readSessionRole,
   saveSessionRole,
 } from './adminAuth';
+import {
+  resolveTenantAuthContext,
+  submitCashierJoinRequest,
+  approveCashierJoinRequest,
+  listPendingJoinRequests,
+  setTenantInviteCode,
+  getTenantInviteCode,
+} from './services/tenantMembershipService';
 import {
   restoreCartItem,
 } from './services/openBillsService';
@@ -268,8 +318,6 @@ import {
   callCloseCashShift,
   callOpenCashShift,
   callRecordCashShiftMovement,
-  callVerifyEmployeePin,
-  callRefreshAdminSession,
   isTrustedCashShiftsEnabled,
   isTrustedOrdersEnabled,
   isCloudCallableUnavailableError,
@@ -387,6 +435,16 @@ const AppCore = () => {
   const [quickCustomerForm, setQuickCustomerForm] = useState({ name: '', phone: '', address: '', notes: '' });
   const [quickCustomerSaving, setQuickCustomerSaving] = useState(false);
   const [customers, setCustomers] = useState([]);
+  const [customersHasMore, setCustomersHasMore] = useState(true);
+  const [customerDebtSummary, setCustomerDebtSummary] = useState({ total: 0, count: 0 });
+  const [suppliersHasMore, setSuppliersHasMore] = useState(true);
+  const [dashboardWeekSummaries, setDashboardWeekSummaries] = useState([]);
+  const [tradersPurchaseTotal, setTradersPurchaseTotal] = useState(0);
+  const [tradersPurchasePartial, setTradersPurchasePartial] = useState(false);
+  const employeePosOpenOrdersRef = useRef([]);
+  const [activeOrdersMeta, setActiveOrdersMeta] = useState({ complete: true, truncated: false, count: 0 });
+  const [dashboardTodayMetrics, setDashboardTodayMetrics] = useState(null);
+  const [dashboardTodayMetricsLoading, setDashboardTodayMetricsLoading] = useState(false);
   const [discount, setDiscount] = useState(0);
   const [discountType, setDiscountType] = useState('amount'); // new invoices use ₪ only; 'percentage' kept for old orders
   const [posEmployeeStaffId, setPosEmployeeStaffId] = useState('');
@@ -413,7 +471,15 @@ const AppCore = () => {
   const [showProductModal, setShowProductModal] = useState(false);
   const [productModalFromPurchase, setProductModalFromPurchase] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
-  const [userRole, setUserRole] = useState(readSessionRole);
+  const [tenantId, setTenantId] = useState(null);
+  const [tenantAuthLoading, setTenantAuthLoading] = useState(false);
+  const [needsCashierJoin, setNeedsCashierJoin] = useState(false);
+  const [joinTenantCode, setJoinTenantCode] = useState('');
+  const [joinInviteCode, setJoinInviteCode] = useState('');
+  const [pendingJoinRequests, setPendingJoinRequests] = useState([]);
+  const [tenantInviteCode, setTenantInviteCodeState] = useState('');
+  const dataUid = tenantId || null;
+  const [userRole, setUserRole] = useState(null);
   const [loginType, setLoginType] = useState('employee');
   const [productForm, setProductForm] = useState({ name: '', category: '', price: '', stock: '', cost: '', addOns: [] });
   const [editingProductId, setEditingProductId] = useState(null);
@@ -550,19 +616,66 @@ const AppCore = () => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!currentUser) {
         clearFirestoreClientSessionState();
+        setTenantId(null);
+        setUserRole(null);
+        setNeedsCashierJoin(false);
       }
       setUser(currentUser);
       if (!currentUser) {
         setLoading(false);
+        setTenantAuthLoading(false);
       }
     });
     return () => unsubscribe();
   }, []);
 
+  // Tenant membership (authoritative role — not localStorage)
+  useEffect(() => {
+    if (!dataUid) return undefined;
+    let cancelled = false;
+    setTenantAuthLoading(true);
+    resolveTenantAuthContext(user.uid)
+      .then((ctx) => {
+        if (cancelled) return;
+        if (!ctx) {
+          setTenantId(null);
+          setUserRole(null);
+          setNeedsCashierJoin(true);
+          setLoading(false);
+          return;
+        }
+        setNeedsCashierJoin(false);
+        setTenantId(ctx.tenantId);
+        setUserRole(ctx.uiRole);
+        setCurrentView((prev) => {
+          if (prev && prev !== 'login') return prev;
+          return ctx.uiRole === 'admin' ? 'dashboard' : 'pos';
+        });
+      })
+      .catch((e) => {
+        console.error('Tenant auth:', e);
+        if (!cancelled) {
+          setTenantId(null);
+          setUserRole(null);
+          setNeedsCashierJoin(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setTenantAuthLoading(false);
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- bootstrap on auth uid only
+  }, [user?.uid]);
+
   // Profile listener
   useEffect(() => {
-    if (user) {
-      const profileRef = doc(db, 'users', user.uid);
+    if (user && dataUid) {
+      const profileRef = doc(db, 'users', dataUid);
       const unsubProfile = onSnapshot(profileRef, (doc) => {
         if (doc.exists()) {
           const data = doc.data();
@@ -590,37 +703,54 @@ const AppCore = () => {
       });
       return () => unsubProfile();
     }
-  }, [user]);
+  }, [user, dataUid]);
 
-  // Load products (view-scoped — POS/inventory/reports; not on traders/vault/cash-only screens)
   useEffect(() => {
-    if (!user || !needsProductsListener(userRole, currentView)) {
+    if (!dataUid || userRole !== 'admin' || currentView !== 'settings') return undefined;
+    let cancelled = false;
+    Promise.all([getTenantInviteCode(dataUid), listPendingJoinRequests(dataUid)])
+      .then(([code, rows]) => {
+        if (cancelled) return;
+        setTenantInviteCodeState(code || '');
+        setPendingJoinRequests(rows || []);
+      })
+      .catch((e) => console.error('Tenant security settings:', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [dataUid, userRole, currentView]);
+
+  const productsListenerActive = Boolean(dataUid && userRole && needsProductsListener(userRole, currentView));
+  const expensesListenerActive = Boolean(dataUid && userRole && needsExpensesListener(userRole, currentView));
+  const expenseSnapshotLimit = expensesListenerActive ? expensesListenerLimit(currentView) : 0;
+  const suppliersListenerActive = Boolean(dataUid && userRole && needsSuppliersListener(userRole, currentView));
+  const staffListenerActive = Boolean(dataUid && needsStaffListener(userRole, currentView));
+  const customersDirectoryActive = Boolean(dataUid && needsCustomersListener(currentView));
+  const customerDebtSummaryActive = Boolean(
+    dataUid && userRole === 'admin' && ['dashboard', 'reports'].includes(currentView)
+  );
+  const dashboardMetricsActive = Boolean(dataUid && userRole === 'admin' && currentView === 'dashboard');
+  const tradersSnapshotActive = Boolean(
+    dataUid && (userRole === 'admin' || userRole === 'employee') && currentView === 'traders'
+  );
+  const cashShiftsListenerActive = Boolean(dataUid && userRole && needsCashShiftsListener(userRole, currentView));
+  const vaultListenerActive = Boolean(dataUid && userRole && needsVaultListener(userRole, currentView));
+  const employeeBenefitsListenerActive = Boolean(dataUid && userRole && needsEmployeeBenefitsListener(userRole, currentView));
+
+  // Products — local-first catalog (REALTIME_CRITICAL while POS/inventory active)
+  useEffect(() => {
+    if (!dataUid || !productsListenerActive) {
       return undefined;
     }
-
-    const unsubscribe = onSnapshot(
-      collection(db, 'users', user.uid, 'products'),
-      (snapshot) => {
-        const productsData = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setProducts(productsData);
-      },
-      (error) => {
-        console.error("Error loading products:", error);
-      }
-    );
-
-    return () => unsubscribe();
-  }, [user, userRole, currentView]);
+    return attachProductCatalog(dataUid, setProducts);
+  }, [dataUid, productsListenerActive]);
 
   // Load orders (scoped queries — dashboard today-only, paginated list, etc.)
   useEffect(() => {
-    if (!user || !userRole) return undefined;
+    if (!dataUid || !userRole) return undefined;
 
     const spec = resolveOrdersQuerySpec({
-      uid: user.uid,
+      uid: dataUid,
       userRole,
       currentView,
       orderFilter,
@@ -650,6 +780,9 @@ const AppCore = () => {
         const pageModes = new Set(['orders-page', 'orders-custom-open']);
         const next = mapOrderSnapshot(snapshot);
         setOrders((prev) => {
+          if (spec.mode === 'employee-pos-today') {
+            return mergeOrdersById(next, employeePosOpenOrdersRef.current);
+          }
           if (!pageModes.has(spec.mode)) return next;
           const headIds = new Set(next.map((o) => o.id));
           const tail = prev.filter((o) => !headIds.has(o.id));
@@ -667,7 +800,7 @@ const AppCore = () => {
 
     return () => unsubscribe();
   }, [
-    user,
+    dataUid,
     userRole,
     currentView,
     orderFilter,
@@ -676,13 +809,75 @@ const AppCore = () => {
     reportCustomDates,
   ]);
 
+  // Employee POS: keep unpaid/partial bills from prior days (small dedicated listener).
   useEffect(() => {
-    if (!user?.uid || currentView !== 'settings' || userRole !== 'admin') {
+    if (!dataUid || !userRole) return undefined;
+
+    const openSpec = resolveEmployeePosOpenOrdersSpec({
+      uid: dataUid,
+      userRole,
+      currentView,
+      Timestamp,
+      collection,
+      query,
+      orderBy,
+      where,
+      limit,
+      db,
+    });
+
+    if (!openSpec) {
+      employeePosOpenOrdersRef.current = [];
+      return undefined;
+    }
+
+    const unsubscribe = onSnapshot(
+      openSpec.q,
+      (snapshot) => {
+        const open = mapOrderSnapshot(snapshot);
+        employeePosOpenOrdersRef.current = open;
+        setOrders((prev) => mergeOrdersById(prev, open));
+      },
+      (error) => console.error('Error loading open POS orders:', error)
+    );
+
+    return () => {
+      employeePosOpenOrdersRef.current = [];
+      unsubscribe();
+    };
+  }, [dataUid, userRole, currentView]);
+
+  useEffect(() => {
+    const onPos = userRole === 'employee' && currentView === 'pos';
+    if (!dataUid || !onPos) {
+      setActiveOrdersMeta({ complete: true, truncated: false, count: 0 });
+      return undefined;
+    }
+    let cancelled = false;
+    fetchAllActiveOrders(dataUid, { force: true })
+      .then((result) => {
+        if (cancelled) return;
+        employeePosOpenOrdersRef.current = result.orders || [];
+        setActiveOrdersMeta({
+          complete: result.complete,
+          truncated: result.truncated,
+          count: (result.orders || []).length,
+        });
+        setOrders((prev) => mergeOrdersById(prev, result.orders || []));
+      })
+      .catch((e) => console.error('Active orders backfill:', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [dataUid, userRole, currentView]);
+
+  useEffect(() => {
+    if (!dataUid || currentView !== 'settings' || userRole !== 'admin') {
       setSettingsOrdersCount(null);
       return undefined;
     }
     let cancelled = false;
-    getDoc(doc(db, 'users', user.uid, 'counters', 'orders'))
+    getDoc(doc(db, 'users', dataUid, 'counters', 'orders'))
       .then((snap) => {
         if (cancelled) return;
         setSettingsOrdersCount(snap.exists() ? Number(snap.data()?.count) || 0 : orders.length);
@@ -693,40 +888,53 @@ const AppCore = () => {
     return () => {
       cancelled = true;
     };
-  }, [user?.uid, currentView, userRole, orders.length]);
+  }, [dataUid, currentView, userRole, orders.length]);
 
   // Load ingredients
   useEffect(() => {
     if (!user || userRole !== 'admin' || currentView !== 'inventory') return;
     const unsubscribe = onSnapshot(
-      collection(db, 'users', user.uid, 'ingredients'),
+      collection(db, 'users', dataUid, 'ingredients'),
       (snapshot) => {
         setIngredients(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       }
     );
     return () => unsubscribe();
-  }, [user, userRole, currentView]);
+  }, [dataUid, user, userRole, currentView]);
 
   // Load expenses
   useEffect(() => {
-    if (!user || !needsExpensesListener(userRole, currentView)) return undefined;
-    const expenseLimit = expensesListenerLimit(currentView);
-    const q = query(collection(db, 'users', user.uid, 'expenses'), orderBy('date', 'desc'), limit(expenseLimit));
-    const unsubscribe = onSnapshot(q, snapshot => {
-      setExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => {
-      console.error("Error loading expenses:", error);
-    });
+    if (!dataUid || !expensesListenerActive || !expenseSnapshotLimit) return undefined;
+    const q = query(
+      collection(db, 'users', dataUid, 'expenses'),
+      orderBy('date', 'desc'),
+      limit(expenseSnapshotLimit)
+    );
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        setExpenses(snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() })));
+      },
+      (error) => {
+        console.error('Error loading expenses:', error);
+      }
+    );
     return () => unsubscribe();
-  }, [user, userRole, currentView]);
+  }, [dataUid, expensesListenerActive, expenseSnapshotLimit]);
 
   useEffect(() => {
-    if (currentView !== 'expenses' || !user?.uid || userRole !== 'admin') return;
+    if (currentView !== 'expenses' || !dataUid || userRole !== 'admin') return;
     if (employeeBenefitExpenseSyncRef.current) return;
+    const dayKey = getCashDayKey(new Date());
+    const syncFlagKey = `layali_benefit_expense_sync_${dataUid}_${dayKey}`;
+    if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(syncFlagKey)) return;
     employeeBenefitExpenseSyncRef.current = true;
     const syncTimer = setTimeout(() => {
-      syncEmployeeBenefitExpenses(user.uid)
+      syncEmployeeBenefitExpenses(dataUid)
         .then((r) => {
+          if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.setItem(syncFlagKey, String(Date.now()));
+          }
           if (r.created > 0) {
             console.info(`مزامنة استفادة الموظفين: ${r.created} مصروف(ات) في Firestore`);
           }
@@ -734,21 +942,20 @@ const AppCore = () => {
         .catch((e) => console.error('Employee benefit expense sync failed:', e));
     }, 8000);
     return () => clearTimeout(syncTimer);
-  }, [currentView, user?.uid, userRole]);
+  }, [currentView, dataUid, userRole]);
 
   useEffect(() => {
-    if (!user?.uid || userRole !== 'admin') return;
-    ensureDefaultStaffMembers(user.uid)
-      .then((list) => setStaffMembers(uniqueStaffMembersByName(list)))
-      .catch((e) => console.error('Staff seed failed:', e));
-    migrateEmployeeProfilesV1(user.uid).catch((e) => console.error('Employee profile migration:', e));
-  }, [user?.uid, userRole]);
+    if (!dataUid || userRole !== 'admin' || currentView !== 'employees') return;
+    migrateEmployeeProfilesV1(dataUid).catch((e) => console.error('Employee profile migration:', e));
+  }, [dataUid, userRole, currentView]);
 
   useEffect(() => {
-    if (!user?.uid || !needsStaffListener(userRole, currentView)) return undefined;
-    const q = query(collection(db, 'users', user.uid, 'staffMembers'), orderBy('name', 'asc'));
-    return sharedOnSnapshot(
-      `staff:${user.uid}`,
+    if (!dataUid || !staffListenerActive) return undefined;
+    let cancelled = false;
+    ensureDefaultStaffMembers(dataUid).catch((e) => console.error('Staff seed failed:', e));
+    const q = query(collection(db, 'users', dataUid, 'staffMembers'), orderBy('name', 'asc'));
+    const unsubShared = sharedOnSnapshot(
+      `staff:${dataUid}`,
       (deliver, onError) =>
         onSnapshot(
           q,
@@ -759,64 +966,76 @@ const AppCore = () => {
           onError
         ),
       null,
-      (list) => setStaffMembers(list),
+      (list) => {
+        if (!cancelled) setStaffMembers(list);
+      },
       (error) => console.error('Error loading staff:', error)
     );
-  }, [user?.uid, userRole, currentView]);
+    return () => {
+      cancelled = true;
+      unsubShared();
+    };
+  }, [dataUid, staffListenerActive]);
 
   useEffect(() => {
-    if (!user?.uid || !isFinanceRole(userRole)) return undefined;
-    const needsBenefits =
-      userRole === 'admin'
-        ? ['expenses', 'settings', 'employees'].includes(currentView)
-        : currentView === 'expenses';
-    if (!needsBenefits) return;
+    if (!dataUid || !employeeBenefitsListenerActive) return undefined;
+    const q = query(
+      collection(db, 'users', dataUid, 'employeeBenefits'),
+      orderBy('createdAtMs', 'desc'),
+      limit(250)
+    );
     const unsubscribe = onSnapshot(
-      collection(db, 'users', user.uid, 'employeeBenefits'),
+      q,
       (snapshot) => {
         const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-        list.sort((a, b) => (Number(b.createdAtMs) || 0) - (Number(a.createdAtMs) || 0));
         setEmployeeBenefits(list);
       },
       (error) => console.error('Error loading employee benefits:', error)
     );
     return () => unsubscribe();
-  }, [user, userRole, currentView]);
+  }, [dataUid, employeeBenefitsListenerActive]);
 
-  // Load suppliers
+  // Suppliers — paginated CACHE_FIRST
   useEffect(() => {
-    if (!user || !needsSuppliersListener(userRole, currentView)) return undefined;
-    const q = query(collection(db, 'users', user.uid, 'suppliers'), orderBy('name', 'asc'));
-    const unsubscribe = onSnapshot(q, snapshot => {
-      setSuppliers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => {
-      console.error("Error loading suppliers:", error);
-    });
-    return () => unsubscribe();
-  }, [user, userRole, currentView]);
+    if (!dataUid || !suppliersListenerActive) return undefined;
+    let cancelled = false;
+    const local = getSuppliersLocal(dataUid);
+    if (local.length) setSuppliers(local);
+    setSuppliersHasMore(suppliersDirectoryHasMore(dataUid));
+    loadSuppliersPage(dataUid, { pageSize: 25 })
+      .then((r) => {
+        if (cancelled) return;
+        setSuppliers(r.items);
+        setSuppliersHasMore(r.hasMore);
+      })
+      .catch((e) => console.error('Error loading suppliers:', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [dataUid, suppliersListenerActive]);
 
   // Load PlayStation sessions
   useEffect(() => {
     if (!user || currentView !== 'pos') return;
-    const q = query(collection(db, 'users', user.uid, 'playstationSessions'), orderBy('startedAtMs', 'desc'), limit(80));
+    const q = query(collection(db, 'users', dataUid, 'playstationSessions'), orderBy('startedAtMs', 'desc'), limit(80));
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => setPlaystationSessions(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading PlayStation sessions:', error)
     );
     return () => unsubscribe();
-  }, [user, currentView]);
+  }, [dataUid, user, currentView]);
 
   // Load external assets (hookahs taken outside) and their movements
   useEffect(() => {
     if (!user || currentView !== 'pos') return;
     const unsubAssets = onSnapshot(
-      query(collection(db, 'users', user.uid, 'externalAssets')),
+      query(collection(db, 'users', dataUid, 'externalAssets'), limit(60)),
       (snapshot) => setExternalAssets(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading external assets:', error)
     );
     const unsubMovements = onSnapshot(
-      query(collection(db, 'users', user.uid, 'assetMovements'), orderBy('checkoutAtMs', 'desc'), limit(100)),
+      query(collection(db, 'users', dataUid, 'assetMovements'), orderBy('checkoutAtMs', 'desc'), limit(100)),
       (snapshot) => setAssetMovements(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading asset movements:', error)
     );
@@ -824,132 +1043,179 @@ const AppCore = () => {
       unsubAssets();
       unsubMovements();
     };
-  }, [user, currentView]);
+  }, [dataUid, user, currentView]);
 
   const starterSeededRef = useRef(false);
   useEffect(() => {
     if (!user || !businessProfile || !userRole || starterSeededRef.current) return;
     starterSeededRef.current = true;
     Promise.all([
-      ensureStarterProducts(user.uid, businessProfile)
-        .then(() => ensureTobaccoImage(user.uid, businessProfile))
-        .then(() => ensurePlaystationPricing(user.uid, businessProfile))
-        .then(() => ensureDrinkCategoriesSplit(user.uid, businessProfile)),
-      ensureStarterAssets(user.uid, businessProfile),
-      ensureSystemServiceProduct(user.uid),
+      ensureStarterProducts(dataUid, businessProfile)
+        .then(() => ensureTobaccoImage(dataUid, businessProfile))
+        .then(() => ensurePlaystationPricing(dataUid, businessProfile))
+        .then(() => ensureDrinkCategoriesSplit(dataUid, businessProfile)),
+      ensureStarterAssets(dataUid, businessProfile),
+      ensureSystemServiceProduct(dataUid),
     ]).catch((error) => {
       starterSeededRef.current = false;
       console.error('Error adding starter products:', error);
     });
-  }, [user, businessProfile, userRole]);
+  }, [dataUid, user, businessProfile, userRole]);
 
   useEffect(() => {
-    if (!user?.uid) return;
-    ensureSystemServiceProduct(user.uid).catch((e) =>
+    if (!dataUid) return;
+    ensureSystemServiceProduct(dataUid).catch((e) =>
       console.error('System service product seed failed:', e)
     );
-  }, [user?.uid]);
+  }, [dataUid]);
 
   useEffect(() => {
-    if (!user?.uid || currentView !== 'pos') return;
-    ensureSystemServiceProduct(user.uid).catch((e) =>
+    if (!dataUid || currentView !== 'pos') return;
+    ensureSystemServiceProduct(dataUid).catch((e) =>
       console.error('System service product (POS) failed:', e)
     );
-  }, [user?.uid, currentView]);
+  }, [dataUid, currentView]);
 
-  // Load customers
+  // Customers — paginated CACHE_FIRST (no full-collection realtime listener)
   useEffect(() => {
-    if (!user || !needsCustomersListener(currentView)) return undefined;
-    const q = query(collection(db, 'users', user.uid, 'customers'), orderBy('name', 'asc'));
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        setCustomers(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
-      },
-      (error) => console.error('Error loading customers:', error)
-    );
-    return () => unsubscribe();
-  }, [user, currentView]);
+    if (!dataUid || !customersDirectoryActive) return undefined;
+    let cancelled = false;
+    const local = getCustomersLocal(dataUid);
+    if (local.length) setCustomers(local);
+    setCustomersHasMore(customersDirectoryHasMore(dataUid));
+    loadCustomersPage(dataUid, { pageSize: 25 })
+      .then((r) => {
+        if (cancelled) return;
+        setCustomers(r.items);
+        setCustomersHasMore(r.hasMore);
+      })
+      .catch((e) => console.error('Error loading customers:', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [dataUid, customersDirectoryActive]);
+
+  useEffect(() => {
+    if (!dataUid || !customerDebtSummaryActive) return undefined;
+    let cancelled = false;
+    loadCustomersWithPositiveBalance(dataUid)
+      .then((summary) => {
+        if (!cancelled) setCustomerDebtSummary({ total: summary.total, count: summary.count });
+      })
+      .catch((e) => console.error('Customer debt summary:', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [dataUid, customerDebtSummaryActive]);
+
+  useEffect(() => {
+    if (!dashboardMetricsActive) return undefined;
+    let cancelled = false;
+    loadDashboardWeekSummaries(dataUid, { max: 14 })
+      .then((rows) => {
+        if (!cancelled) setDashboardWeekSummaries(rows);
+      })
+      .catch((e) => console.error('Dashboard summaries:', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [dataUid, dashboardMetricsActive]);
+
+  useEffect(() => {
+    if (!dashboardMetricsActive || !dataUid) {
+      setDashboardTodayMetrics(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setDashboardTodayMetricsLoading(true);
+    loadDashboardTodayMetrics(dataUid)
+      .then((payload) => {
+        if (!cancelled) setDashboardTodayMetrics(payload);
+      })
+      .catch((e) => console.error('Dashboard today metrics:', e))
+      .finally(() => {
+        if (!cancelled) setDashboardTodayMetricsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dataUid, dashboardMetricsActive, orders.length]);
+
+  useEffect(() => {
+    if (!tradersSnapshotActive) return undefined;
+    let cancelled = false;
+    fetchTradersPurchaseTotalSnapshot(dataUid)
+      .then((snap) => {
+        if (cancelled) return;
+        const row = typeof snap === 'number' ? { total: snap, isPartial: false } : snap;
+        setTradersPurchaseTotal(row?.total ?? 0);
+        setTradersPurchasePartial(Boolean(row?.isPartial));
+      })
+      .catch((e) => console.error('Traders purchase snapshot:', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [dataUid, tradersSnapshotActive]);
 
   // Open bills (parked tabs — not orders)
   useEffect(() => {
     if (!user) return;
     if (!['pos', 'customers'].includes(currentView)) return;
     const unsubscribe = onSnapshot(
-      query(collection(db, 'users', user.uid, 'openBills'), orderBy('updatedAtMs', 'desc'), limit(50)),
+      query(collection(db, 'users', dataUid, 'openBills'), orderBy('updatedAtMs', 'desc'), limit(50)),
       (snapshot) => setOpenBills(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading open bills:', error)
     );
     return () => unsubscribe();
-  }, [user, currentView]);
+  }, [dataUid, user, currentView]);
 
   // Cash shifts (خفيف) + حركات الصندوق فقط على شاشة الكاش
   useEffect(() => {
-    if (!user) return;
-    const needsCash =
-      userRole === 'employee'
-        ? ['pos', 'cash', 'expenses'].includes(currentView)
-        : ['pos', 'cash', 'dashboard', 'employees'].includes(currentView);
-    if (!needsCash) return;
+    if (!dataUid || !cashShiftsListenerActive) return undefined;
 
     const unsubShifts = onSnapshot(
-      query(collection(db, 'users', user.uid, 'cashShifts'), orderBy('openedAtMs', 'desc'), limit(30)),
+      query(collection(db, 'users', dataUid, 'cashShifts'), orderBy('openedAtMs', 'desc'), limit(30)),
       (snapshot) => setCashShifts(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading cash shifts:', error)
     );
     return () => unsubShifts();
-  }, [user, userRole, currentView]);
+  }, [dataUid, cashShiftsListenerActive]);
 
   useEffect(() => {
     if (!user || currentView !== 'cash') return;
     const unsubMovements = onSnapshot(
-      query(collection(db, 'users', user.uid, 'cashMovements'), orderBy('createdAtMs', 'desc'), limit(200)),
+      query(collection(db, 'users', dataUid, 'cashMovements'), orderBy('createdAtMs', 'desc'), limit(200)),
       (snapshot) => setCashMovements(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading cash movements:', error)
     );
     return () => unsubMovements();
-  }, [user, currentView]);
+  }, [dataUid, user, currentView]);
 
   useEffect(() => {
-    if (!user) return;
-    const adminVaultViews = ['vault', 'purchases', 'dashboard', 'expenses', 'traders'];
-    const employeeVaultViews = ['expenses', 'purchases', 'traders'];
-    const needsVault =
-      userRole === 'admin'
-        ? adminVaultViews.includes(currentView)
-        : employeeVaultViews.includes(currentView);
-    if (!needsVault) return;
+    if (!dataUid || !vaultListenerActive) return undefined;
     const unsubVault = onSnapshot(
-      vaultDocRef(user.uid),
+      vaultDocRef(dataUid),
       (snap) => setVaultSummary(snap.exists() ? { id: snap.id, ...snap.data() } : { balance: 0, totalCapitalIn: 0 }),
       (error) => console.error('Error loading vault:', error)
     );
     return () => unsubVault();
-  }, [user, userRole, currentView]);
+  }, [dataUid, vaultListenerActive]);
 
   useEffect(() => {
     if (!user || userRole !== 'admin' || currentView !== 'vault') return;
     const unsubVaultMoves = onSnapshot(
-      query(collection(db, 'users', user.uid, 'vaultMovements'), orderBy('createdAtMs', 'desc'), limit(200)),
+      query(collection(db, 'users', dataUid, 'vaultMovements'), orderBy('createdAtMs', 'desc'), limit(200)),
       (snapshot) => setVaultMovements(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (error) => console.error('Error loading vault movements:', error)
     );
     return () => unsubVaultMoves();
-  }, [user, userRole, currentView]);
+  }, [dataUid, user, userRole, currentView]);
 
   useEffect(() => {
     if (currentView !== 'vault') {
       setVaultPinUnlocked(false);
     }
   }, [currentView]);
-
-  const startRoleSession = (role) => {
-    saveSessionRole(role);
-    setUserRole(role);
-    setCurrentView(role === 'employee' ? 'pos' : 'dashboard');
-    setAdminPassword('');
-    setShowPassword(false);
-  };
 
   const handleAdminLogin = async (e) => {
     e.preventDefault();
@@ -958,15 +1224,8 @@ const AppCore = () => {
     setUploadProgress(true);
     try {
       await signInWithAdminPassword(auth, password);
-      try {
-        const session = await callRefreshAdminSession();
-        if (session?.customToken) {
-          await signInWithCustomToken(auth, session.customToken);
-        }
-      } catch {
-        /* Cloud Functions غير منشورة — legacy JWT */
-      }
-      startRoleSession('admin');
+      setAdminPassword('');
+      setShowPassword(false);
     } catch (error) {
       alert(mapFirebaseAuthError(error));
     } finally {
@@ -978,41 +1237,59 @@ const AppCore = () => {
     e.preventDefault();
     const password = normalizeLoginPassword(adminPassword);
     if (!password) return;
-    if (process.env.REACT_APP_VERIFY_EMPLOYEE_PIN_ON_SERVER === 'true' && process.env.REACT_APP_CLOUD_FUNCTIONS_READY === 'true') {
-      setUploadProgress(true);
-      try {
-        const pinResult = await callVerifyEmployeePin(password);
-        if (pinResult?.customToken) {
-          await signInWithCustomToken(auth, pinResult.customToken);
-        }
-      } catch (pinErr) {
-        if (isCloudCallableUnavailableError(pinErr)) {
-          if (password !== getEmployeeLoginPassword()) {
-            alert('كلمة مرور الموظف غير صحيحة');
-            return;
-          }
-        } else {
-          alert('كلمة مرور الموظف غير صحيحة');
-          return;
-        }
-      } finally {
-        setUploadProgress(false);
-      }
-    } else if (password !== getEmployeeLoginPassword()) {
-      alert('كلمة مرور الموظف غير صحيحة');
-      return;
+    setUploadProgress(true);
+    try {
+      await signInWithCashierPassword(auth, password);
+      setAdminPassword('');
+      setShowPassword(false);
+    } catch (error) {
+      alert(mapFirebaseAuthError(error));
+    } finally {
+      setUploadProgress(false);
     }
-    if (!user) {
-      alert('هذا الجهاز غير مربوط بعد. ادخل من تبويب «مدير» مرة واحدة، ثم اخرج، وبعدها يقدر الموظف يدخل.');
-      return;
-    }
-    startRoleSession('employee');
   };
 
-  const handleLogout = () => {
+  const handleCashierJoinSubmit = async (e) => {
+    e.preventDefault();
+    if (!user?.uid || !joinTenantCode || !joinInviteCode) return;
+    setUploadProgress(true);
+    try {
+      await submitCashierJoinRequest(joinTenantCode.trim(), user.uid, {
+        inviteCode: joinInviteCode,
+        email: user.email || '',
+      });
+      alert('تم إرسال طلب الانضمام — انتظر موافقة المدير.');
+    } catch (err) {
+      alert(err?.message || 'تعذّر إرسال الطلب');
+    } finally {
+      setUploadProgress(false);
+    }
+  };
+
+  const handleApproveJoinRequest = async (cashierAuthUid) => {
+    if (!dataUid || !user?.uid || userRole !== 'admin') return;
+    try {
+      await approveCashierJoinRequest(dataUid, cashierAuthUid, user.uid);
+      const rows = await listPendingJoinRequests(dataUid);
+      setPendingJoinRequests(rows);
+      alert('تم تفعيل حساب الكاشير');
+    } catch (err) {
+      alert(err?.message || 'تعذّر الموافقة');
+    }
+  };
+
+  const handleLogout = async () => {
     saveSessionRole(null);
+    setTenantId(null);
     setUserRole(null);
+    setNeedsCashierJoin(false);
+    clearFirestoreClientSessionState();
     setLoginType('employee');
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   const handleDisconnectDevice = async () => {
@@ -1039,7 +1316,7 @@ const AppCore = () => {
         updatedAt: serverTimestamp(),
       };
       
-      await setDoc(doc(db, 'users', user.uid), profileData, { merge: true });
+      await setDoc(doc(db, 'users', dataUid), profileData, { merge: true });
       setBusinessProfile(prev => ({ ...prev, ...profileData }));
       setShowProfileSetup(false);
       setShowAccountModal(false);
@@ -1064,7 +1341,7 @@ const AppCore = () => {
     try {
       const openShift = cashShifts.find((s) => s.status === 'open');
       const result = await executeSupplierPayment(
-        user.uid,
+        dataUid,
         {
           ...payload,
           suppliers,
@@ -1089,24 +1366,46 @@ const AppCore = () => {
     }
   };
 
-  const handleReconcileSupplier = useCallback(
+  const handlePreviewSupplierReconciliation = useCallback(
     async (supplierId) => {
-      if (!user?.uid || !supplierId) return;
+      if (!dataUid || !supplierId) return null;
       try {
-        await reconcileSupplierBalance(user.uid, supplierId, expenses);
+        return await previewSupplierReconciliation(dataUid, supplierId);
       } catch (e) {
-        console.error('Supplier balance reconcile failed:', e);
+        console.error('Supplier reconciliation preview failed:', e);
+        return null;
       }
     },
-    [user?.uid, expenses]
+    [dataUid]
+  );
+
+  const handleApplySupplierBalanceCorrection = useCallback(
+    async (supplierId, { balance, reason, actorLabel = 'admin' }) => {
+      if (!dataUid || !supplierId || userRole !== 'admin') return null;
+      try {
+        const result = await applySupplierBalanceCorrection(dataUid, supplierId, {
+          balance,
+          actorLabel,
+          reason,
+        });
+        invalidateSupplierExpensePages(dataUid, supplierId);
+        upsertSupplierLocal(dataUid, { id: supplierId, balance: result.balance });
+        setSuppliers(getSuppliersLocal(dataUid));
+        return result;
+      } catch (e) {
+        alert(e?.message || 'تعذّر تطبيق تصحيح الرصيد');
+        return null;
+      }
+    },
+    [dataUid, userRole]
   );
 
   const handleCancelEmployeeBenefit = async (benefitId, reason) => {
-    if (!user?.uid || uploadProgress) return;
+    if (!dataUid || uploadProgress) return;
     setUploadProgress(true);
     try {
       const result = await gatewayCancelEmployeeBenefit(
-        user.uid,
+        dataUid,
         benefitId,
         { actor: sessionActor(), reason },
         businessProfile
@@ -1188,7 +1487,7 @@ const AppCore = () => {
       employeeBenefitIdemRef.current = idem;
       try {
         const result = await gatewayExecuteEmployeeBenefit(
-          user.uid,
+          dataUid,
           {
             staffMember,
             benefitType: normalizeBenefitType(expenseForm.benefitType),
@@ -1244,7 +1543,7 @@ const AppCore = () => {
             ? paymentSourceToLegacyMethod(resolvePaymentSourceFromForm(expenseForm))
             : expenseForm.paymentMethod;
         const result = await executeSupplierPayment(
-          user.uid,
+          dataUid,
           {
             amount: expenseForm.amount,
             supplierId: expenseForm.supplierId,
@@ -1268,6 +1567,10 @@ const AppCore = () => {
         setShowExpenseModal(false);
         setExpenseForm(defaultExpenseForm('operating'));
         setExpenseReceiptFile(null);
+        invalidateAfterExpenseMutation(dataUid, {
+          supplierId: expenseForm.supplierId,
+          section: 'supplier_payment',
+        });
       } catch (error) {
         alert(error.message || 'تعذّر حفظ الدفعة');
       } finally {
@@ -1319,7 +1622,7 @@ const AppCore = () => {
         const note = String(expenseForm.notes || expenseForm.description || '').trim();
         if (expenseForm.category === 'Advance') {
           const result = await gatewayRecordEmployeeAdvance(
-            user.uid,
+            dataUid,
             {
               staffMemberId: staffMember.id,
               staffName: staffMember.name,
@@ -1340,7 +1643,7 @@ const AppCore = () => {
           let accrualId = expenseForm.payrollAccrualId;
           if (accrualId === PAYROLL_NEW_ACCRUAL_OPTION) {
             accrualId = await gatewayCreatePayrollAccrual(
-              user.uid,
+              dataUid,
               {
                 staffMemberId: staffMember.id,
                 staffName: staffMember.name,
@@ -1355,7 +1658,7 @@ const AppCore = () => {
             return;
           }
           await gatewayRecordPayrollPayment(
-            user.uid,
+            dataUid,
             {
               accrualId,
               amount: payAmount,
@@ -1417,12 +1720,12 @@ const AppCore = () => {
         linkedProductName: linkedProduct ? linkedProduct.name : '',
         quantityBought,
         receiptUrl,
-        userId: user.uid,
+        userId: dataUid,
         updatedAt: serverTimestamp()
       };
 
       if (editingExpenseId) {
-        await updateDoc(doc(db, 'users', user.uid, 'expenses', editingExpenseId), expenseData);
+        await updateDoc(doc(db, 'users', dataUid, 'expenses', editingExpenseId), expenseData);
       } else if (section === 'purchase') {
         const pm = normalizePurchasePaymentMethod(expenseForm.paymentMethod);
         if (pm === PURCHASE_PAYMENT_CASH || pm === PURCHASE_PAYMENT_VAULT) {
@@ -1432,7 +1735,7 @@ const AppCore = () => {
         const supplier = suppliers.find((s) => s.id === expenseForm.supplierId);
         const openShift = cashShifts.find((s) => s.status === 'open');
         const result = await executePurchase(
-          user.uid,
+          dataUid,
           {
             amount: expenseData.amount,
             date: expenseForm.date,
@@ -1465,7 +1768,7 @@ const AppCore = () => {
         operatingExpenseIdemRef.current = idem;
         try {
           await executeOperatingExpense(
-            user.uid,
+            dataUid,
             {
               amount: expenseData.amount,
               date: expenseForm.date,
@@ -1486,6 +1789,10 @@ const AppCore = () => {
       setExpenseForm(defaultExpenseForm(currentView === 'purchases' ? 'purchase' : 'operating'));
       setExpenseReceiptFile(null);
       setEditingExpenseId(null);
+      invalidateAfterExpenseMutation(dataUid, {
+        supplierId: section === 'purchase' ? expenseForm.supplierId : expenseForm.supplierId || null,
+        section,
+      });
     } catch (error) {
       alert(error.message);
     } finally {
@@ -1550,7 +1857,7 @@ const AppCore = () => {
     }
     if (window.confirm(message)) {
       try {
-        const expenseRef = doc(db, 'users', user.uid, 'expenses', expenseId);
+        const expenseRef = doc(db, 'users', dataUid, 'expenses', expenseId);
         const needsOperatingReverse =
           resolveExpenseSection(expense) === 'operating' &&
           !isEmployeeBenefitExpense(expense) &&
@@ -1563,13 +1870,13 @@ const AppCore = () => {
             let productRef = null;
             let productDoc = null;
             if (reversesStock) {
-              productRef = doc(db, 'users', user.uid, 'products', expense.linkedProductId);
+              productRef = doc(db, 'users', dataUid, 'products', expense.linkedProductId);
               productDoc = await transaction.get(productRef);
             }
             let supplierDocRef = null;
             let sSnap = null;
             if (expense.supplierId && (isSupplierPay || isPurchase)) {
-              supplierDocRef = doc(db, 'users', user.uid, 'suppliers', expense.supplierId);
+              supplierDocRef = doc(db, 'users', dataUid, 'suppliers', expense.supplierId);
               sSnap = await transaction.get(supplierDocRef);
             }
 
@@ -1580,7 +1887,7 @@ const AppCore = () => {
             }
             if (isPurchase) {
               const openShift = cashShifts.find((s) => s.status === 'open');
-              await reversePurchaseEffectsInTransaction(transaction, user.uid, expense, {
+              await reversePurchaseEffectsInTransaction(transaction, dataUid, expense, {
                 actor: sessionActor(),
                 supplierDocRef,
                 supplierSnap: sSnap,
@@ -1593,7 +1900,7 @@ const AppCore = () => {
                 updatedAt: serverTimestamp(),
               });
               const openShift = cashShifts.find((s) => s.status === 'open');
-              await reverseSupplierPaymentInTransaction(transaction, user.uid, expense, {
+              await reverseSupplierPaymentInTransaction(transaction, dataUid, expense, {
                 actor: sessionActor(),
                 shiftId: openShift?.id || null,
               });
@@ -1618,7 +1925,7 @@ const AppCore = () => {
             if (!snap.exists()) return;
             const row = { id: expenseId, ...snap.data() };
             const openShift = cashShifts.find((s) => s.status === 'open');
-            await reverseOperatingExpenseInTransaction(transaction, user.uid, row, {
+            await reverseOperatingExpenseInTransaction(transaction, dataUid, row, {
               actor: sessionActor(),
               shiftId: row.shiftId || openShift?.id || null,
             });
@@ -1642,12 +1949,14 @@ const AppCore = () => {
     }
     setUploadProgress(true);
     try {
-      await addDoc(collection(db, 'users', user.uid, 'suppliers'), {
+      const supplierRef = await addDoc(collection(db, 'users', dataUid, 'suppliers'), {
         ...supplierForm,
         balance: 0,
-        userId: user.uid,
-        createdAt: serverTimestamp()
+        userId: dataUid,
+        createdAt: serverTimestamp(),
       });
+      upsertSupplierLocal(dataUid, { id: supplierRef.id, ...supplierForm, balance: 0 });
+      setSuppliers(getSuppliersLocal(dataUid));
       setShowSupplierModal(false);
       setSupplierForm({ name: '', contactPerson: '', phone: '', email: '', address: '' });
     } catch (error) {
@@ -1661,22 +1970,24 @@ const AppCore = () => {
     if (!canManageMerchantProfiles(userRole)) {
       throw new Error('لا تملك صلاحية تعديل ملفات التجار.');
     }
-    await updateSupplierProfile(user.uid, supplierId, patch, { actor: sessionActor() });
+    await updateSupplierProfile(dataUid, supplierId, patch, { actor: sessionActor() });
   };
 
   const handleRemoveSupplierProfile = async (supplier) => {
     if (!canManageMerchantProfiles(userRole)) {
       throw new Error('لا تملك صلاحية حذف ملفات التجار.');
     }
-    return removeSupplierProfile(user.uid, supplier, expenses, { actor: sessionActor() });
+    return removeSupplierProfile(dataUid, supplier, expenses, { actor: sessionActor() });
   };
 
   const activeSuppliers = useMemo(() => listActiveSuppliers(suppliers), [suppliers]);
 
-  const totalOutstandingSupplierPayable = useMemo(
-    () => computeTotalOutstandingSupplierPayable(activeSuppliers, expenses),
-    [activeSuppliers, expenses]
-  );
+  const totalOutstandingSupplierPayable = useMemo(() => {
+    if (currentView === 'traders' || expenses.length === 0) {
+      return computeTotalOutstandingFromStoredBalances(activeSuppliers);
+    }
+    return computeTotalOutstandingSupplierPayable(activeSuppliers, expenses);
+  }, [activeSuppliers, expenses, currentView]);
 
   const handleSaveSettings = async (e) => {
     e.preventDefault();
@@ -1699,7 +2010,7 @@ const AppCore = () => {
     }
     setUploadProgress(true);
     try {
-      await updateDoc(doc(db, 'users', user.uid), {
+      await updateDoc(doc(db, 'users', dataUid), {
         tax: 0,
         serviceCharge: 0,
         receiptHeader: appSettings.receiptHeader,
@@ -1884,7 +2195,7 @@ const AppCore = () => {
         image: imageUrl,
         addOns: productForm.addOns || [],
         ingredients: productIngredients || [], // Recipe ingredients
-        userId: user.uid,
+        userId: dataUid,
         updatedAt: serverTimestamp()
       };
       if (type === 'weight') {
@@ -1916,10 +2227,12 @@ const AppCore = () => {
       }
 
       if (editingProductId) {
-        await updateDoc(doc(db, 'users', user.uid, 'products', editingProductId), productData);
+        await updateDoc(doc(db, 'users', dataUid, 'products', editingProductId), productData);
+        patchProductInCatalog(dataUid, editingProductId, productData);
       } else {
         productData.createdAt = serverTimestamp();
-        const newRef = await addDoc(collection(db, 'users', user.uid, 'products'), productData);
+        const newRef = await addDoc(collection(db, 'users', dataUid, 'products'), productData);
+        patchProductInCatalog(dataUid, newRef.id, { ...productData, id: newRef.id });
         if (productModalFromPurchase && type !== 'time') {
           setExpenseForm((prev) => ({ ...prev, linkedProductId: newRef.id, quantityBought: '' }));
         }
@@ -1966,7 +2279,8 @@ const AppCore = () => {
   const handleDeleteProduct = async (productId) => {
     if (window.confirm('هل تريد حذف هذا الصنف؟')) {
       try {
-        await deleteDoc(doc(db, 'users', user.uid, 'products', productId));
+        await deleteDoc(doc(db, 'users', dataUid, 'products', productId));
+        removeProductFromCatalog(dataUid, productId);
       } catch (error) {
         console.error("Error deleting product:", error);
         alert("تعذّر حذف الصنف");
@@ -1988,7 +2302,7 @@ const AppCore = () => {
     }
     setLoading(true);
     try {
-      await deleteDoc(doc(db, 'users', user.uid, 'orders', orderId));
+      await deleteDoc(doc(db, 'users', dataUid, 'orders', orderId));
       alert('تم حذف الطلب. لم يُسترجَع المخزون تلقائياً.');
     } catch (error) {
       console.error('Error deleting order:', error);
@@ -1999,12 +2313,12 @@ const AppCore = () => {
   };
 
   const handleLoadMoreReportsOrders = async () => {
-    if (!user?.uid || ordersLoadMoreBusy || !ordersHasMore || currentView !== 'reports') return;
+    if (!dataUid || ordersLoadMoreBusy || !ordersHasMore || currentView !== 'reports') return;
     const last = orders[orders.length - 1];
     if (!last?.timestamp) return;
     setOrdersLoadMoreBusy(true);
     try {
-      const col = collection(db, 'users', user.uid, 'orders');
+      const col = collection(db, 'users', dataUid, 'orders');
       const q = query(col, orderBy('timestamp', 'desc'), startAfter(last.timestamp), limit(ORDERS_REPORTS_LIMIT));
       const snap = await getDocs(q);
       const more = mapOrderSnapshot(snap);
@@ -2026,12 +2340,12 @@ const AppCore = () => {
   };
 
   const handleLoadMoreOrders = async () => {
-    if (!user?.uid || ordersLoadMoreBusy || !ordersHasMore) return;
+    if (!dataUid || ordersLoadMoreBusy || !ordersHasMore) return;
     const last = orders[orders.length - 1];
     if (!last?.timestamp) return;
     setOrdersLoadMoreBusy(true);
     try {
-      const col = collection(db, 'users', user.uid, 'orders');
+      const col = collection(db, 'users', dataUid, 'orders');
       const q = query(col, orderBy('timestamp', 'desc'), startAfter(last.timestamp), limit(ORDERS_PAGE_SIZE));
       const snap = await getDocs(q);
       const more = mapOrderSnapshot(snap);
@@ -2057,11 +2371,11 @@ const AppCore = () => {
     
     setLoading(true);
     try {
-      const q = query(collection(db, 'users', user.uid, 'orders'), orderBy('timestamp', 'asc'));
+      const q = query(collection(db, 'users', dataUid, 'orders'), orderBy('timestamp', 'asc'));
       const snapshot = await getDocs(q);
       
       if (snapshot.empty) {
-        await setDoc(doc(db, 'users', user.uid, 'counters', 'orders'), { count: 0 }, { merge: true });
+        await setDoc(doc(db, 'users', dataUid, 'counters', 'orders'), { count: 0 }, { merge: true });
         setLoading(false);
         alert("لا توجد طلبات لإعادة ترقيمها.");
         return;
@@ -2084,7 +2398,7 @@ const AppCore = () => {
           newCount++;
           const expectedNumber = String(newCount).padStart(4, '0');
           if (docSnapshot.data().orderNumber !== expectedNumber) {
-            batch.update(doc(db, 'users', user.uid, 'orders', docSnapshot.id), {
+            batch.update(doc(db, 'users', dataUid, 'orders', docSnapshot.id), {
               orderNumber: expectedNumber
             });
             hasUpdates = true;
@@ -2094,7 +2408,7 @@ const AppCore = () => {
         if (hasUpdates) await batch.commit();
       }
       
-      await setDoc(doc(db, 'users', user.uid, 'counters', 'orders'), { count: newCount }, { merge: true });
+      await setDoc(doc(db, 'users', dataUid, 'counters', 'orders'), { count: newCount }, { merge: true });
       alert(`تم إعادة ترقيم ${newCount} طلباً بنجاح.`);
     } catch (error) {
       console.error("Error re-indexing:", error);
@@ -2168,7 +2482,7 @@ const AppCore = () => {
         );
       const wasUpdate = !!activeOpenBillId || !!existingForCustomer;
       await gatewaySuspendOpenBill(
-        user.uid,
+        dataUid,
         {
           billId: activeOpenBillId || null,
           knownOpenBillId: existingForCustomer?.id || null,
@@ -2207,7 +2521,7 @@ const AppCore = () => {
     if (!user || !activeOpenBillId || openBillBusy) return;
     setOpenBillBusy(true);
     try {
-      await gatewayCancelOpenBill(user.uid, activeOpenBillId, { actor: sessionActor() }, businessProfile);
+      await gatewayCancelOpenBill(dataUid, activeOpenBillId, { actor: sessionActor() }, businessProfile);
       clearPosCart();
       setShowCancelOpenBillConfirm(false);
       setIsMobileCartOpen(false);
@@ -2278,7 +2592,7 @@ const AppCore = () => {
           }
         }
         await runTransaction(db, async (transaction) => {
-          const orderRef = doc(db, 'users', user.uid, 'orders', orderId);
+          const orderRef = doc(db, 'users', dataUid, 'orders', orderId);
           const orderDoc = await transaction.get(orderRef);
           if (!orderDoc.exists()) throw new Error("Order not found");
           
@@ -2296,7 +2610,7 @@ const AppCore = () => {
           const productUpdates = [];
           for (const [productId, units] of Object.entries(restoreByProduct)) {
             const productRef = assertFirestoreDocRef(
-              doc(db, 'users', user.uid, 'products', productId),
+              doc(db, 'users', dataUid, 'products', productId),
               `معرّف صنف غير صالح في الطلب #${orderData.orderNumber || '—'}`
             );
             const productDoc = await transaction.get(productRef);
@@ -2310,7 +2624,7 @@ const AppCore = () => {
           let customerDoc = null;
           const cancelCustomerId = normalizeDocId(orderData.customerId);
           if (reversedDebt > 0 && cancelCustomerId) {
-            const cRef = doc(db, 'users', user.uid, 'customers', cancelCustomerId);
+            const cRef = doc(db, 'users', dataUid, 'customers', cancelCustomerId);
             const cSnap = await transaction.get(cRef);
             if (cSnap.exists()) customerDoc = { ref: cRef, data: cSnap.data() };
           }
@@ -2319,7 +2633,7 @@ const AppCore = () => {
           let cashShiftCtx = null;
           if (cashToReverse > 0 && orderData.status !== 'cancelled') {
             const openShiftIdForTx = cashShifts.find((s) => s.status === 'open')?.id || null;
-            cashShiftCtx = await readOpenCashShiftInTransaction(transaction, user.uid, openShiftIdForTx);
+            cashShiftCtx = await readOpenCashShiftInTransaction(transaction, dataUid, openShiftIdForTx);
           }
 
           if (customerDoc) {
@@ -2334,7 +2648,7 @@ const AppCore = () => {
             Number(orderData.employeeDebtAmount) ||
             (orderData.employeeSaleStaffId && reversedDebt > 0 && !cancelCustomerId ? reversedDebt : 0);
           if (orderData.employeeSaleStaffId && empDebt > 0) {
-            await cancelEmployeePosDebtForOrderInTransaction(transaction, user.uid, orderId, {
+            await cancelEmployeePosDebtForOrderInTransaction(transaction, dataUid, orderId, {
               actor: sessionActor(),
               reason: 'إلغاء طلب — نقطة البيع',
             });
@@ -2349,7 +2663,7 @@ const AppCore = () => {
             if (!sessionId) continue;
             transaction.update(
               assertFirestoreDocRef(
-                playstationSessionRef(user.uid, sessionId),
+                playstationSessionRef(dataUid, sessionId),
                 'جلسة البلايستيشن غير صالحة في الطلب'
               ),
               { billed: false, orderId: null, orderNumber: null }
@@ -2357,7 +2671,7 @@ const AppCore = () => {
           }
 
           if (cashShiftCtx) {
-            await recordCashRefundInTransaction(transaction, user.uid, {
+            await recordCashRefundInTransaction(transaction, dataUid, {
               amount: cashToReverse,
               orderId,
               orderNumber: orderData.orderNumber,
@@ -2382,10 +2696,10 @@ const AppCore = () => {
   };
 
   const handlePartialReturnSubmit = async (payload) => {
-    if (!user?.uid) throw new Error('يجب تسجيل الدخول');
+    if (!dataUid) throw new Error('يجب تسجيل الدخول');
     const idem = newIdempotencyKey('ord_ret');
     const result = await gatewayPartialOrderReturn(
-      user.uid,
+      dataUid,
       {
         ...payload,
         shiftId: cashShifts.find((s) => s.status === 'open')?.id || null,
@@ -2409,12 +2723,12 @@ const AppCore = () => {
       return;
     }
     if (type === 'service') {
-      if (!user?.uid) return;
-      ensureSystemServiceProduct(user.uid)
+      if (!dataUid) return;
+      ensureSystemServiceProduct(dataUid)
         .then(async () => {
           const live =
             products.find((p) => isSystemServiceProduct(p)) ||
-            buildSystemServiceProduct(user.uid);
+            buildSystemServiceProduct(dataUid);
           setServiceEntryProduct({ ...live, productType: 'service' });
         })
         .catch((err) => {
@@ -2585,7 +2899,7 @@ const AppCore = () => {
 
   const handleStartPlaystation = (station, product) =>
     runPlaystationAction(() =>
-      startPlaystationSession(user.uid, {
+      startPlaystationSession(dataUid, {
         station,
         product,
         customerId: currentOrder.customerId || null,
@@ -2596,7 +2910,7 @@ const AppCore = () => {
 
   const handleEndPlaystation = (session) =>
     runPlaystationAction(async () => {
-      const ended = await endPlaystationSession(user.uid, session.id, {
+      const ended = await endPlaystationSession(dataUid, session.id, {
         electricityCostPerHour: playstationSettings.electricityCostPerHour,
         actor: sessionActor(),
       });
@@ -2627,7 +2941,7 @@ const AppCore = () => {
     runAssetAction(async () => {
       const saleProduct = hookahSaleProducts.find((p) => p.id === productId);
       if (!saleProduct) throw new Error('اختر صنف الأرجيلة لإضافته للطلب');
-      const movementId = await checkoutExternalAsset(user.uid, {
+      const movementId = await checkoutExternalAsset(dataUid, {
         assetId,
         person,
         customerId: currentOrder.customerId || null,
@@ -2645,14 +2959,14 @@ const AppCore = () => {
 
   const handleReturnAsset = (movement) => {
     if (!window.confirm(`تأكيد إرجاع «${movement.assetName}» من ${movement.person}؟`)) return;
-    runAssetAction(() => returnExternalAsset(user.uid, movement.id, { actor: sessionActor() }));
+    runAssetAction(() => returnExternalAsset(dataUid, movement.id, { actor: sessionActor() }));
   };
 
-  const handleAddAsset = (name) => runAssetAction(() => createExternalAsset(user.uid, { name }));
+  const handleAddAsset = (name) => runAssetAction(() => createExternalAsset(dataUid, { name }));
 
   const handleCancelPlaystation = (session) => {
     if (!window.confirm(`إلغاء جلسة «${session.stationName}»؟ لن تُحتسب في الإيراد.`)) return;
-    runPlaystationAction(() => cancelPlaystationSession(user.uid, session.id, { actor: sessionActor() }));
+    runPlaystationAction(() => cancelPlaystationSession(dataUid, session.id, { actor: sessionActor() }));
   };
 
   const updateQuantity = (cartItemId, delta) => {
@@ -2725,11 +3039,15 @@ const AppCore = () => {
           return null;
         }
         const existing = customers.find((c) => c.id === editingId);
-        await updateDoc(doc(db, 'users', user.uid, 'customers', editingId), {
+        const nextRow = {
           ...payload,
+          id: editingId,
           balance: existing?.balance ?? 0,
           transactions: existing?.transactions ?? [],
-        });
+        };
+        await updateDoc(doc(db, 'users', dataUid, 'customers', editingId), nextRow);
+        upsertCustomerLocal(dataUid, nextRow);
+        setCustomers(getCustomersLocal(dataUid));
         return editingId;
       }
       const dup = findDuplicateCustomer(customers, { ...formData, name });
@@ -2751,12 +3069,14 @@ const AppCore = () => {
         transactions.push(entry);
         balance = openingDebt;
       }
-      const ref = await addDoc(collection(db, 'users', user.uid, 'customers'), {
+      const ref = await addDoc(collection(db, 'users', dataUid, 'customers'), {
         ...payload,
         balance,
         transactions,
         createdAt: serverTimestamp(),
       });
+      upsertCustomerLocal(dataUid, { id: ref.id, ...payload, balance, transactions });
+      setCustomers(getCustomersLocal(dataUid));
       return ref.id;
     } catch (error) {
       alert(error.message);
@@ -2784,7 +3104,7 @@ const AppCore = () => {
     };
     const transactions = [...(existing.transactions || []), entry].slice(-100);
     try {
-      await updateDoc(doc(db, 'users', user.uid, 'customers', customerId), {
+      await updateDoc(doc(db, 'users', dataUid, 'customers', customerId), {
         balance: (existing.balance || 0) + parsed,
         transactions,
         updatedAt: serverTimestamp(),
@@ -2798,7 +3118,7 @@ const AppCore = () => {
     const list = Array.isArray(transactions) ? transactions.slice(-100) : [];
     const balance = computeBalanceFromTransactions(list);
     try {
-      await updateDoc(doc(db, 'users', user.uid, 'customers', customerId), {
+      await updateDoc(doc(db, 'users', dataUid, 'customers', customerId), {
         transactions: list,
         balance,
         updatedAt: serverTimestamp(),
@@ -2828,7 +3148,7 @@ const AppCore = () => {
     const transactions = [...(existing.transactions || []), entry].slice(-100);
     const newBalance = Math.round(((Number(existing.balance) || 0) - parsed) * 100) / 100;
     try {
-      await updateDoc(doc(db, 'users', user.uid, 'customers', customerId), {
+      await updateDoc(doc(db, 'users', dataUid, 'customers', customerId), {
         balance: newBalance,
         transactions,
         updatedAt: serverTimestamp(),
@@ -2836,7 +3156,7 @@ const AppCore = () => {
       const openShift = cashShifts.find((s) => s.status === 'open');
       if (openShift) {
         try {
-          await recordCashDeposit(user.uid, {
+          await recordCashDeposit(dataUid, {
             shiftId: openShift.id,
             amount: parsed,
             reason: `دفعة عميل — ${existing.name || 'عميل'}`,
@@ -2854,7 +3174,9 @@ const AppCore = () => {
 
   const handleDeleteCustomer = async (customerId) => {
     try {
-      await deleteDoc(doc(db, 'users', user.uid, 'customers', customerId));
+      await deleteDoc(doc(db, 'users', dataUid, 'customers', customerId));
+      removeCustomerLocal(dataUid, customerId);
+      setCustomers(getCustomersLocal(dataUid));
     } catch (error) {
       alert(error.message);
     }
@@ -2894,7 +3216,7 @@ const AppCore = () => {
     }
     setUploadProgress(true);
     try {
-      const result = await resetSalesAndCustomerLedgers(user.uid, {
+      const result = await resetSalesAndCustomerLedgers(dataUid, {
         db,
         collection,
         doc,
@@ -2924,12 +3246,39 @@ const AppCore = () => {
     setDiscountType('amount');
   };
 
+  const loadMoreCustomersDirectory = async () => {
+    if (!dataUid || !customersHasMore) return;
+    const r = await loadCustomersPage(dataUid, { pageSize: 25 });
+    setCustomers(r.items);
+    setCustomersHasMore(r.hasMore);
+  };
+
+  const handleRemoteCustomerSearch = async (term) => {
+    if (!dataUid) return [];
+    const rows = await searchCustomers(dataUid, term);
+    setCustomers((prev) => {
+      const map = new Map(prev.map((c) => [c.id, c]));
+      rows.forEach((c) => map.set(c.id, c));
+      return Array.from(map.values());
+    });
+    return rows;
+  };
+
+  const loadMoreSuppliersDirectory = async () => {
+    if (!dataUid || !suppliersHasMore) return;
+    const r = await loadSuppliersPage(dataUid, { pageSize: 25 });
+    setSuppliers(r.items);
+    setSuppliersHasMore(r.hasMore);
+  };
+
   const exportCustomersLedgerPdf = async () => {
     if (customersLedgerPdfLoading) return;
     setCustomersLedgerPdfLoading(true);
     try {
+      const fullList = await loadAllCustomerPages(dataUid);
+      setCustomers(fullList);
       await downloadCustomersLedgerPdf({
-        customers,
+        customers: fullList,
         business: businessProfile,
         fmtMoney,
       });
@@ -3043,6 +3392,11 @@ const AppCore = () => {
     const billIdToClose = activeOpenBillId;
 
     try {
+      const cartProductIds = currentOrder.items.map((i) => i.id).filter(Boolean);
+      if (cartProductIds.length) {
+        await refreshProductsForSale(dataUid, cartProductIds);
+      }
+
       let finalDiscount = discount;
       let currentDiscountType = discountType;
 
@@ -3134,6 +3488,10 @@ const AppCore = () => {
         }
       }
 
+      if (customerId && debtAmount > 0) {
+        await fetchCustomerAuthoritative(dataUid, customerId);
+      }
+
       let usedTrustedOrderPath = false;
       if (isTrustedOrdersEnabled()) {
         let priorOrderForAudit = null;
@@ -3164,10 +3522,10 @@ const AppCore = () => {
           createdOrderId = trustedResult.orderId;
           createdOrderNumber = trustedResult.orderNumber;
           if (editingOrderId && priorOrderForAudit && !trustedResult.auditRecorded) {
-            const afterSnap = await getDoc(doc(db, 'users', user.uid, 'orders', editingOrderId));
+            const afterSnap = await getDoc(doc(db, 'users', dataUid, 'orders', editingOrderId));
             if (!afterSnap.exists()) throw new Error('تعذّر توثيق التعديل — الطلب غير موجود بعد الحفظ');
             const afterData = { id: afterSnap.id, ...afterSnap.data() };
-            await addDoc(collection(db, 'users', user.uid, 'orderEdits'), {
+            await addDoc(collection(db, 'users', dataUid, 'orderEdits'), {
               orderId: editingOrderId,
               orderNumber: createdOrderNumber,
               orderDate: priorOrderForAudit.timestamp || null,
@@ -3199,7 +3557,7 @@ const AppCore = () => {
       }
 
       await runTransaction(db, async (transaction) => {
-        const ownerUid = assertDocId(user?.uid, 'يجب تسجيل الدخول لحفظ الطلب');
+        const ownerUid = assertDocId(dataUid, 'يجب تسجيل الدخول لحفظ الطلب');
         if (!db) throw new Error('قاعدة البيانات غير جاهزة — حدّث الصفحة وأعد المحاولة');
         // 1. READS
         let orderNumber;
@@ -3666,7 +4024,7 @@ const AppCore = () => {
       if (billIdToClose) {
         try {
           await gatewayCloseOpenBill(
-            user.uid,
+            dataUid,
             billIdToClose,
             {
               orderId: createdOrderId,
@@ -3683,8 +4041,8 @@ const AppCore = () => {
       if (wasEditing) {
         setCurrentView('orders');
         alert('تم تحديث الطلب بنجاح');
-        if (user?.uid && createdOrderId) {
-          recordBusinessDayAdjustment(user.uid, {
+        if (dataUid && createdOrderId) {
+          recordBusinessDayAdjustment(dataUid, {
             businessDayId: getCashDayKey(new Date()),
             orderId: createdOrderId,
             reason: 'تعديل طلب بعد إغلاق يوم العمل',
@@ -3697,6 +4055,7 @@ const AppCore = () => {
     } finally {
       completeOrderLockRef.current = false;
       setUploadProgress(false);
+      if (dataUid) invalidateAfterOrderMutation(dataUid);
     }
   };
 
@@ -3753,7 +4112,7 @@ const AppCore = () => {
       const actor = sessionActor();
       const roster = buildOnDutyRosterInitial(staffMembers, duty, actor);
       const legacyOpen = () =>
-        openCashShift(user.uid, {
+        openCashShift(dataUid, {
           openingBalance: countedAmount,
           expectedOpeningBalance,
           onDutyStaffIds: duty,
@@ -3792,10 +4151,10 @@ const AppCore = () => {
 
   const assignOnDutyForOpenShift = async (onDutyStaffIds) => {
     const openShift = cashShifts.find((s) => s.status === 'open');
-    if (!openShift || !user?.uid) return;
+    if (!openShift || !dataUid) return;
     setOnDutyAssignBusy(true);
     try {
-      await assignOnDutyStaffToOpenShift(user.uid, {
+      await assignOnDutyStaffToOpenShift(dataUid, {
         shiftId: openShift.id,
         onDutyStaffIds,
         actor: sessionActor(),
@@ -3810,20 +4169,20 @@ const AppCore = () => {
   };
 
   const handleQuickCreateStaff = async (form) => {
-    if (!user?.uid) throw new Error('غير مسجّل');
+    if (!dataUid) throw new Error('غير مسجّل');
     setStaffFormBusy(true);
     try {
-      return await createEmployee(user.uid, form);
+      return await createEmployee(dataUid, form);
     } finally {
       setStaffFormBusy(false);
     }
   };
 
   const handleQuickUpdateStaff = async (staffId, form) => {
-    if (!user?.uid) throw new Error('غير مسجّل');
+    if (!dataUid) throw new Error('غير مسجّل');
     setStaffFormBusy(true);
     try {
-      await updateEmployee(user.uid, staffId, form);
+      await updateEmployee(dataUid, staffId, form);
     } finally {
       setStaffFormBusy(false);
     }
@@ -3831,10 +4190,10 @@ const AppCore = () => {
 
   const handleAddOnDutyStaffMidShift = async (staffId, staffName) => {
     const openShift = cashShifts.find((s) => s.status === 'open');
-    if (!openShift || !user?.uid) throw new Error('لا توجد وردية مفتوحة');
+    if (!openShift || !dataUid) throw new Error('لا توجد وردية مفتوحة');
     setCashBusy(true);
     try {
-      await addOnDutyStaffToOpenShift(user.uid, {
+      await addOnDutyStaffToOpenShift(dataUid, {
         shiftId: openShift.id,
         staffId,
         staffName,
@@ -3851,10 +4210,10 @@ const AppCore = () => {
 
   const handleRemoveOnDutyStaffMidShift = async (staffId) => {
     const openShift = cashShifts.find((s) => s.status === 'open');
-    if (!openShift || !user?.uid) throw new Error('لا توجد وردية مفتوحة');
+    if (!openShift || !dataUid) throw new Error('لا توجد وردية مفتوحة');
     setCashBusy(true);
     try {
-      await removeOnDutyStaffFromOpenShift(user.uid, {
+      await removeOnDutyStaffFromOpenShift(dataUid, {
         shiftId: openShift.id,
         staffId,
         actor: sessionActor(),
@@ -3878,7 +4237,7 @@ const AppCore = () => {
     setCashBusy(true);
     try {
       const legacyWithdraw = () =>
-        recordCashWithdrawal(user.uid, {
+        recordCashWithdrawal(dataUid, {
           shiftId: openShift.id,
           amount,
           reason,
@@ -3917,7 +4276,7 @@ const AppCore = () => {
     setCashBusy(true);
     try {
       const legacyDeposit = () =>
-        recordCashDeposit(user.uid, {
+        recordCashDeposit(dataUid, {
           shiftId: openShift.id,
           amount,
           actor: sessionActor(),
@@ -3956,7 +4315,7 @@ const AppCore = () => {
     try {
       let meta = null;
       const legacyClose = () =>
-        closeCashShift(user.uid, {
+        closeCashShift(dataUid, {
           shiftId: openShift.id,
           actualClosingBalance,
           notes,
@@ -3978,7 +4337,7 @@ const AppCore = () => {
         meta = await legacyClose();
       }
       const period = Number(openShift.shiftPeriod) === 2 ? 2 : 1;
-      if (period === 2 && meta?.shiftPeriod === 2 && user?.uid) {
+      if (period === 2 && meta?.shiftPeriod === 2 && dataUid) {
         const closedAtMs = Number(meta.closedAtMs) || Date.now();
         const dayKey = getCashDayKey(new Date(closedAtMs));
         const orderInDay = (o) => {
@@ -4003,17 +4362,22 @@ const AppCore = () => {
               (Number(s.closedAtMs) || 0) <= shift2OpenedMs + 120000
           )
           .sort((a, b) => (Number(b.closedAtMs) || 0) - (Number(a.closedAtMs) || 0))[0];
-        await closeBusinessDay(user.uid, {
+        await closeBusinessDay(dataUid, {
           shift1Id: shift1?.id || null,
           shift2Id: meta.shiftId || openShift.id,
           closedAtMs,
           summary: {
             businessDayKey: dayKey,
             totalSales: roundMoney(totalSales),
+            cashSales: computeTodayCashSales(dayOrders, getLocalCalendarDayStart(new Date(closedAtMs))),
+            debtSales: computeTodayDebtSales(dayOrders, getLocalCalendarDayStart(new Date(closedAtMs))),
             totalExpenses: roundMoney(sumReportExpenses(dayExpenses)),
             orderCount: dayOrders.length,
+            paidOrderCount: dayOrders.filter((o) => o.status === 'paid').length,
+            cancelledOrderCount: dayOrders.filter((o) => o.status === 'cancelled').length,
           },
         });
+        invalidateAfterBusinessDayClose(dataUid);
       }
       alert(
         period === 1
@@ -4032,7 +4396,7 @@ const AppCore = () => {
     setVaultBusy(true);
     try {
       await gatewayAddVaultCapital(
-        user.uid,
+        dataUid,
         { amount, note, actor: sessionActor(), vaultPin: resolveVaultPin() },
         businessProfile
       );
@@ -4048,7 +4412,7 @@ const AppCore = () => {
     setVaultBusy(true);
     try {
       await gatewayDepositVaultManual(
-        user.uid,
+        dataUid,
         { amount, note, actor: sessionActor(), vaultPin: resolveVaultPin() },
         businessProfile
       );
@@ -4064,7 +4428,7 @@ const AppCore = () => {
     setVaultBusy(true);
     vaultWithdrawIdemRef.current = vaultWithdrawIdemRef.current || newIdempotencyKey('vault_wd');
     try {
-      await withdrawFromVault(user.uid, {
+      await withdrawFromVault(dataUid, {
         amount,
         reason: note,
         actor: sessionActor(),
@@ -4340,10 +4704,10 @@ const AppCore = () => {
   const menuCategoryList = useMemo(() => mergeMenuCategories(products), [products]);
   const posProducts = useMemo(() => {
     const base = products.filter((p) => getProductType(p) !== 'time');
-    if (!user?.uid) return base;
+    if (!dataUid) return base;
     if (base.some((p) => isSystemServiceProduct(p))) return base;
-    return [...base, buildSystemServiceProduct(user.uid)];
-  }, [products, user?.uid]);
+    return [...base, buildSystemServiceProduct(dataUid)];
+  }, [products, dataUid]);
   const posCategoryList = useMemo(() => mergeMenuCategories(posProducts), [posProducts]);
   const posMenuTabs = useMemo(() => buildPosMenuTabs(posCategoryList), [posCategoryList]);
   const purchasableProducts = useMemo(
@@ -4362,14 +4726,18 @@ const AppCore = () => {
     return 'operating';
   }, [currentView]);
 
-  const totalOutstandingCustomerDebt = useMemo(
-    () => computeTotalOutstandingCustomerDebt(customers),
-    [customers]
-  );
-  const customersWithDebtCount = useMemo(
-    () => countCustomersWithOutstandingDebt(customers),
-    [customers]
-  );
+  const totalOutstandingCustomerDebt = useMemo(() => {
+    if (customerDebtSummaryActive && customerDebtSummary.total > 0) {
+      return customerDebtSummary.total;
+    }
+    return computeTotalOutstandingCustomerDebt(customers);
+  }, [customers, customerDebtSummary, customerDebtSummaryActive]);
+  const customersWithDebtCount = useMemo(() => {
+    if (customerDebtSummaryActive && customerDebtSummary.count > 0) {
+      return customerDebtSummary.count;
+    }
+    return countCustomersWithOutstandingDebt(customers);
+  }, [customers, customerDebtSummary, customerDebtSummaryActive]);
 
   useEffect(() => {
     if (!suspendFeedback) return undefined;
@@ -4427,6 +4795,18 @@ const AppCore = () => {
   const todayCashSales = computeTodayCashSales(orders, dashboardDayStart);
   const todayDebtSales = computeTodayDebtSales(orders, dashboardDayStart);
 
+  const authoritativeToday = dashboardTodayMetrics?.metrics;
+  const dashboardKpisComplete = dashboardTodayMetrics?.complete !== false;
+  const displayTodayCash = authoritativeToday ? authoritativeToday.cashSales : todayCashSales;
+  const displayTodayDebt = authoritativeToday ? authoritativeToday.debtSales : todayDebtSales;
+  const displayPaidSales = authoritativeToday
+    ? authoritativeToday.salesTotalPaid
+    : dashboardOrders.filter((o) => o.status === 'paid').reduce((sum, o) => sum + o.total, 0);
+  const displayUnpaidSales = authoritativeToday
+    ? authoritativeToday.pendingTotal
+    : dashboardOrders.filter((o) => o.status === 'unpaid').reduce((sum, o) => sum + o.total, 0);
+  const displayOrderCount = authoritativeToday ? authoritativeToday.orderCount : dashboardOrders.length;
+
   const totalProfit = orders
     .filter(o => o.status === 'paid')
     .reduce((sum, o) => sum + (o.profit || 0), 0);
@@ -4454,39 +4834,10 @@ const AppCore = () => {
       .slice(0, 5);
   };
 
-  // Weekly sales data for chart
-  const getWeeklySales = () => {
-    const salesByDay = new Map();
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    // Initialize map for the last 7 days
-    for (let i = 0; i < 7; i++) {
-      const date = new Date(today);
-      date.setDate(date.getDate() - i);
-      salesByDay.set(date.toDateString(), { sales: 0, date: date });
-    }
-
-    // Populate sales data
-    orders.forEach(order => {
-      if (order.status !== 'paid' || !order.timestamp) return;
-
-      const orderDate = order.timestamp.toDate ? order.timestamp.toDate() : new Date(order.timestamp);
-      const orderDateString = orderDate.toDateString();
-
-      if (salesByDay.has(orderDateString)) {
-        salesByDay.get(orderDateString).sales += (parseFloat(order.total) || 0);
-      }
-    });
-
-    // Convert map to array and sort chronologically
-    return Array.from(salesByDay.values())
-      .sort((a, b) => a.date - b.date)
-      .map(data => ({
-        day: data.date.toLocaleDateString('ar', { weekday: 'short' }),
-        sales: data.sales
-      }));
-  };
+  const weeklySalesChart = useMemo(
+    () => getWeeklySalesChartData(dataUid, dashboardWeekSummaries, dashboardOrders),
+    [dataUid, dashboardWeekSummaries, dashboardOrders]
+  );
 
   const filteredInventory = products.filter(p => 
     (selectedInventoryCategory === 'all' || p.category === selectedInventoryCategory) &&
@@ -4602,7 +4953,7 @@ const AppCore = () => {
 
   useShiftOverdueWarning({ openShift: openCashShiftDoc });
 
-  if (loading) {
+  if (loading || tenantAuthLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: theme.bgWarm }}>
         <div className="text-center animate-pulse">
@@ -4613,7 +4964,7 @@ const AppCore = () => {
     );
   }
 
-  if (!user || !userRole) {
+  if (!user || !userRole || needsCashierJoin) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4 font-cairo" style={{ backgroundColor: theme.bgWarm }} dir="rtl">
         <div className="w-full max-w-md">
@@ -4696,10 +5047,38 @@ const AppCore = () => {
               </button>
               {loginType === 'employee' && !user && (
                 <p className="text-xs leading-relaxed text-center" style={{ color: theme.textMuted, fontFamily: FONT_UI }}>
-                  أول مرة على هذا الجهاز: ادخل كمدير ثم اخرج. بعدها كلمة مرور الموظف تفتح نقطة البيع.
+                  دخول الكاشير بحساب Firebase مستقل (البريد مضبوط في REACT_APP_CASHIER_EMAIL).
                 </p>
               )}
             </form>
+            {user && needsCashierJoin && (
+              <form onSubmit={handleCashierJoinSubmit} className="mt-6 pt-6 border-t border-gray-100 space-y-3">
+                <p className="text-xs text-amber-800" style={{ fontFamily: FONT_UI }}>
+                  حسابك غير مربوط بمقهى بعد. أدخل معرّف المقهى ورمز الانضمام من المدير.
+                </p>
+                <input
+                  value={joinTenantCode}
+                  onChange={(e) => setJoinTenantCode(e.target.value)}
+                  placeholder="معرّف المقهى (معرّف البيانات)"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm"
+                  dir="ltr"
+                />
+                <input
+                  value={joinInviteCode}
+                  onChange={(e) => setJoinInviteCode(e.target.value)}
+                  placeholder="رمز الانضمام"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm"
+                />
+                <button
+                  type="submit"
+                  disabled={uploadProgress}
+                  className="w-full py-2 rounded-xl text-white text-sm"
+                  style={{ backgroundColor: theme.primary }}
+                >
+                  طلب انضمام
+                </button>
+              </form>
+            )}
             {user && (
               <button
                 type="button"
@@ -4707,7 +5086,7 @@ const AppCore = () => {
                 className="w-full mt-4 text-xs text-gray-400 hover:text-red-600 transition-colors"
                 style={{ fontFamily: FONT_UI }}
               >
-                فصل هذا الجهاز عن الحساب
+                تسجيل الخروج
               </button>
             )}
           </div>
@@ -5133,13 +5512,25 @@ const AppCore = () => {
                 لا تُقارن أرقام الكاش هنا مع تسوية الشفت دون مراعاة فرق «يوم التقويم» و«يوم الكاش».
               </p>
             </div>
-            {orders.length >= ORDERS_DASHBOARD_LIMIT && (
+            {(!dashboardKpisComplete || dashboardTodayMetricsLoading) && (
               <div
                 className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
                 style={{ fontFamily: FONT_UI }}
                 role="status"
               >
-                تم تحميل {ORDERS_DASHBOARD_LIMIT} طلباً كحد أقصى لليوم — إن كان لديك أكثر، قد تكون أرقام لوحة التحكم أقل من الواقع.
+                {dashboardTodayMetricsLoading
+                  ? 'جاري تحميل ملخص اليوم الكامل من الطلبات…'
+                  : 'ملخص اليوم غير مكتمل — الأرقام أدناه قد تكون جزئية.'}
+              </div>
+            )}
+            {dashboardKpisComplete && orders.length >= ORDERS_DASHBOARD_LIMIT && (
+              <div
+                className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-900"
+                style={{ fontFamily: FONT_UI }}
+                role="note"
+              >
+                القائمة الحية محدودة بـ {ORDERS_DASHBOARD_LIMIT}؛ مؤشرات اليوم من{' '}
+                {dashboardTodayMetrics?.loadedCount ?? '—'} طلباً.
               </div>
             )}
             
@@ -5154,7 +5545,7 @@ const AppCore = () => {
                   <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800">كاش</span>
                 </div>
                 <p className="text-gray-500 text-sm font-medium mb-1">كاش اليوم</p>
-                <h3 className="text-2xl font-bold text-primary">{fmtMoney(todayCashSales)}</h3>
+                <h3 className="text-2xl font-bold text-primary">{fmtMoney(displayTodayCash)}</h3>
               </div>
 
               {/* Today's debt recorded on orders (debtAmount) */}
@@ -5166,7 +5557,7 @@ const AppCore = () => {
                   <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-red-100 text-red-800">دين</span>
                 </div>
                 <p className="text-gray-500 text-sm font-medium mb-1">دين اليوم</p>
-                <h3 className="text-2xl font-bold text-red-600">{fmtMoney(todayDebtSales)}</h3>
+                <h3 className="text-2xl font-bold text-red-600">{fmtMoney(displayTodayDebt)}</h3>
                 <p className="text-[10px] text-gray-400 mt-1">من طلبات اليوم على حساب العملاء</p>
               </div>
 
@@ -5180,7 +5571,7 @@ const AppCore = () => {
                 </div>
                 <p className="text-gray-500 text-sm font-medium mb-1">إجمالي المبيعات المدفوعة</p>
                 <h3 className="text-2xl font-bold text-primary">
-                  {fmtMoney(dashboardOrders.filter(o => o.status === 'paid').reduce((sum, o) => sum + o.total, 0))}
+                  {fmtMoney(displayPaidSales)}
                 </h3>
               </div>
 
@@ -5194,7 +5585,7 @@ const AppCore = () => {
                 </div>
                 <p className="text-gray-500 text-sm font-medium mb-1">طلبات غير مدفوعة</p>
                 <h3 className="text-2xl font-bold text-accent">
-                  {fmtMoney(dashboardOrders.filter(o => o.status === 'unpaid').reduce((sum, o) => sum + o.total, 0))}
+                  {fmtMoney(displayUnpaidSales)}
                 </h3>
               </div>
 
@@ -5206,7 +5597,7 @@ const AppCore = () => {
                   </div>
                 </div>
                 <p className="text-gray-500 text-sm font-medium mb-1">عدد العمليات</p>
-                <h3 className="text-2xl font-bold text-primary">{dashboardOrders.length}</h3>
+                <h3 className="text-2xl font-bold text-primary">{displayOrderCount}</h3>
               </div>
 
               {/* Products Sold */}
@@ -5253,20 +5644,37 @@ const AppCore = () => {
                 </div>
                 <div className="h-64 flex items-end justify-between gap-3">
                   {(() => {
-                    const weeklyData = getWeeklySales();
-                    const maxSales = Math.max(...weeklyData.map(d => d.sales)) || 1;
-                    
+                    const weeklyData = weeklySalesChart;
+                    const numericSales = weeklyData
+                      .map((d) => d.sales)
+                      .filter((s) => s != null && Number.isFinite(s));
+                    const maxSales = Math.max(...numericSales, 1);
+
                     return weeklyData.map((day, i) => {
-                      const height = (day.sales / maxSales) * 100;
+                      const missing =
+                        day.summaryState === DAY_SUMMARY_STATE.MISSING_SUMMARY ||
+                        day.summaryState === DAY_SUMMARY_STATE.INCOMPLETE_SUMMARY;
+                      const height =
+                        day.sales != null && Number.isFinite(day.sales)
+                          ? (day.sales / maxSales) * 100
+                          : 0;
                     return (
                       <div key={i} className="flex flex-col items-center flex-1 group h-full">
                         <div className="relative w-full flex-1 flex justify-center items-end">
-                          <div 
-                            className="w-full max-w-[40px] bg-primary rounded-t-lg opacity-80 group-hover:opacity-100 transition-all duration-300 relative"
-                            style={{ height: `${height}%`, minHeight: '4px' }}
+                          <div
+                            className={`w-full max-w-[40px] rounded-t-lg transition-all duration-300 relative ${
+                              missing
+                                ? 'bg-gray-200 border border-dashed border-gray-400 opacity-60'
+                                : 'bg-primary opacity-80 group-hover:opacity-100'
+                            }`}
+                            style={{ height: missing ? '8%' : `${height}%`, minHeight: '4px' }}
                           >
                             <div className="absolute -top-10 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-[10px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 shadow-lg pointer-events-none">
-                              {fmtMoney(day.sales)}
+                              {missing
+                                ? day.summaryState === DAY_SUMMARY_STATE.INCOMPLETE_SUMMARY
+                                  ? `جزئي: ${fmtMoney(day.sales ?? 0)}`
+                                  : 'لا ملخص مُغلق'
+                                : fmtMoney(day.sales ?? 0)}
                             </div>
                           </div>
                         </div>
@@ -5283,11 +5691,14 @@ const AppCore = () => {
                 <h3 className="text-lg font-bold text-primary mb-6" style={{ fontFamily: FONT_HEADING }}>طرق الدفع</h3>
                 <div className="space-y-5">
                   {(() => {
-                    const paymentStats = dashboardOrders.filter(o => o.status === 'paid').reduce((acc, order) => {
-                      const method = order.paymentMethod || 'غير محدد';
-                      acc[method] = (acc[method] || 0) + order.total;
-                      return acc;
-                    }, {});
+                    const paymentStats =
+                      dashboardKpisComplete && authoritativeToday?.paymentStats
+                        ? { ...authoritativeToday.paymentStats }
+                        : dashboardOrders.filter(o => o.status === 'paid').reduce((acc, order) => {
+                            const method = order.paymentMethod || 'غير محدد';
+                            acc[method] = (acc[method] || 0) + order.total;
+                            return acc;
+                          }, {});
                     const total = Object.values(paymentStats).reduce((a, b) => a + b, 0);
 
                     return Object.entries(paymentStats)
@@ -5443,10 +5854,10 @@ const AppCore = () => {
           </div>
         )}
 
-        {activeView === 'employees' && !isEmployee && user?.uid && (
+        {activeView === 'employees' && !isEmployee && dataUid && (
           <Suspense fallback={<p className="text-sm text-gray-500 p-8">جاري تحميل الموظفين…</p>}>
             <EmployeesView
-              uid={user.uid}
+              uid={dataUid}
               staffMembers={staffMembers}
               employeeBenefits={employeeBenefits}
               products={products}
@@ -5459,7 +5870,7 @@ const AppCore = () => {
               vaultBalance={vaultSummary?.balance}
               onRefreshStaff={async () => {
                 const snap = await getDocs(
-                  query(collection(db, 'users', user.uid, 'staffMembers'), orderBy('name', 'asc'))
+                  query(collection(db, 'users', dataUid, 'staffMembers'), orderBy('name', 'asc'))
                 );
                 setStaffMembers(uniqueStaffMembersByName(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
               }}
@@ -5529,6 +5940,52 @@ const AppCore = () => {
                       {businessProfile?.address || '-'}
                     </p>
                   </div>
+                  <p className="text-[11px] text-gray-500 pt-2">
+                    معرّف البيانات (لانضمام الكاشير): <code className="font-mono">{dataUid}</code>
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl p-5 shadow-md border border-gray-200">
+                <h3 className="text-base md:text-lg mb-4 text-primary" style={{ fontFamily: FONT_HEADING, fontWeight: 600 }}>
+                  أمان الفريق (Spark)
+                </h3>
+                <div className="space-y-3">
+                  <label className="block text-xs text-gray-500">رمز انضمام الكاشير</label>
+                  <div className="flex gap-2">
+                    <input
+                      value={tenantInviteCode}
+                      onChange={(e) => setTenantInviteCodeState(e.target.value)}
+                      className="flex-1 px-3 py-2 rounded-lg border text-sm"
+                      placeholder="مثال: LY2026"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTenantInviteCode(dataUid, tenantInviteCode).then(() => alert('تم حفظ الرمز'));
+                      }}
+                      className="px-3 py-2 rounded-lg text-white text-sm"
+                      style={{ backgroundColor: theme.primary }}
+                    >
+                      حفظ
+                    </button>
+                  </div>
+                  {pendingJoinRequests.length > 0 && (
+                    <ul className="text-sm space-y-2 border-t pt-3">
+                      {pendingJoinRequests.map((row) => (
+                        <li key={row.id} className="flex justify-between items-center gap-2">
+                          <span className="truncate text-xs font-mono">{row.authUid}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleApproveJoinRequest(row.authUid)}
+                            className="text-xs px-2 py-1 rounded bg-emerald-600 text-white"
+                          >
+                            موافقة
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               </div>
 
@@ -5576,7 +6033,7 @@ const AppCore = () => {
                             const v = parseFloat(e.target.value);
                             if (!Number.isFinite(v) || v <= 0) return;
                             try {
-                              await updateStaffBenefitLimit(user.uid, s.id, v);
+                              await updateStaffBenefitLimit(dataUid, s.id, v);
                             } catch (err) {
                               alert(err.message);
                             }
@@ -5773,8 +6230,13 @@ const AppCore = () => {
                       <p className="text-sm text-gray-500 font-medium">إجمالي المشتريات</p>
                     </div>
                     <p className="text-2xl text-primary" style={{ fontFamily: FONT_UI, fontWeight: 700 }}>
-                      {fmtMoney(expenses.filter((e) => resolveExpenseSection(e) === 'purchase').reduce((s, e) => s + (parseFloat(e.amount) || 0), 0))}
+                      {tradersPurchasePartial ? `≈ ${fmtMoney(tradersPurchaseTotal)}` : fmtMoney(tradersPurchaseTotal)}
                     </p>
+                    {tradersPurchasePartial && (
+                      <p className="text-[10px] text-amber-700 mt-1" role="note">
+                        رقم تقريبي من أحدث 400 مصروف فقط — ليس إجمالي مشتريات تاريخية كاملاً.
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="bg-white shadow-md rounded-xl overflow-hidden border border-gray-200">
@@ -5791,7 +6253,7 @@ const AppCore = () => {
                       </thead>
                       <tbody className="divide-y divide-gray-200">
                         {activeSuppliers.map((s) => {
-                          const due = resolveSupplierOutstandingBalance(s, expenses, s.id);
+                          const due = resolveSupplierOutstandingBalance(s, null, s.id);
                           return (
                           <tr
                             key={s.id}
@@ -6570,12 +7032,20 @@ const AppCore = () => {
                 </>
               );
             })()}
-            <DailyArchivePanel uid={user?.uid} fmtMoney={fmtMoney} />
+            <DailyArchivePanel uid={dataUid} fmtMoney={fmtMoney} />
           </div>
         )}
 
         {activeView === 'pos' && (
           <div className="max-w-[1600px] mx-auto h-full">
+            {userRole === 'employee' && !activeOrdersMeta.complete && (
+              <div
+                className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+                role="alert"
+              >
+                تنبيه: لم يُحمَّل كل الفواتير المفتوحة ({activeOrdersMeta.count} محمّلة). قد تكون فواتير معلّقة مخفية — أعد التحميل أو تواصل مع المدير.
+              </div>
+            )}
             <div className="h-full flex flex-col lg:flex-row gap-3">
               <PosCart
                 mobileOpen={isMobileCartOpen}
@@ -6586,6 +7056,9 @@ const AppCore = () => {
                 customers={customers}
                 canCreateCustomers={employeeCanManageCustomers}
                 onSelectCustomer={selectOrderCustomer}
+                onCustomerSearch={handleRemoteCustomerSearch}
+                onLoadMoreCustomers={loadMoreCustomersDirectory}
+                customersHasMore={customersHasMore}
                 onAddCustomer={openQuickCustomer}
                 onNotesChange={(notes) => setCurrentOrder((p) => ({ ...p, notes }))}
                 onGuestNameChange={(customer) => setCurrentOrder((p) => ({ ...p, customer }))}
@@ -7085,12 +7558,14 @@ const AppCore = () => {
             onExportCustomersLedgerPdf={isEmployee ? undefined : exportCustomersLedgerPdf}
             customersLedgerPdfLoading={customersLedgerPdfLoading}
             allowOpeningDebt={!isEmployee}
+            onLoadMoreCustomers={loadMoreCustomersDirectory}
+            customersHasMore={customersHasMore}
           />
         )}
 
         {activeView === 'cash' && (
           <CashShiftView
-            userId={user?.uid}
+            userId={dataUid}
             openShift={openCashShiftDoc}
             lastClosedShift={lastClosedCashShift}
             shiftHistory={cashShifts}
@@ -8118,7 +8593,7 @@ const AppCore = () => {
                     expenseForm={expenseForm}
                     setExpenseForm={setExpenseForm}
                     staffMembers={staffMembers}
-                    uid={user?.uid}
+                    uid={dataUid}
                     openShift={cashShifts.find((s) => s.status === 'open') || null}
                     vaultBalance={vaultSummary?.balance}
                     disabled={Boolean(editingExpenseId) || uploadProgress}
@@ -8161,6 +8636,15 @@ const AppCore = () => {
                       <option key={s.id} value={s.id}>{s.name}</option>
                     ))}
                   </select>
+                  {suppliersHasMore && (
+                    <button
+                      type="button"
+                      onClick={loadMoreSuppliersDirectory}
+                      className="text-xs text-primary font-semibold mt-1"
+                    >
+                      تحميل المزيد من التجار
+                    </button>
+                  )}
                   {suppliers.length === 0 && (
                     <p className="text-xs text-amber-600 mt-1">أضف تاجراً من «التجار» في القائمة أولاً</p>
                   )}
@@ -8294,7 +8778,7 @@ const AppCore = () => {
           expenses={expenses}
           theme={theme}
           uploadProgress={uploadProgress}
-          userId={user?.uid}
+          userId={dataUid}
           openShiftId={openCashShiftDoc?.id}
           openShift={openCashShiftDoc}
           vaultBalance={vaultSummary?.balance}
@@ -8302,7 +8786,8 @@ const AppCore = () => {
           businessProfile={businessProfile}
           canManageProfile={canManageMerchantProfiles(userRole)}
           onClose={() => setSelectedSupplierId(null)}
-          onReconcile={handleReconcileSupplier}
+          onPreviewReconciliation={handlePreviewSupplierReconciliation}
+          onApplyBalanceCorrection={userRole === 'admin' ? handleApplySupplierBalanceCorrection : undefined}
           onSubmitPayment={handleSupplierPaymentSubmit}
           onUpdateProfile={handleUpdateSupplierProfile}
           onRemoveProfile={handleRemoveSupplierProfile}
@@ -8660,7 +9145,7 @@ const AppCore = () => {
       <RemoveTestSalesModal
         open={showRemoveTestSalesModal}
         onClose={() => setShowRemoveTestSalesModal(false)}
-        uid={user?.uid}
+        uid={dataUid}
         theme={theme}
         fmtMoney={fmtMoney}
       />
@@ -8668,14 +9153,14 @@ const AppCore = () => {
       <RemoveOldPlaystationModal
         open={showRemoveOldPlaystationModal}
         onClose={() => setShowRemoveOldPlaystationModal(false)}
-        uid={user?.uid}
+        uid={dataUid}
         fmtMoney={fmtMoney}
       />
 
       <SystemResetModal
         open={showSystemResetModal}
         onClose={() => setShowSystemResetModal(false)}
-        uid={user?.uid}
+        uid={dataUid}
         apis={{ db, collection, doc, getDocs, writeBatch, setDoc, serverTimestamp }}
         FONT_UI={FONT_UI}
         FONT_HEADING={FONT_HEADING}

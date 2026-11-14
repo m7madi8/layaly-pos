@@ -2,9 +2,14 @@ import { getLocalCalendarDayStart } from './dashboardCashSales';
 import { getReportPeriodBounds } from './reportPeriodBounds';
 
 export const ORDERS_PAGE_SIZE = 30;
-export const ORDERS_DASHBOARD_LIMIT = 250;
+/** Today ~100 orders — headroom for bursts without scanning full history. */
+export const ORDERS_DASHBOARD_LIMIT = 150;
 export const ORDERS_REPORTS_LIMIT = 400;
 export const ORDERS_EMPLOYEE_POS_LIMIT = 80;
+/** Page size for one-shot paginated active-order backfill (realtime query has no limit). */
+export const ORDERS_EMPLOYEE_OPEN_PAGE = 50;
+
+export const EMPLOYEE_OPEN_ORDER_STATUSES = ['unpaid', 'partial'];
 
 function toTimestamp(Timestamp, date) {
   if (!date) return null;
@@ -112,8 +117,14 @@ export function resolveOrdersQuerySpec({
 
   if (userRole === 'employee' && currentView === 'pos') {
     return {
-      mode: 'employee-pos-recent',
-      q: query(col, orderBy('timestamp', 'desc'), limit(ORDERS_EMPLOYEE_POS_LIMIT)),
+      mode: 'employee-pos-today',
+      queryLimit: ORDERS_EMPLOYEE_POS_LIMIT,
+      q: query(
+        col,
+        where('timestamp', '>=', toTimestamp(Timestamp, todayStart)),
+        orderBy('timestamp', 'desc'),
+        limit(ORDERS_EMPLOYEE_POS_LIMIT)
+      ),
     };
   }
 
@@ -187,6 +198,43 @@ export function resolveOrdersQuerySpec({
         q: query(col, orderBy('timestamp', 'desc'), limit(ORDERS_PAGE_SIZE)),
       };
   }
+}
+
+/** Supplemental realtime query: all open employee bills regardless of order date. */
+export function resolveEmployeePosOpenOrdersSpec({
+  uid,
+  userRole,
+  currentView,
+  Timestamp,
+  collection,
+  query,
+  orderBy,
+  where,
+  limit,
+  db,
+}) {
+  if (!uid || userRole !== 'employee' || currentView !== 'pos' || !Timestamp) return null;
+  const col = collection(db, 'users', uid, 'orders');
+  return {
+    mode: 'employee-pos-open',
+    queryLimit: null,
+    q: query(
+      col,
+      where('status', 'in', EMPLOYEE_OPEN_ORDER_STATUSES),
+      orderBy('timestamp', 'desc')
+    ),
+  };
+}
+
+export function mergeOrdersById(primary = [], secondary = []) {
+  const map = new Map();
+  for (const o of secondary) map.set(o.id, o);
+  for (const o of primary) map.set(o.id, o);
+  return Array.from(map.values()).sort((a, b) => {
+    const ta = a.timestamp?.toDate ? a.timestamp.toDate().getTime() : 0;
+    const tb = b.timestamp?.toDate ? b.timestamp.toDate().getTime() : 0;
+    return tb - ta;
+  });
 }
 
 export function mapOrderSnapshot(snapshot) {

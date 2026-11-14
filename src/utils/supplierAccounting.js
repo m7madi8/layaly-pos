@@ -62,15 +62,35 @@ export function computeSupplierTotalPayable(supplier, expenses, supplierId) {
 }
 
 export function resolveSupplierOutstandingBalance(supplier, expenses, supplierId) {
+  if (!supplierId) return 0;
   const stored = supplier?.balance;
-  const fromFormula = computeSupplierTotalPayable(supplier, expenses, supplierId);
+  const storedOk = stored != null && stored !== '' && Number.isFinite(Number(stored));
+  const ledger = Array.isArray(expenses) ? expenses : null;
+  const hasExpenseLedger = ledger && ledger.length > 0;
+
   if (supplier?.openingBalanceRecorded) {
-    return fromFormula;
+    return computeSupplierTotalPayable(supplier, ledger || [], supplierId);
   }
-  if (stored != null && stored !== '' && Number.isFinite(Number(stored))) {
+
+  if (!hasExpenseLedger && storedOk) {
+    return roundMoney(stored);
+  }
+
+  const fromFormula = computeSupplierTotalPayable(supplier, ledger || [], supplierId);
+  if (storedOk) {
     return roundMoney(stored);
   }
   return fromFormula;
+}
+
+/** Traders list / totals without loading expense collection. */
+export function computeTotalOutstandingFromStoredBalances(suppliers = []) {
+  return roundMoney(
+    (suppliers || []).reduce((sum, supplier) => {
+      const b = resolveSupplierOutstandingBalance(supplier, null, supplier?.id);
+      return b > 0 ? sum + b : sum;
+    }, 0)
+  );
 }
 
 /** إجمالي المستحق للتجار = مجموع أرصدة المستحق الإيجابية (نفس resolveSupplierOutstandingBalance لكل تاجر). */
