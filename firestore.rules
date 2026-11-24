@@ -74,6 +74,38 @@ service cloud.firestore {
       ]);
     }
 
+    /** نقل فائض الصندوق إلى الخزنة عند إغلاق الشفت فقط. */
+    function isCashCloseVaultMovement() {
+      return request.resource.data.type == 'from_cash_close'
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.shiftId is string
+        && request.resource.data.keys().hasOnly([
+          'type', 'amount', 'reason', 'shiftId', 'createdBy', 'employeeId', 'createdAt', 'createdAtMs'
+        ]);
+    }
+
+    function isCashCloseVaultCreate() {
+      return request.resource.data.keys().hasAll([
+          'balance', 'totalCapitalIn', 'updatedAt', 'updatedAtMs'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'balance', 'totalCapitalIn', 'updatedAt', 'updatedAtMs'
+        ])
+        && request.resource.data.balance is number
+        && request.resource.data.balance > 0
+        && request.resource.data.totalCapitalIn is number;
+    }
+
+    function isCashCloseVaultIncrease() {
+      return resource != null
+        && request.resource.data.balance is number
+        && resource.data.balance is number
+        && request.resource.data.balance > resource.data.balance
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['balance', 'totalCapitalIn', 'updatedAt', 'updatedAtMs']);
+    }
+
     // --- Login index (written by admin when approving cashier) ---
     match /userTenants/{authUid} {
       allow read: if signedIn() && request.auth.uid == authUid;
@@ -160,7 +192,23 @@ service cloud.firestore {
       }
 
       match /vault/{docId} {
-        allow read, write: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+        allow get: if canReadBusinessData(tenantId);
+        allow list: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+        allow write: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+        allow create: if isTenantCashier(tenantId) && isCashCloseVaultCreate();
+        allow update: if isTenantCashier(tenantId) && isCashCloseVaultIncrease();
+      }
+
+      match /vaultMovements/{movementId} {
+        allow read: if canReadBusinessData(tenantId);
+        allow create, update, delete: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+        allow create: if isTenantCashier(tenantId) && isCashCloseVaultMovement();
+      }
+
+      match /businessDaySummaries/{summaryId} {
+        allow read: if canReadBusinessData(tenantId);
+        allow create: if isTenantCashier(tenantId) || isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+        allow update, delete: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
       }
 
       match /{subCollection}/{docId} {

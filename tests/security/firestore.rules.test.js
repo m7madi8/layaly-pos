@@ -85,6 +85,68 @@ test('cashier cannot write vault', async () => {
   );
 });
 
+test('admin can record a vault movement when closing a shift', async () => {
+  const tenantId = 'cafe2b';
+  const adminUid = 'admin2b';
+  await seedTenant(tenantId, adminUid);
+  const adminDb = dbAs(adminUid);
+  await assertSucceeds(
+    adminDb.collection(`users/${tenantId}/vaultMovements`).doc('m1').set({
+      type: 'from_cash_close',
+      amount: 217.5,
+      reason: 'إغلاق الشفت الأول — للخزنة',
+      shiftId: 'shift1',
+      createdBy: { role: 'admin' },
+      employeeId: 'admin',
+      createdAt: new Date(),
+      createdAtMs: Date.now(),
+    })
+  );
+});
+
+test('cashier can credit the vault only for a shift close', async () => {
+  const tenantId = 'cafe2c';
+  const adminUid = 'admin2c';
+  const cashierUid = 'cash2c';
+  await seedTenant(tenantId, adminUid, cashierUid);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().doc(`users/${tenantId}/vault/main`).set({
+      balance: 100,
+      totalCapitalIn: 100,
+    });
+  });
+  const cashierDb = dbAs(cashierUid);
+  await assertSucceeds(
+    cashierDb.doc(`users/${tenantId}/vault/main`).update({
+      balance: 317.5,
+      updatedAt: new Date(),
+      updatedAtMs: Date.now(),
+    })
+  );
+  await assertSucceeds(
+    cashierDb.collection(`users/${tenantId}/vaultMovements`).doc('close1').set({
+      type: 'from_cash_close',
+      amount: 217.5,
+      reason: 'إغلاق الشفت',
+      shiftId: 'shift1',
+      createdBy: { role: 'cashier' },
+      employeeId: 'cashier',
+      createdAt: new Date(),
+      createdAtMs: Date.now(),
+    })
+  );
+  await assertFails(
+    cashierDb.collection(`users/${tenantId}/vaultMovements`).doc('cap1').set({
+      type: 'capital',
+      amount: 50,
+      reason: 'رأس مال',
+      shiftId: 'shift1',
+      createdAt: new Date(),
+      createdAtMs: Date.now(),
+    })
+  );
+});
+
 test('cashier cannot patch supplier balance only', async () => {
   const tenantId = 'cafe3';
   const adminUid = 'admin3';
