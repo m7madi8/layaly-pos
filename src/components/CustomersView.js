@@ -72,7 +72,7 @@ export default function CustomersView({
   const [legacyForm, setLegacyForm] = useState({ amount: '', note: '' });
   const [legacySaving, setLegacySaving] = useState(false);
   const [paymentModalCustomerId, setPaymentModalCustomerId] = useState(null);
-  const [paymentForm, setPaymentForm] = useState({ amount: '', note: '' });
+  const [paymentForm, setPaymentForm] = useState({ amount: '', note: '', channel: 'cash' });
   const [paymentSaving, setPaymentSaving] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState(null);
   const [txForm, setTxForm] = useState({
@@ -90,7 +90,7 @@ export default function CustomersView({
 
   const openPaymentModal = (customerId) => {
     if (!onAddCustomerPayment) return;
-    setPaymentForm({ amount: '', note: '' });
+    setPaymentForm({ amount: '', note: '', channel: 'cash' });
     setPaymentModalCustomerId(customerId);
     setDetailId(customerId);
     setSelectedOrder(null);
@@ -375,9 +375,9 @@ export default function CustomersView({
     }
     setPaymentSaving(true);
     try {
-      await onAddCustomerPayment(paymentModalCustomer.id, amt, paymentForm.note);
+      await onAddCustomerPayment(paymentModalCustomer.id, amt, paymentForm.note, paymentForm.channel);
       setPaymentModalCustomerId(null);
-      setPaymentForm({ amount: '', note: '' });
+      setPaymentForm({ amount: '', note: '', channel: 'cash' });
     } finally {
       setPaymentSaving(false);
     }
@@ -841,6 +841,11 @@ export default function CustomersView({
                           >
                             <span className="flex-1 min-w-0">
                               {customerTransactionTypeLabel(t.type)}
+                              {t.paymentChannel === 'card'
+                                ? ' (فيزا)'
+                                : t.paymentChannel === 'cash'
+                                  ? ' (كاش)'
+                                  : ''}
                               {t.description ? ` — ${t.description}` : ''}
                               {t.date ? (
                                 <span className="block text-[10px] text-gray-400 mt-0.5">{formatLegacyDate(t.date)}</span>
@@ -902,7 +907,13 @@ export default function CustomersView({
                         <span className="font-semibold text-primary">#{o.orderNumber}</span>
                         {' — '}
                         {paymentTypeLabel(o.paymentType) ||
-                          (o.paymentType === 'debt' ? 'دين' : o.paymentType === 'mixed' ? 'كاش + دين' : 'كاش')}
+                          (o.paymentType === 'card'
+                            ? 'فيزا'
+                            : o.paymentType === 'debt'
+                              ? 'دين'
+                              : o.paymentType === 'mixed'
+                                ? 'كاش + دين'
+                                : 'كاش')}
                         <span className="block text-[10px] text-gray-400 mt-0.5 truncate">
                           {(o.items || []).length > 0
                             ? `${(o.items || []).length} أصناف`
@@ -1366,6 +1377,29 @@ export default function CustomersView({
               {fmtMoney(paymentModalCustomer.balance || 0)}
             </p>
             <form onSubmit={handleSubmitCustomerPayment} className="space-y-3">
+              <div>
+                <p className="text-xs mb-2 text-gray-600">طريقة السداد</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPaymentForm((f) => ({ ...f, channel: 'cash' }))}
+                    className={`py-2.5 rounded-xl border text-sm font-semibold ${
+                      paymentForm.channel !== 'card' ? 'border-green-500 bg-green-50 text-green-900' : 'border-gray-200'
+                    }`}
+                  >
+                    كاش (صندوق)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentForm((f) => ({ ...f, channel: 'card' }))}
+                    className={`py-2.5 rounded-xl border text-sm font-semibold ${
+                      paymentForm.channel === 'card' ? 'border-indigo-500 bg-indigo-50 text-indigo-900' : 'border-gray-200'
+                    }`}
+                  >
+                    فيزا
+                  </button>
+                </div>
+              </div>
               <div>
                 <label className="block text-xs mb-1 text-gray-600">مبلغ الدفعة</label>
                 <input

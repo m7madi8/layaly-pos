@@ -1,7 +1,8 @@
 import { db, doc, collection, addDoc, getDocs, query, orderBy, where, limit, runTransaction, serverTimestamp } from '../firebaseClient';
 import { computeExpectedCash } from '../utils/cashShiftMath';
 import { assertDocId, assertFirestoreDocRef } from '../utils/firestoreIds';
-import { vaultDocRef, applyVaultCredit } from './vaultService';
+import { vaultDocRef, applyVaultCredit, vaultCloseMovementRef } from './vaultService';
+import { closeVaultMovementId, closeCashDrawerMovementId } from '../utils/vaultCloseIds';
 import {
   appendOnDutyRosterEntry,
   buildOnDutyRosterInitial,
@@ -76,6 +77,10 @@ export async function openCashShift(uid, {
     onDutyStaffIds: duty,
     onDutyStaffRoster: roster,
     cashSales: 0,
+    cardSales: 0,
+    cardSaleCount: 0,
+    cardDebtRepayments: 0,
+    cardDebtRepaymentCount: 0,
     cashWithdrawals: 0,
     cashDeposits: 0,
     cashRefunds: 0,
@@ -251,6 +256,52 @@ async function appendMovementInTx(
   return mRef.id;
 }
 
+/** تسجيل بيع فيزا على الوردية — بدون حركة صندوق (لا يزيد النقد المتوقع). */
+export function recordCardSaleAdjustInTransaction(
+  tx,
+  uid,
+  { amount, shiftId, shiftSnap, decrementSaleCount = false }
+) {
+  const amt = Math.round((Number(amount) || 0) * 100) / 100;
+  if (!(amt > 0)) return null;
+  if (!shiftSnap?.exists?.()) throw new Error('وردية الكاش غير محمّلة');
+  const shift = shiftSnap.data();
+  if (shift.status !== 'open') {
+    throw new Error('وردية الكاش مغلقة — لا يمكن عكس مبيعات الفيزا بعد الإغلاق');
+  }
+  const shiftDocId = shiftId || shiftSnap.id;
+  const cardSales = Math.round(Math.max(0, (Number(shift.cardSales) || 0) - amt) * 100) / 100;
+  const prevCount = Number(shift.cardSaleCount) || 0;
+  const cardSaleCount = decrementSaleCount ? Math.max(0, prevCount - 1) : prevCount;
+  tx.update(cashShiftRef(uid, shiftDocId), {
+    cardSales,
+    cardSaleCount,
+    updatedAt: serverTimestamp(),
+    updatedAtMs: Date.now(),
+  });
+  return shiftDocId;
+}
+
+export async function recordCardSaleInTransaction(tx, uid, { amount, shiftId, shiftSnap }) {
+  const amt = Math.round((Number(amount) || 0) * 100) / 100;
+  if (!(amt > 0)) return null;
+  if (!shiftSnap?.exists?.()) {
+    throw new Error('وردية الكاش غير محمّلة داخل معاملة الطلب — أعد المحاولة بعد تحديث الصفحة');
+  }
+  const shift = shiftSnap.data();
+  if (shift.status !== 'open') throw new Error('وردية الكاش مغلقة');
+  const shiftDocId = shiftId || shiftSnap.id;
+  const cardSales = Math.round(((Number(shift.cardSales) || 0) + amt) * 100) / 100;
+  const cardSaleCount = (Number(shift.cardSaleCount) || 0) + 1;
+  tx.update(cashShiftRef(uid, shiftDocId), {
+    cardSales,
+    cardSaleCount,
+    updatedAt: serverTimestamp(),
+    updatedAtMs: Date.now(),
+  });
+  return shiftDocId;
+}
+
 /** Record cash sale inside an existing Firestore transaction (order + shift atomicity). */
 export async function recordCashSaleInTransaction(tx, uid, { amount, orderId, orderNumber, actor, shiftId, shiftSnap }) {
   if (!(Number(amount) > 0)) return null;
@@ -411,8 +462,19 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
     let finalWithdrawals = Number(shift.cashWithdrawals) || 0;
     let finalExpected = expected;
 
+    const vaultCloseMovementIdValue =
+      closingWithdrawal > 0 ? closeVaultMovementId(shiftId) : null;
+
     const vRef = vaultDocRef(uid);
+    const existingVaultMov = closingWithdrawal > 0 ? vaultCloseMovementRef(uid, shiftId) : null;
+    const drawerMovRef =
+      closingWithdrawal > 0
+        ? doc(movementsCol(uid), closeCashDrawerMovementId(shiftId))
+        : null;
+
     const vSnap = closingWithdrawal > 0 ? await tx.get(vRef) : null;
+    const priorMov = existingVaultMov ? await tx.get(existingVaultMov) : null;
+    const priorDrawer = drawerMovRef ? await tx.get(drawerMovRef) : null;
 
     if (closingWithdrawal > 0) {
       finalWithdrawals += closingWithdrawal;
@@ -423,8 +485,46 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
         cashWithdrawals: finalWithdrawals,
         cashRefunds: shift.cashRefunds,
       });
-      const mRef = doc(movementsCol(uid));
-      tx.set(mRef, {
+
+      if (priorMov?.exists()) {
+        throw new Error('تم نقل فائض هذا الشفت للخزنة مسبقاً — حدّث الصفحة');
+      }
+      if (priorDrawer?.exists()) {
+        throw new Error('تم نقل فائض هذا الشفت للصندوق مسبقاً — حدّث الصفحة');
+      }
+
+      const difference = Math.round((actual - finalExpected) * 100) / 100;
+      const closedAtMs = Date.now();
+      const workedSnapshot = buildWorkedStaffSnapshot({ ...shift, onDutyStaffRoster: shift.onDutyStaffRoster });
+      meta = { shiftId, shiftPeriod: period, closedAtMs };
+
+      tx.update(sRef, {
+        status: 'closed',
+        cashWithdrawals: finalWithdrawals,
+        expectedClosingBalance: finalExpected,
+        actualClosingBalance: actual,
+        vaultTransferOnClose: closingWithdrawal,
+        vaultCloseMovementId: vaultCloseMovementIdValue,
+        difference,
+        closingNotes: String(notes || '').trim(),
+        closedAt: serverTimestamp(),
+        closedAtMs,
+        closedBy: actor || null,
+        onDutyStaffWorkedSnapshot: workedSnapshot,
+        dutyClosedAtMs: closedAtMs,
+        updatedAt: serverTimestamp(),
+        updatedAtMs: Date.now(),
+      });
+
+      applyVaultCredit(tx, uid, vSnap, {
+        amount: closingWithdrawal,
+        type: 'from_cash_close',
+        reason: vaultLabel,
+        actor,
+        shiftId,
+      });
+
+      tx.set(drawerMovRef, {
         shiftId,
         type: 'withdrawal',
         amount: closingWithdrawal,
@@ -436,14 +536,7 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
         isClosingWithdrawal: true,
         toVault: true,
       });
-
-      applyVaultCredit(tx, uid, vSnap, {
-        amount: closingWithdrawal,
-        type: 'from_cash_close',
-        reason: vaultLabel,
-        actor,
-        shiftId,
-      });
+      return;
     }
 
     if (actual > expected + 0.001) {
@@ -459,7 +552,8 @@ export async function closeCashShift(uid, { shiftId, actualClosingBalance, notes
       cashWithdrawals: finalWithdrawals,
       expectedClosingBalance: finalExpected,
       actualClosingBalance: actual,
-      vaultTransferOnClose: closingWithdrawal,
+      vaultTransferOnClose: 0,
+      vaultCloseMovementId: null,
       difference,
       closingNotes: String(notes || '').trim(),
       closedAt: serverTimestamp(),

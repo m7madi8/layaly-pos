@@ -76,14 +76,16 @@ describe('trusted order engine (unit)', () => {
     expect(pay.finalStatus).toBe('paid');
   });
 
-  test('unsupported payment type rejected', () => {
-    expect(() =>
-      computePaymentBreakdown({
-        payment: { paymentType: 'card' },
-        total: 10,
-        customerId: '',
-        isAdmin: false,
-      })
-    ).toThrow();
+  test('card sale records cardPaid without cash', () => {
+    const pay = computePaymentBreakdown({
+      payment: { paymentType: 'card' },
+      total: 99,
+      customerId: '',
+      isAdmin: false,
+    });
+    expect(pay.cardPaid).toBe(99);
+    expect(pay.cashPaid).toBe(0);
+    expect(pay.paymentType).toBe('card');
+    expect(pay.paymentMethod).toBe('Card');
   });
 });

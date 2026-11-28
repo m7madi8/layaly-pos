@@ -1,6 +1,7 @@
 const admin = require('firebase-admin');
 const { computeExpectedCash } = require('./cashShiftMath');
 const { applyVaultCreditInTx, roundMoney } = require('./vaultAccounting');
+const { closeVaultMovementId, closeCashDrawerMovementId } = require('./vaultCloseIds');
 
 function buildWorkedStaffSnapshot(shift) {
   if (Array.isArray(shift?.onDutyStaffWorkedSnapshot) && shift.onDutyStaffWorkedSnapshot.length > 0) {
@@ -107,6 +108,38 @@ function appendCashMovementInTx(tx, db, uid, shiftSnap, {
   return mRef.id;
 }
 
+function recordCardSaleInTx(tx, shiftSnap, { amount }) {
+  const amt = roundMoney(amount);
+  if (!(amt > 0)) return;
+  if (!shiftSnap.exists) throw new Error('وردية الكاش غير موجودة');
+  const shift = shiftSnap.data();
+  if (shift.status !== 'open') throw new Error('وردية الكاش مغلقة');
+  const cardSales = roundMoney((Number(shift.cardSales) || 0) + amt);
+  const cardSaleCount = (Number(shift.cardSaleCount) || 0) + 1;
+  tx.update(shiftSnap.ref, {
+    cardSales,
+    cardSaleCount,
+    updatedAtMs: Date.now(),
+  });
+}
+
+/** إلغاء/استرجاع فيزا — يُقلّل صافي المبيعات دون لمس النقد. */
+function recordCardSaleAdjustInTx(tx, shiftSnap, { amount, decrementSaleCount = false }) {
+  const amt = roundMoney(amount);
+  if (!(amt > 0)) return;
+  if (!shiftSnap.exists) throw new Error('وردية الكاش غير موجودة');
+  const shift = shiftSnap.data();
+  if (shift.status !== 'open') throw new Error('وردية الكاش مغلقة — لا تُعكس مبيعات الفيزا بعد الإغلاق');
+  const cardSales = roundMoney(Math.max(0, (Number(shift.cardSales) || 0) - amt));
+  const prevCount = Number(shift.cardSaleCount) || 0;
+  const cardSaleCount = decrementSaleCount ? Math.max(0, prevCount - 1) : prevCount;
+  tx.update(shiftSnap.ref, {
+    cardSales,
+    cardSaleCount,
+    updatedAtMs: Date.now(),
+  });
+}
+
 function docExists(snap) {
   if (!snap) return false;
   return typeof snap.exists === 'function' ? snap.exists() : Boolean(snap.exists);
@@ -172,6 +205,8 @@ async function executeOpenCashShift(db, uid, payload, { actor }) {
       onDutyStaffIds: duty,
       onDutyStaffRoster: roster,
       cashSales: 0,
+      cardSales: 0,
+      cardSaleCount: 0,
       cashWithdrawals: 0,
       cashDeposits: 0,
       cashRefunds: 0,
@@ -229,8 +264,22 @@ async function executeCloseCashShift(db, uid, { shiftId, actualClosingBalance, n
     const period = Number(shift.shiftPeriod) === 2 ? 2 : 1;
     const vaultLabel = period === 2 ? 'إغلاق الشفت النهائي — للخزنة' : 'إغلاق الشفت الأول — للخزنة';
 
+    const vaultCloseMovementIdValue =
+      closingWithdrawal > 0 ? closeVaultMovementId(sid) : null;
+
     const vRef = db.doc(`users/${uid}/vault/main`);
+    const movRef =
+      closingWithdrawal > 0
+        ? db.doc(`users/${uid}/vaultMovements/${vaultCloseMovementIdValue}`)
+        : null;
+    const drawerRef =
+      closingWithdrawal > 0
+        ? db.doc(`users/${uid}/cashMovements/${closeCashDrawerMovementId(sid)}`)
+        : null;
+
     const vSnap = closingWithdrawal > 0 ? await tx.get(vRef) : null;
+    const priorMov = movRef ? await tx.get(movRef) : null;
+    const priorDrawer = drawerRef ? await tx.get(drawerRef) : null;
 
     let finalWithdrawals = Number(shift.cashWithdrawals) || 0;
     let finalExpected = expected;
@@ -245,12 +294,34 @@ async function executeCloseCashShift(db, uid, { shiftId, actualClosingBalance, n
         cashRefunds: shift.cashRefunds,
       });
 
-      appendCashMovementInTx(tx, db, uid, shiftSnapFromDoc(snap), {
-        type: 'withdrawal',
-        amount: closingWithdrawal,
-        reason: vaultLabel,
-        actor,
-        movementExtra: { isClosingWithdrawal: true, toVault: true },
+      if (priorMov.exists) {
+        throw new Error('تم نقل فائض هذا الشفت للخزنة مسبقاً');
+      }
+      if (priorDrawer.exists) {
+        throw new Error('حركة إغلاق الصندوق لهذا الشفت موجودة مسبقاً');
+      }
+
+      const difference = roundMoney(actual - finalExpected);
+      const closedAtMs = Date.now();
+      const workedSnapshot = buildWorkedStaffSnapshot(shift);
+      meta = { shiftId: sid, shiftPeriod: period, closedAtMs, closed: true };
+
+      tx.update(sRef, {
+        status: 'closed',
+        cashWithdrawals: finalWithdrawals,
+        expectedClosingBalance: finalExpected,
+        actualClosingBalance: actual,
+        vaultTransferOnClose: closingWithdrawal,
+        vaultCloseMovementId: vaultCloseMovementIdValue,
+        difference,
+        closingNotes: String(notes || '').trim(),
+        closedAt: serverTimestamp(db),
+        closedAtMs,
+        closedBy: actor || null,
+        onDutyStaffWorkedSnapshot: workedSnapshot,
+        dutyClosedAtMs: closedAtMs,
+        updatedAt: serverTimestamp(db),
+        updatedAtMs: Date.now(),
       });
 
       applyVaultCreditInTx(tx, db, uid, vSnap, {
@@ -260,6 +331,20 @@ async function executeCloseCashShift(db, uid, { shiftId, actualClosingBalance, n
         actor,
         shiftId: sid,
       });
+
+      tx.set(drawerRef, {
+        shiftId: sid,
+        type: 'withdrawal',
+        amount: closingWithdrawal,
+        reason: vaultLabel,
+        employeeId: actor?.role || null,
+        createdBy: actor || null,
+        createdAt: serverTimestamp(db),
+        createdAtMs: Date.now(),
+        isClosingWithdrawal: true,
+        toVault: true,
+      });
+      return;
     }
 
     const difference = roundMoney(actual - finalExpected);
@@ -271,7 +356,8 @@ async function executeCloseCashShift(db, uid, { shiftId, actualClosingBalance, n
       cashWithdrawals: finalWithdrawals,
       expectedClosingBalance: finalExpected,
       actualClosingBalance: actual,
-      vaultTransferOnClose: closingWithdrawal,
+      vaultTransferOnClose: 0,
+      vaultCloseMovementId: null,
       difference,
       closingNotes: String(notes || '').trim(),
       closedAt: serverTimestamp(db),
@@ -341,6 +427,8 @@ async function executeCashShiftMovement(
 
 module.exports = {
   appendCashMovementInTx,
+  recordCardSaleInTx,
+  recordCardSaleAdjustInTx,
   shiftSnapFromDoc,
   getOpenShiftDocInTx,
   executeOpenCashShift,

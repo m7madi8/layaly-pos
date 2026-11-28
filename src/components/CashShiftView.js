@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Wallet, Plus, Minus, Lock, Unlock, CalendarDays, X, ChevronLeft, Users } from 'lucide-react';
+import { Wallet, Plus, Minus, Lock, Unlock, CalendarDays, X, ChevronLeft, Users, CreditCard } from 'lucide-react';
 import { computeExpectedCash } from '../utils/cashShiftMath';
+import { summarizeShiftOrderSales } from '../utils/dashboardCashSales';
 import { shiftPeriodLabel } from '../utils/cashDayGate';
 import { listCashMovementsForShift } from '../services/cashShiftService';
 import { buildWorkedStaffSnapshot, getActiveOnDutyIdsFromShift } from '../utils/shiftOnDutyRoster';
@@ -265,6 +266,7 @@ export default function CashShiftView({
   openShift,
   lastClosedShift,
   shiftHistory = [],
+  orders = [],
   movements = [],
   staffMembers = [],
   canManageStaff = false,
@@ -343,6 +345,16 @@ export default function CashShiftView({
 
   const closingWithdrawal = Math.max(0, expected - (parseFloat(actualCash) || 0));
   const closeDifference = Math.round(((parseFloat(actualCash) || 0) - (expected - closingWithdrawal)) * 100) / 100;
+
+  const shiftSales = useMemo(() => {
+    if (!openShift) return null;
+    const fromOrders = summarizeShiftOrderSales(orders, openShift.openedAtMs, Date.now());
+    return {
+      ...fromOrders,
+      registerCashSales: totals?.cashSales ?? 0,
+      cardSalesShift: Number(openShift.cardSales) || fromOrders.cardSales,
+    };
+  }, [openShift, orders, totals]);
 
   const shiftMovements = useMemo(
     () =>
@@ -442,11 +454,15 @@ export default function CashShiftView({
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
             {[
               ['الرصيد الافتتاحي', totals.openingBalance],
-              ['مبيعات كاش', totals.cashSales],
+              ['مبيعات كاش (صندوق)', totals.cashSales],
+              ['مبيعات فيزا', shiftSales?.cardSalesShift ?? 0],
+              ['تحصيل دين (فيزا)', Number(openShift.cardDebtRepayments) || 0],
+              ['مبيعات دين', shiftSales?.debtSales ?? 0],
+              ['إجمالي مبيعات الشفت', shiftSales?.totalSales ?? 0],
               ['سحوبات', totals.cashWithdrawals],
               ['إيداعات', totals.cashDeposits],
               ['مرتجعات كاش', totals.cashRefunds],
-              ['الرصيد المتوقع', expected],
+              ['الرصيد المتوقع (نقد)', expected],
             ].map(([label, value]) => (
               <div key={label} className="bg-white rounded-2xl border border-gray-200 p-4">
                 <p className="text-xs text-gray-500 mb-1" style={{ fontFamily: FONT_UI }}>{label}</p>
@@ -666,9 +682,19 @@ export default function CashShiftView({
               {Number(openShift.shiftPeriod) === 2 ? 'تسكير الشفت النهائي' : 'تسكير الشفت الأول'}
             </h3>
             <p className="text-sm text-gray-600 mb-2" style={{ fontFamily: FONT_UI }}>
-              الرصيد المتوقع في الصندوق: <strong>{fmtMoney(expected)}</strong>
+              النقد المتوقع في الصندوق: <strong>{fmtMoney(expected)}</strong>
             </p>
-            <label className="block text-xs text-gray-500 mb-1">كم تريد أن يبقى في الصندوق؟ (₪)</label>
+            {shiftSales && (
+              <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2.5 mb-3 text-xs space-y-1" style={{ fontFamily: FONT_UI }}>
+                <p>إجمالي مبيعات الشفت: <strong>{fmtMoney(shiftSales.totalSales)}</strong></p>
+                <p>كاش (صندوق): <strong>{fmtMoney(shiftSales.registerCashSales)}</strong></p>
+                <p className="flex items-center gap-1 text-indigo-800">
+                  <CreditCard size={12} /> فيزا: <strong>{fmtMoney(shiftSales.cardSalesShift)}</strong>
+                </p>
+                <p>دين: <strong>{fmtMoney(shiftSales.debtSales)}</strong></p>
+              </div>
+            )}
+            <label className="block text-xs text-gray-500 mb-1">النقد الفعلي في الصندوق (₪)</label>
             <input
               type="number"
               min="0"

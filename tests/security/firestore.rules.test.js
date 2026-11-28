@@ -57,6 +57,76 @@ async function seedSupplier(tenantId, supplierId, data) {
   });
 }
 
+async function seedShiftCloseFixtures(tenantId, adminUid, cashierUid, shiftId = 'shift-open') {
+  await seedTenant(tenantId, adminUid, cashierUid);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.doc(`users/${tenantId}/vault/main`).set({ balance: 50, totalCapitalIn: 50 });
+    await db.doc(`users/${tenantId}/cashShifts/${shiftId}`).set({
+      status: 'open',
+      shiftPeriod: 1,
+      cashSales: 0,
+      openingBalance: 0,
+    });
+  });
+}
+
+function closeVaultMovementId(shiftId) {
+  return `from_cash_close_${shiftId}`;
+}
+
+function closeCashDrawerMovementId(shiftId) {
+  return `shift_close_vault_${shiftId}`;
+}
+
+/** Legitimate atomic shift close (mirror client order: shift → movement → vault). */
+async function runLegitShiftClose(firestore, tenantId, shiftId, amount, prevBalance = 50) {
+  const movId = closeVaultMovementId(shiftId);
+  const closedAtMs = Date.now();
+  await firestore.runTransaction(async (tx) => {
+    const shiftRef = firestore.doc(`users/${tenantId}/cashShifts/${shiftId}`);
+    const vaultRef = firestore.doc(`users/${tenantId}/vault/main`);
+    const movRef = firestore.doc(`users/${tenantId}/vaultMovements/${movId}`);
+    tx.update(shiftRef, {
+      status: 'closed',
+      vaultTransferOnClose: amount,
+      vaultCloseMovementId: movId,
+      closedAtMs,
+    });
+    tx.set(movRef, {
+      type: 'from_cash_close',
+      amount,
+      reason: 'إغلاق الشفت',
+      shiftId,
+      createdBy: { role: 'cashier' },
+      employeeId: 'cashier',
+      createdAt: new Date(),
+      createdAtMs: Date.now(),
+    });
+    tx.set(
+      vaultRef,
+      {
+        balance: prevBalance + amount,
+        totalCapitalIn: 50,
+        lastVaultCloseShiftId: shiftId,
+        lastVaultCloseAmount: amount,
+        lastVaultCloseMovementId: movId,
+        updatedAtMs: Date.now(),
+      },
+      { merge: true }
+    );
+    tx.set(firestore.doc(`users/${tenantId}/cashMovements/${closeCashDrawerMovementId(shiftId)}`), {
+      shiftId,
+      type: 'withdrawal',
+      amount,
+      reason: 'إغلاق',
+      toVault: true,
+      isClosingWithdrawal: true,
+      createdAtMs: Date.now(),
+    });
+  });
+}
+
 test('legacy unmigrated owner retains full write', async () => {
   const owner = dbAs('legacyOwner1');
   await assertSucceeds(owner.doc('users/legacyOwner1').set({ businessName: 'Legacy' }));
@@ -74,7 +144,7 @@ test('cashier can read/write orders under tenant', async () => {
   );
 });
 
-test('cashier cannot write vault', async () => {
+test('cashier cannot write vault without shift close transaction', async () => {
   const tenantId = 'cafe2';
   const adminUid = 'admin2';
   const cashierUid = 'cash2';
@@ -82,6 +152,18 @@ test('cashier cannot write vault', async () => {
   const cashierDb = dbAs(cashierUid);
   await assertFails(
     cashierDb.doc(`users/${tenantId}/vault/main`).set({ balance: 99 })
+  );
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().doc(`users/${tenantId}/vault/main`).set({ balance: 50, totalCapitalIn: 0 });
+  });
+  await assertFails(
+    cashierDb.doc(`users/${tenantId}/vault/main`).update({
+      balance: 60,
+      lastVaultCloseShiftId: 'fake',
+      lastVaultCloseAmount: 10,
+      lastVaultCloseMovementId: 'from_cash_close_fake',
+      updatedAtMs: Date.now(),
+    })
   );
 });
 
@@ -104,47 +186,15 @@ test('admin can record a vault movement when closing a shift', async () => {
   );
 });
 
-test('cashier can credit the vault only for a shift close', async () => {
+test('cashier atomic shift close credits vault once', async () => {
   const tenantId = 'cafe2c';
-  const adminUid = 'admin2c';
-  const cashierUid = 'cash2c';
-  await seedTenant(tenantId, adminUid, cashierUid);
-  await testEnv.withSecurityRulesDisabled(async (context) => {
-    await context.firestore().doc(`users/${tenantId}/vault/main`).set({
-      balance: 100,
-      totalCapitalIn: 100,
-    });
-  });
-  const cashierDb = dbAs(cashierUid);
-  await assertSucceeds(
-    cashierDb.doc(`users/${tenantId}/vault/main`).update({
-      balance: 317.5,
-      updatedAt: new Date(),
-      updatedAtMs: Date.now(),
-    })
-  );
-  await assertSucceeds(
-    cashierDb.collection(`users/${tenantId}/vaultMovements`).doc('close1').set({
-      type: 'from_cash_close',
-      amount: 217.5,
-      reason: 'إغلاق الشفت',
-      shiftId: 'shift1',
-      createdBy: { role: 'cashier' },
-      employeeId: 'cashier',
-      createdAt: new Date(),
-      createdAtMs: Date.now(),
-    })
-  );
-  await assertFails(
-    cashierDb.collection(`users/${tenantId}/vaultMovements`).doc('cap1').set({
-      type: 'capital',
-      amount: 50,
-      reason: 'رأس مال',
-      shiftId: 'shift1',
-      createdAt: new Date(),
-      createdAtMs: Date.now(),
-    })
-  );
+  const shiftId = 'shift-open';
+  await seedShiftCloseFixtures(tenantId, 'admin2c', 'cash2c', shiftId);
+  const cashierDb = dbAs('cash2c');
+  await assertSucceeds(runLegitShiftClose(cashierDb, tenantId, shiftId, 20));
+  const vault = (await cashierDb.doc(`users/${tenantId}/vault/main`).get()).data();
+  expect(vault.balance).toBe(70);
+  await assertFails(runLegitShiftClose(cashierDb, tenantId, shiftId, 20));
 });
 
 test('cashier cannot patch supplier balance only', async () => {
@@ -272,4 +322,221 @@ test('intruder cannot self-enroll as admin on existing tenant', async () => {
   await assertFails(
     intruderDb.doc(`tenants/${tenantId}/members/${intruder}`).set({ role: 'admin', active: true })
   );
+});
+
+test('orphan shift close with vault transfer is rejected', async () => {
+  const tenantId = 'shiftforge1';
+  await seedShiftCloseFixtures(tenantId, 'adm_sf', 'cash_sf');
+  const db = dbAs('cash_sf');
+  const shiftId = 'shift-open';
+  await assertFails(
+    db.doc(`users/${tenantId}/cashShifts/${shiftId}`).update({
+      status: 'closed',
+      vaultTransferOnClose: 500,
+      vaultCloseMovementId: closeVaultMovementId(shiftId),
+      closedAtMs: Date.now(),
+    })
+  );
+});
+
+test('shift close without vault transfer remains allowed', async () => {
+  const tenantId = 'shiftzero';
+  await seedShiftCloseFixtures(tenantId, 'adm_z', 'cash_z');
+  const db = dbAs('cash_z');
+  await assertSucceeds(
+    db.doc(`users/${tenantId}/cashShifts/shift-open`).update({
+      status: 'closed',
+      vaultTransferOnClose: 0,
+      vaultCloseMovementId: null,
+      closedAtMs: Date.now(),
+    })
+  );
+});
+
+test('cashier operational shift patch allowed', async () => {
+  const tenantId = 'shiftop1';
+  await seedShiftCloseFixtures(tenantId, 'adm_so', 'cash_so');
+  const db = dbAs('cash_so');
+  await assertSucceeds(
+    db.doc(`users/${tenantId}/cashShifts/shift-open`).update({
+      status: 'open',
+      cardSales: 10,
+      cardSaleCount: 1,
+    })
+  );
+});
+
+describe('malicious client financial writes', () => {
+  test('cashier cannot forge vault balance on create', async () => {
+    const tenantId = 'mal1';
+    const db = dbAs('cash1');
+    await seedTenant(tenantId, 'adm1', 'cash1');
+    await assertFails(db.doc(`users/${tenantId}/vault/main`).set({ balance: 9999, totalCapitalIn: 0, updatedAtMs: 1 }));
+  });
+
+  test('cashier cannot decrease vault balance', async () => {
+    const tenantId = 'mal2';
+    await seedShiftCloseFixtures(tenantId, 'adm2', 'cash2');
+    const db = dbAs('cash2');
+    await assertFails(
+      db.doc(`users/${tenantId}/vault/main`).update({
+        balance: 10,
+        totalCapitalIn: 50,
+        updatedAt: new Date(),
+        updatedAtMs: Date.now(),
+      })
+    );
+  });
+
+  test('cashier cannot create standalone from_cash_close movement', async () => {
+    const tenantId = 'mal7';
+    await seedShiftCloseFixtures(tenantId, 'adm7', 'cash7');
+    const db = dbAs('cash7');
+    const movId = closeVaultMovementId('shift-open');
+    await assertFails(
+      db.doc(`users/${tenantId}/vaultMovements/${movId}`).set({
+        type: 'from_cash_close',
+        amount: 20,
+        reason: 'إغلاق',
+        shiftId: 'shift-open',
+        createdBy: { role: 'cashier' },
+        employeeId: 'cashier',
+        createdAt: new Date(),
+        createdAtMs: Date.now(),
+      })
+    );
+  });
+
+  test('cashier cannot create capital movement', async () => {
+    const tenantId = 'malcap';
+    await seedShiftCloseFixtures(tenantId, 'adm_cap', 'cash_cap');
+    const db = dbAs('cash_cap');
+    await assertFails(
+      db.collection(`users/${tenantId}/vaultMovements`).doc('cap1').set({
+        type: 'capital',
+        amount: 50,
+        reason: 'رأس مال',
+        shiftId: 'shift-open',
+        createdAt: new Date(),
+        createdAtMs: Date.now(),
+      })
+    );
+  });
+
+  test('cashier cannot replay vault credit after shift closed', async () => {
+    const tenantId = 'mal8';
+    const shiftId = 'shift-open';
+    await seedShiftCloseFixtures(tenantId, 'adm8', 'cash8', shiftId);
+    const db = dbAs('cash8');
+    await runLegitShiftClose(db, tenantId, shiftId, 5);
+    const movId = closeVaultMovementId(shiftId);
+    await assertFails(
+      db.doc(`users/${tenantId}/vaultMovements/${movId}`).set({
+        type: 'from_cash_close',
+        amount: 5,
+        reason: 'إعادة',
+        shiftId,
+        createdBy: { role: 'cashier' },
+        employeeId: 'cashier',
+        createdAt: new Date(),
+        createdAtMs: Date.now(),
+      })
+    );
+    await assertFails(runLegitShiftClose(db, tenantId, shiftId, 5));
+  });
+
+  test('cashier cannot use wrong deterministic movement id', async () => {
+    const tenantId = 'malid';
+    await seedShiftCloseFixtures(tenantId, 'adm_id', 'cash_id');
+    const db = dbAs('cash_id');
+    const shiftId = 'shift-open';
+    await assertFails(
+      db.runTransaction(async (tx) => {
+        const movId = 'from_cash_close_wrong';
+        tx.update(db.doc(`users/${tenantId}/cashShifts/${shiftId}`), {
+          status: 'closed',
+          vaultTransferOnClose: 10,
+          vaultCloseMovementId: movId,
+          closedAtMs: Date.now(),
+        });
+        tx.set(db.doc(`users/${tenantId}/vaultMovements/${movId}`), {
+          type: 'from_cash_close',
+          amount: 10,
+          reason: 'x',
+          shiftId,
+          createdBy: { role: 'cashier' },
+          employeeId: 'cashier',
+          createdAt: new Date(),
+          createdAtMs: Date.now(),
+        });
+      })
+    );
+  });
+
+  test('fabricated business summary with totals denied', async () => {
+    const tenantId = 'malbd';
+    const closedAtMs = 1_700_000_000_000;
+    await seedTenant(tenantId, 'adm_bd', 'cash_bd');
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await db.doc(`users/${tenantId}/cashShifts/s1`).set({
+        status: 'closed',
+        shiftPeriod: 1,
+        closedAtMs: closedAtMs - 1000,
+      });
+      await db.doc(`users/${tenantId}/cashShifts/s2`).set({
+        status: 'closed',
+        shiftPeriod: 2,
+        closedAtMs,
+      });
+    });
+    const db = dbAs('cash_bd');
+    await assertFails(
+      db.collection(`users/${tenantId}/businessDaySummaries`).doc('x').set({
+        businessDayKey: '2024-01-01',
+        closedAtMs,
+        shift1Id: 's1',
+        shift2Id: 's2',
+        totalSales: 99999,
+        createdAt: new Date(),
+      })
+    );
+    await assertSucceeds(
+      db.collection(`users/${tenantId}/businessDaySummaries`).doc('ok').set({
+        businessDayKey: '2024-01-01',
+        closedAtMs,
+        shift1Id: 's1',
+        shift2Id: 's2',
+        createdAt: new Date(),
+      })
+    );
+  });
+
+  test('cross-tenant vault movement denied', async () => {
+    await seedShiftCloseFixtures('tenantA', 'admA', 'cashA');
+    await seedShiftCloseFixtures('tenantB', 'admB', 'cashB', 'shift-b');
+    const db = dbAs('cashA');
+    await assertFails(
+      db.runTransaction(async (tx) => {
+        const shiftId = 'shift-b';
+        const movId = closeVaultMovementId(shiftId);
+        tx.update(db.doc('users/tenantB/cashShifts/shift-b'), {
+          status: 'closed',
+          vaultTransferOnClose: 5,
+          vaultCloseMovementId: movId,
+          closedAtMs: Date.now(),
+        });
+        tx.set(db.doc(`users/tenantB/vaultMovements/${movId}`), {
+          type: 'from_cash_close',
+          amount: 5,
+          reason: 'x',
+          shiftId,
+          createdBy: { role: 'cashier' },
+          employeeId: 'cashier',
+          createdAt: new Date(),
+          createdAtMs: Date.now(),
+        });
+      })
+    );
+  });
 });

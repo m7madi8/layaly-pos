@@ -3,7 +3,10 @@ import {
   orderCashCollected,
   orderDebtRecorded,
   computeTodayCashSales,
+  computeTodayCardSales,
   computeTodayDebtSales,
+  orderCardCollected,
+  sumTodayCardDebtRepaymentsFromShifts,
   isOrderOnOrAfterDayStart,
 } from './dashboardCashSales';
 
@@ -80,6 +83,26 @@ describe('orderDebtRecorded / computeTodayDebtSales', () => {
   });
 });
 
+describe('orderCardCollected / computeTodayCardSales', () => {
+  const dayStart = new Date(2026, 9, 26, 0, 0, 0, 0);
+  const todayNoon = new Date(2026, 9, 26, 12, 0, 0);
+
+  test('card paid order does not count as cash', () => {
+    expect(orderCardCollected({ status: 'paid', paymentType: 'card', cardPaid: 60, total: 60 })).toBe(60);
+    expect(
+      orderCashCollected({ status: 'paid', paymentType: 'card', cardPaid: 60, cashPaid: 0, total: 60 })
+    ).toBe(0);
+  });
+
+  test('sums today card sales', () => {
+    const orders = [
+      { status: 'paid', paymentType: 'card', cardPaid: 40, timestamp: ts(todayNoon) },
+      { status: 'paid', paymentType: 'cash', cashPaid: 30, timestamp: ts(todayNoon) },
+    ];
+    expect(computeTodayCardSales(orders, dayStart)).toBe(40);
+  });
+});
+
 describe('computeTodayCashSales', () => {
   const dayStart = new Date(2026, 9, 26, 0, 0, 0, 0);
   const todayNoon = new Date(2026, 9, 26, 12, 0, 0);
@@ -101,6 +124,20 @@ describe('computeTodayCashSales', () => {
       { status: 'cancelled', cashPaid: 80, timestamp: ts(todayNoon) },
     ];
     expect(computeTodayCashSales(orders, dayStart)).toBe(0);
+  });
+});
+
+describe('sumTodayCardDebtRepaymentsFromShifts', () => {
+  const dayStart = new Date(2026, 9, 26, 0, 0, 0, 0);
+  const todayMs = new Date(2026, 9, 26, 14, 0, 0).getTime();
+
+  test('sums card debt repayments on shifts anchored today', () => {
+    const shifts = [
+      { status: 'open', openedAtMs: todayMs, cardDebtRepayments: 30 },
+      { status: 'closed', closedAtMs: todayMs, cardDebtRepayments: 20 },
+      { status: 'closed', closedAtMs: new Date(2026, 9, 25).getTime(), cardDebtRepayments: 99 },
+    ];
+    expect(sumTodayCardDebtRepaymentsFromShifts(shifts, dayStart)).toBe(50);
   });
 });
 

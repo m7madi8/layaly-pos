@@ -9,6 +9,15 @@ export function friendlyError(error, fallback) {
   const msg = typeof error === 'string' ? error : error?.message || '';
   const code = typeof error === 'object' && error ? error.code : '';
   if (
+    code === 'permission-denied' ||
+    /insufficient permissions|missing or insufficient permissions/i.test(msg)
+  ) {
+    return (
+      'تعذّر الإجراء: صلاحيات قاعدة البيانات غير كافية. ' +
+      'عند إغلاق الشفت تأكد من نشر قواعد Firestore الأخيرة (vaultMovements وbusinessDaySummaries).'
+    );
+  }
+  if (
     code === 'resource-exhausted' ||
     /quota exceeded|too many requests|429/i.test(msg)
   ) {

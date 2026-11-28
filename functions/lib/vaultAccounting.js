@@ -1,4 +1,5 @@
 const admin = require('firebase-admin');
+const { closeVaultMovementId } = require('./vaultCloseIds');
 
 function serverTimestamp(db) {
   const FV = db?.constructor?.FieldValue || admin.firestore.FieldValue;
@@ -20,18 +21,25 @@ function applyVaultCreditInTx(tx, db, uid, vaultSnap, { amount, type, reason, ac
   const totalCapitalIn = exists ? Number(vaultSnap.data().totalCapitalIn) || 0 : 0;
   const capitalAdd = type === 'capital' ? amt : 0;
 
-  tx.set(
-    vRef,
-    {
-      balance: roundMoney(prev + amt),
-      totalCapitalIn: roundMoney(totalCapitalIn + capitalAdd),
-      updatedAt: serverTimestamp(db),
-      updatedAtMs: Date.now(),
-    },
-    { merge: true }
-  );
+  const isShiftClose = type === 'from_cash_close' && shiftId;
+  const movId = isShiftClose ? closeVaultMovementId(shiftId) : null;
+  const vaultPatch = {
+    balance: roundMoney(prev + amt),
+    totalCapitalIn: roundMoney(totalCapitalIn + capitalAdd),
+    updatedAt: serverTimestamp(db),
+    updatedAtMs: Date.now(),
+  };
+  if (isShiftClose) {
+    vaultPatch.lastVaultCloseShiftId = String(shiftId);
+    vaultPatch.lastVaultCloseAmount = amt;
+    vaultPatch.lastVaultCloseMovementId = movId;
+  }
 
-  const mRef = db.collection(`users/${uid}/vaultMovements`).doc();
+  tx.set(vRef, vaultPatch, { merge: true });
+
+  const mRef = isShiftClose
+    ? db.doc(`users/${uid}/vaultMovements/${movId}`)
+    : db.collection(`users/${uid}/vaultMovements`).doc();
   tx.set(mRef, {
     type,
     amount: amt,

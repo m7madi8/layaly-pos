@@ -39,7 +39,10 @@ export default function DailyArchivePanel({ uid, fmtMoney }) {
               {d.closedAtMs ? new Date(d.closedAtMs).toLocaleString('ar') : '—'}
             </p>
             {d.totalSales != null && (
-              <p className="text-xs mt-2">مبيعات: {fmtMoney(d.totalSales)}</p>
+              <p className="text-xs mt-2">
+                مبيعات: {fmtMoney(d.totalSales)}
+                {d.cardSales != null ? ` · فيزا: ${fmtMoney(d.cardSales)}` : ''}
+              </p>
             )}
           </button>
         ))}

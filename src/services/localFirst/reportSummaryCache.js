@@ -2,7 +2,7 @@
  * CACHE_ONLY historical business day summaries (admin reports / archive).
  */
 
-import { listBusinessDaySummaries } from '../businessDayService';
+import { listBusinessDaySummaries, hydrateBusinessDaySummaryForDisplay } from '../businessDayService';
 
 /** @type {Map<string, { rows: object[], expires: number }>} */
 const cache = new Map();
@@ -15,8 +15,11 @@ export async function loadRecentBusinessSummaries(uid, { max = 60, force = false
     return hit.rows;
   }
   const rows = await listBusinessDaySummaries(uid, max);
-  cache.set(key, { rows, expires: Date.now() + TTL_MS });
-  return rows;
+  const hydrated = await Promise.all(
+    rows.map((row) => hydrateBusinessDaySummaryForDisplay(uid, row))
+  );
+  cache.set(key, { rows: hydrated, expires: Date.now() + TTL_MS });
+  return hydrated;
 }
 
 export function invalidateReportSummaryCache(uid) {

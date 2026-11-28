@@ -12,8 +12,10 @@ import {
 import { getLocalCalendarDayStart } from '../../utils/dashboardCashSales';
 import {
   computeTodayCashSales,
+  computeTodayCardSales,
   computeTodayDebtSales,
   isOrderOnOrAfterDayStart,
+  orderCardCollected,
 } from '../../utils/dashboardCashSales';
 import { mapOrderSnapshot } from '../../utils/firestoreOrderQueries';
 import { getCashDayKey } from '../../utils/cashDayPeriod';
@@ -47,6 +49,8 @@ export function aggregateDashboardTodayMetrics(orders, dayStart = getLocalCalend
     salesTotalPaid: money(paid.reduce((s, o) => s + (Number(o.total) || 0), 0)),
     pendingTotal: money(unpaid.reduce((s, o) => s + (Number(o.total) || 0), 0)),
     cashSales: computeTodayCashSales(today, dayStart),
+    cardSales: computeTodayCardSales(today, dayStart),
+    cardSaleCount: today.filter((o) => orderCardCollected(o) > 0).length,
     debtSales: computeTodayDebtSales(today, dayStart),
     paymentStats,
     profitTotal: money(paid.reduce((s, o) => s + (Number(o.profit) || 0), 0)),

@@ -40,10 +40,12 @@ export const orderStatusLabel = (status) => {
 export const paymentTypeLabel = (type) => {
   const map = {
     cash: 'كاش',
+    card: 'فيزا',
     debt: 'دين',
     mixed: 'كاش + دين',
     compliment: 'مجاني',
     pending: 'مؤجل',
+    employee_debt: 'دين موظف',
   };
   return map[type] || type;
 };
@@ -67,6 +69,7 @@ export const categoryLabel = (cat) => (cat === 'all' ? 'الكل' : cat);
 export const paymentMethodLabel = (method) => {
   const map = {
     Cash: 'كاش',
+    Card: 'فيزا',
     Debt: 'دين',
     Mixed: 'كاش + دين',
     'Debit Card': 'بطاقة خصم',

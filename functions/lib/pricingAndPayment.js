@@ -1,6 +1,6 @@
 const { roundMoney } = require('./productPricing');
 
-const SUPPORTED_PAYMENT_TYPES = new Set(['cash', 'debt', 'mixed', 'pending', 'compliment']);
+const SUPPORTED_PAYMENT_TYPES = new Set(['cash', 'card', 'debt', 'mixed', 'pending', 'compliment']);
 
 function computePaymentBreakdown({ payment, total, customerId, isAdmin, employeeSaleStaffId }) {
   const empId = employeeSaleStaffId ? String(employeeSaleStaffId).trim() : '';
@@ -20,7 +20,10 @@ function computePaymentBreakdown({ payment, total, customerId, isAdmin, employee
     return { finalStatus: 'unpaid', paymentMethod: paymentMethod || 'Pending', paymentType: 'pending', cashPaid: 0, debtAmount: 0 };
   }
   if (paymentType === 'cash') {
-    return { finalStatus: 'paid', paymentMethod: 'Cash', paymentType: 'cash', cashPaid: total, debtAmount: 0 };
+    return { finalStatus: 'paid', paymentMethod: 'Cash', paymentType: 'cash', cashPaid: total, debtAmount: 0, cardPaid: 0 };
+  }
+  if (paymentType === 'card') {
+    return { finalStatus: 'paid', paymentMethod: 'Card', paymentType: 'card', cashPaid: 0, debtAmount: 0, cardPaid: total };
   }
   if (paymentType === 'debt') {
     if (empId && !customerId) {

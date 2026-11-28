@@ -51,8 +51,54 @@ service cloud.firestore {
     function adminOnlyCollection(sub) {
       return sub in [
         'vault', 'vaultMovements', 'payrollAccruals', 'payrollPayments',
-        'businessDayAdjustments', 'orderReturnAudits'
+        'businessDayAdjustments', 'orderReturnAudits', 'businessDays'
       ];
+    }
+
+    function closeVaultMovementId(shiftId) {
+      return 'from_cash_close_' + shiftId;
+    }
+
+    function closeCashDrawerMovementId(shiftId) {
+      return 'shift_close_vault_' + shiftId;
+    }
+
+    function vaultMainPath(tenantId) {
+      return /databases/$(database)/documents/users/$(tenantId)/vault/main;
+    }
+
+    function closeCashDrawerMovementPath(tenantId, shiftId) {
+      return /databases/$(database)/documents/users/$(tenantId)/cashMovements/$(closeCashDrawerMovementId(shiftId));
+    }
+
+    function shiftDocPath(tenantId, shiftId) {
+      return /databases/$(database)/documents/users/$(tenantId)/cashShifts/$(shiftId);
+    }
+
+    function shiftAfter(tenantId, shiftId) {
+      return getAfter(shiftDocPath(tenantId, shiftId));
+    }
+
+    function vaultMovementAfterPath(tenantId, movementId) {
+      return /databases/$(database)/documents/users/$(tenantId)/vaultMovements/$(movementId);
+    }
+
+    function shiftWasOpenForVault(tenantId, shiftId) {
+      return exists(shiftDocPath(tenantId, shiftId))
+        && get(shiftDocPath(tenantId, shiftId)).data.status == 'open';
+    }
+
+    function shiftAfterClosedForVault(tenantId, shiftId) {
+      return existsAfter(shiftDocPath(tenantId, shiftId))
+        && shiftAfter(tenantId, shiftId).data.status == 'closed'
+        && shiftAfter(tenantId, shiftId).data.vaultTransferOnClose is number
+        && shiftAfter(tenantId, shiftId).data.vaultTransferOnClose > 0;
+    }
+
+    function shiftClosesForVaultInTxn(tenantId, shiftId) {
+      return shiftWasOpenForVault(tenantId, shiftId)
+        && shiftAfterClosedForVault(tenantId, shiftId)
+        && shiftAfter(tenantId, shiftId).data.vaultCloseMovementId == closeVaultMovementId(shiftId);
     }
 
     function isBalanceOnlySupplierPatch() {
@@ -74,36 +120,145 @@ service cloud.firestore {
       ]);
     }
 
-    /** نقل فائض الصندوق إلى الخزنة عند إغلاق الشفت فقط. */
-    function isCashCloseVaultMovement() {
-      return request.resource.data.type == 'from_cash_close'
+    function isCashCloseVaultMovementDoc(tenantId, movementId) {
+      let shiftId = request.resource.data.shiftId;
+      return isTenantCashier(tenantId)
+        && request.resource.data.type == 'from_cash_close'
         && request.resource.data.amount is number
         && request.resource.data.amount > 0
-        && request.resource.data.shiftId is string
+        && shiftId is string
+        && shiftId.size() > 0
+        && movementId == closeVaultMovementId(shiftId)
+        && !exists(vaultMovementAfterPath(tenantId, movementId))
+        && shiftWasOpenForVault(tenantId, shiftId)
+        && existsAfter(shiftDocPath(tenantId, shiftId))
+        && shiftAfter(tenantId, shiftId).data.status == 'closed'
+        && shiftAfter(tenantId, shiftId).data.vaultTransferOnClose == request.resource.data.amount
+        && existsAfter(closeCashDrawerMovementPath(tenantId, shiftId))
+        && getAfter(closeCashDrawerMovementPath(tenantId, shiftId)).data.amount
+            == request.resource.data.amount
         && request.resource.data.keys().hasOnly([
           'type', 'amount', 'reason', 'shiftId', 'createdBy', 'employeeId', 'createdAt', 'createdAtMs'
         ]);
     }
 
-    function isCashCloseVaultCreate() {
-      return request.resource.data.keys().hasAll([
-          'balance', 'totalCapitalIn', 'updatedAt', 'updatedAtMs'
-        ])
-        && request.resource.data.keys().hasOnly([
-          'balance', 'totalCapitalIn', 'updatedAt', 'updatedAtMs'
-        ])
-        && request.resource.data.balance is number
-        && request.resource.data.balance > 0
-        && request.resource.data.totalCapitalIn is number;
-    }
-
-    function isCashCloseVaultIncrease() {
-      return resource != null
+  /** زيادة الخزنة فقط ضمن معاملة إغلاق شفت مرتبطة (getAfter). */
+    function isCashCloseVaultIncrease(tenantId) {
+      let shiftId = request.resource.data.lastVaultCloseShiftId;
+      return isTenantCashier(tenantId)
+        && resource != null
         && request.resource.data.balance is number
         && resource.data.balance is number
         && request.resource.data.balance > resource.data.balance
+        && request.resource.data.keys().hasAll([
+          'balance', 'updatedAtMs',
+          'lastVaultCloseShiftId', 'lastVaultCloseAmount', 'lastVaultCloseMovementId'
+        ])
+        && request.resource.data.lastVaultCloseAmount
+            == request.resource.data.balance - resource.data.balance
+        && request.resource.data.lastVaultCloseMovementId == closeVaultMovementId(shiftId)
+        && shiftWasOpenForVault(tenantId, shiftId)
+        && shiftAfterClosedForVault(tenantId, shiftId)
+        && shiftAfter(tenantId, shiftId).data.vaultCloseMovementId == closeVaultMovementId(shiftId)
+        && shiftAfter(tenantId, shiftId).data.vaultTransferOnClose
+            == request.resource.data.lastVaultCloseAmount
+        && existsAfter(vaultMovementAfterPath(tenantId, closeVaultMovementId(shiftId)))
+        && getAfter(vaultMovementAfterPath(tenantId, closeVaultMovementId(shiftId))).data.amount
+            == request.resource.data.lastVaultCloseAmount
         && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['balance', 'totalCapitalIn', 'updatedAt', 'updatedAtMs']);
+            .hasOnly([
+              'balance', 'totalCapitalIn', 'updatedAt', 'updatedAtMs',
+              'lastVaultCloseShiftId', 'lastVaultCloseAmount', 'lastVaultCloseMovementId'
+            ]);
+    }
+
+    function cashierForbiddenOpenShiftPatch() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny([
+            'status', 'openingBalance', 'shiftPeriod', 'openedAt', 'openedAtMs', 'openedBy',
+            'closedAt', 'closedAtMs', 'closedBy', 'vaultTransferOnClose', 'vaultCloseMovementId',
+            'actualClosingBalance', 'expectedClosingBalance', 'difference', 'closingNotes'
+          ]);
+    }
+
+    function isCashShiftOpenCreate() {
+      return request.resource.data.status == 'open'
+        && request.resource.data.shiftPeriod in [1, 2]
+        && request.resource.data.openingBalance is number
+        && request.resource.data.openingBalance >= 0;
+    }
+
+    function isCashShiftOperationalUpdate(tenantId) {
+      return isTenantCashier(tenantId)
+        && resource.data.status == 'open'
+        && request.resource.data.status == 'open'
+        && !cashierForbiddenOpenShiftPatch();
+    }
+
+    function isCashShiftCloseUpdate(tenantId, shiftId) {
+      let movId = closeVaultMovementId(shiftId);
+      return isTenantCashier(tenantId)
+        && resource.data.status == 'open'
+        && request.resource.data.status == 'closed'
+        && request.resource.data.vaultTransferOnClose is number
+        && request.resource.data.vaultTransferOnClose >= 0
+        && (
+          (request.resource.data.vaultTransferOnClose == 0
+            && (!('vaultCloseMovementId' in request.resource.data)
+                || request.resource.data.vaultCloseMovementId == null))
+          || (request.resource.data.vaultTransferOnClose > 0
+            && request.resource.data.vaultCloseMovementId == movId
+            && existsAfter(vaultMovementAfterPath(tenantId, movId))
+            && getAfter(vaultMovementAfterPath(tenantId, movId)).data.type == 'from_cash_close'
+            && getAfter(vaultMovementAfterPath(tenantId, movId)).data.amount
+                == request.resource.data.vaultTransferOnClose
+            && existsAfter(vaultMainPath(tenantId))
+            && getAfter(vaultMainPath(tenantId)).data.lastVaultCloseShiftId == shiftId
+            && getAfter(vaultMainPath(tenantId)).data.lastVaultCloseAmount
+                == request.resource.data.vaultTransferOnClose
+            && getAfter(vaultMainPath(tenantId)).data.lastVaultCloseMovementId == movId
+            && existsAfter(closeCashDrawerMovementPath(tenantId, shiftId))
+            && getAfter(closeCashDrawerMovementPath(tenantId, shiftId)).data.amount
+                == request.resource.data.vaultTransferOnClose
+            && getAfter(closeCashDrawerMovementPath(tenantId, shiftId)).data.toVault == true)
+        )
+        && !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['openingBalance', 'shiftPeriod', 'openedAt', 'openedAtMs', 'openedBy']);
+    }
+
+    function linkedBusinessDayShifts(tenantId) {
+      let s1 = request.resource.data.shift1Id;
+      let s2 = request.resource.data.shift2Id;
+      return s1 is string && s2 is string && s1.size() > 0 && s2.size() > 0
+        && exists(shiftDocPath(tenantId, s1))
+        && exists(shiftDocPath(tenantId, s2))
+        && get(shiftDocPath(tenantId, s1)).data.status == 'closed'
+        && get(shiftDocPath(tenantId, s2)).data.status == 'closed'
+        && get(shiftDocPath(tenantId, s1)).data.shiftPeriod == 1
+        && get(shiftDocPath(tenantId, s2)).data.shiftPeriod == 2
+        && request.resource.data.closedAtMs is number
+        && get(shiftDocPath(tenantId, s2)).data.closedAtMs == request.resource.data.closedAtMs;
+    }
+
+    function isCashierBusinessDaySummaryCreate(tenantId) {
+      return isTenantCashier(tenantId)
+        && linkedBusinessDayShifts(tenantId)
+        && request.resource.data.businessDayKey is string
+        && request.resource.data.keys().hasOnly([
+          'businessDayKey', 'closedAtMs', 'shift1Id', 'shift2Id', 'createdAt', 'createdAtMs'
+        ]);
+    }
+
+    function isCashierBusinessDayArchiveCreate(tenantId) {
+      return isTenantCashier(tenantId)
+        && linkedBusinessDayShifts(tenantId)
+        && request.resource.data.businessDayKey is string
+        && request.resource.data.status == 'closed'
+        && request.resource.data.shiftIds.size() == 2
+        && request.resource.data.keys().hasOnly([
+          'businessDayKey', 'closedAtMs', 'shift1Id', 'shift2Id', 'shiftIds', 'status',
+          'createdAt', 'updatedAt'
+        ]);
     }
 
     // --- Login index (written by admin when approving cashier) ---
@@ -194,21 +349,37 @@ service cloud.firestore {
       match /vault/{docId} {
         allow get: if canReadBusinessData(tenantId);
         allow list: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
-        allow write: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
-        allow create: if isTenantCashier(tenantId) && isCashCloseVaultCreate();
-        allow update: if isTenantCashier(tenantId) && isCashCloseVaultIncrease();
+        allow create, update, delete: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+        allow update: if isCashCloseVaultIncrease(tenantId);
       }
 
       match /vaultMovements/{movementId} {
         allow read: if canReadBusinessData(tenantId);
         allow create, update, delete: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
-        allow create: if isTenantCashier(tenantId) && isCashCloseVaultMovement();
+        allow create: if isCashCloseVaultMovementDoc(tenantId, movementId);
+      }
+
+      match /cashShifts/{shiftId} {
+        allow read: if canReadBusinessData(tenantId);
+        allow create: if isTenantCashier(tenantId) && isCashShiftOpenCreate();
+        allow create, update, delete: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+        allow update: if isCashShiftOperationalUpdate(tenantId);
+        allow update: if isCashShiftCloseUpdate(tenantId, shiftId);
+        allow delete: if false;
+      }
+
+      match /businessDays/{dayId} {
+        allow read: if canReadBusinessData(tenantId);
+        allow create, update, delete: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+        allow create: if isCashierBusinessDayArchiveCreate(tenantId);
+        allow update, delete: if false;
       }
 
       match /businessDaySummaries/{summaryId} {
         allow read: if canReadBusinessData(tenantId);
-        allow create: if isTenantCashier(tenantId) || isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
-        allow update, delete: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+        allow create, update, delete: if isTenantAdmin(tenantId) || legacyUnmigratedOwner(tenantId);
+        allow create: if isCashierBusinessDaySummaryCreate(tenantId);
+        allow update, delete: if false;
       }
 
       match /{subCollection}/{docId} {
@@ -221,6 +392,8 @@ service cloud.firestore {
         allow create, update, delete: if isTenantCashier(tenantId)
           && !adminOnlyCollection(subCollection)
           && subCollection != 'businessDaySummaries'
+          && subCollection != 'businessDays'
+          && subCollection != 'cashShifts'
           && subCollection != 'suppliers'
           && !(subCollection == 'expenses' && sensitiveExpenseCreate());
       }

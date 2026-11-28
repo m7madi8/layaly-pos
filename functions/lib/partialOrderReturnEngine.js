@@ -12,7 +12,12 @@ const {
   roundMoney,
   docExists,
 } = require('./inventoryLayerEngine');
-const { appendCashMovementInTx, shiftSnapFromDoc, getOpenShiftDocInTx } = require('./cashShiftEngine');
+const {
+  appendCashMovementInTx,
+  shiftSnapFromDoc,
+  getOpenShiftDocInTx,
+  recordCardSaleAdjustInTx,
+} = require('./cashShiftEngine');
 
 function lineProductId(line) {
   return line?.id || line?.productId || '';
@@ -70,10 +75,20 @@ async function executePartialOrderReturn(db, uid, input, { actor }) {
       if (!docExists(productSnap)) throw new Error('المنتج غير موجود');
     }
 
+    const orderPaidByCard = order.paymentType === 'card' || (Number(order.cardPaid) || 0) > 0;
+    const cardRefund =
+      refundAmount > 0 &&
+      (refundMethod === 'card' || (orderPaidByCard && refundMethod !== REFUND_METHOD_CASH && refundMethod !== REFUND_METHOD_DEBT));
+
     let shiftSnap = null;
     if (refundAmount > 0 && refundMethod === REFUND_METHOD_CASH) {
       const openDoc = await getOpenShiftDocInTx(tx, db, uid, input.shiftId || null);
       if (!openDoc) throw new Error('لا توجد وردية كاش مفتوحة لتسجيل مرتجع الكاش');
+      shiftSnap = shiftSnapFromDoc(openDoc);
+    }
+    if (cardRefund) {
+      const openDoc = await getOpenShiftDocInTx(tx, db, uid, input.shiftId || null);
+      if (!openDoc) throw new Error('لا توجد وردية مفتوحة — مرتجع الفيزا بعد إغلاق الشفت غير مدعوم');
       shiftSnap = shiftSnapFromDoc(openDoc);
     }
 
@@ -127,6 +142,12 @@ async function executePartialOrderReturn(db, uid, input, { actor }) {
         actor,
         orderId,
         orderNumber: order.orderNumber,
+      });
+    }
+    if (shiftSnap && cardRefund) {
+      recordCardSaleAdjustInTx(tx, shiftSnap, {
+        amount: refundAmount,
+        decrementSaleCount: false,
       });
     }
 

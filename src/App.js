@@ -76,7 +76,7 @@ import {
 } from './utils/supplierAccounting';
 import PosProductCard from './components/PosProductCard';
 import PosCart from './components/PosCart';
-import { PaymentChooserSheet, CashSheet, MixedSheet } from './components/PosPaymentSheets';
+import { PaymentChooserSheet, CashSheet, MixedSheet, CardSheet } from './components/PosPaymentSheets';
 import CustomersView from './components/CustomersView';
 import OpenBillsPanel from './components/OpenBillsPanel';
 import CashShiftView from './components/CashShiftView';
@@ -85,6 +85,7 @@ import VaultPinScreen from './components/VaultPinScreen';
 import DailyCashOpenModal from './components/DailyCashOpenModal';
 import DailyArchivePanel from './components/DailyArchivePanel';
 import { closeBusinessDay, recordBusinessDayAdjustment } from './services/businessDayService';
+import { recordCustomerDebtPayment } from './services/customerPaymentService';
 import { migrateEmployeeProfilesV1 } from './services/migrateEmployeeProfiles';
 import { useShiftOverdueWarning } from './hooks/useShiftOverdueWarning';
 import {
@@ -103,7 +104,7 @@ import { openShiftNeedsOnDutyAssignment } from './utils/shiftOnDuty';
 import OnDutyAssignmentModal from './components/OnDutyAssignmentModal';
 import { externalHookahCartItemId, selectHookahExternalCheckoutProducts } from './utils/hookahExternalSale';
 import { MENU_CATEGORIES, mergeMenuCategories, buildPosMenuTabs, classifyDrinkCategory, isSystemServiceProduct, buildSystemServiceProduct } from './productAssets';
-import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, Landmark, PauseCircle, Check } from 'lucide-react';
+import { ShoppingCart, Package, BarChart3, FileText, User, Search, Plus, X, DollarSign, ShoppingBag, AlertCircle, Upload, Printer, LogOut, Settings, Calendar, Clock, Trash2, TrendingDown, Users, Calculator, Pencil, Download, Eye, EyeOff, Menu, ChevronDown, ChevronUp, Bell, Truck, Wallet, Landmark, PauseCircle, Check, CreditCard } from 'lucide-react';
 import { friendlyError } from './utils/friendlyError';
 import { normalizeDocId, assertDocId, assertFirestoreDocRef } from './utils/firestoreIds';
 
@@ -232,7 +233,14 @@ import {
   computeTotalOutstandingCustomerDebt,
   countCustomersWithOutstandingDebt,
 } from './utils/customerAccounting';
-import { computeTodayCashSales, computeTodayDebtSales, getLocalCalendarDayStart } from './utils/dashboardCashSales';
+import {
+  computeTodayCashSales,
+  computeTodayCardSales,
+  computeTodayDebtSales,
+  sumTodayCardDebtRepaymentsFromShifts,
+  getLocalCalendarDayStart,
+} from './utils/dashboardCashSales';
+import { computeExpectedCash } from './utils/cashShiftMath';
 import { computeBalanceFromTransactions } from './utils/customerStatementData';
 import {
   PRODUCT_TYPES,
@@ -299,6 +307,8 @@ import {
 import {
   openCashShift,
   recordCashSaleInTransaction,
+  recordCardSaleInTransaction,
+  recordCardSaleAdjustInTransaction,
   recordCashRefundInTransaction,
   readOpenCashShiftInTransaction,
   recordCashWithdrawal,
@@ -577,6 +587,7 @@ const AppCore = () => {
   const [orderStatusFilter, setOrderStatusFilter] = useState('all');
 
   const [showCashModal, setShowCashModal] = useState(false);
+  const [showCardModal, setShowCardModal] = useState(false);
   const [cashGiven, setCashGiven] = useState('');
   const [showMixedPaymentModal, setShowMixedPaymentModal] = useState(false);
   const [mixedCashAmount, setMixedCashAmount] = useState('');
@@ -2766,10 +2777,16 @@ const AppCore = () => {
           }
 
           const cashToReverse = Math.max(0, Number(orderData.cashPaid) || 0);
+          const cardToReverse = Math.max(0, Number(orderData.cardPaid) || 0);
+          const needsShiftCtx =
+            (cashToReverse > 0 || cardToReverse > 0) && orderData.status !== 'cancelled';
           let cashShiftCtx = null;
-          if (cashToReverse > 0 && orderData.status !== 'cancelled') {
+          if (needsShiftCtx) {
             const openShiftIdForTx = cashShifts.find((s) => s.status === 'open')?.id || null;
             cashShiftCtx = await readOpenCashShiftInTransaction(transaction, dataUid, openShiftIdForTx);
+            if (cardToReverse > 0 && !cashShiftCtx) {
+              throw new Error('لا توجد وردية مفتوحة — لا يمكن إلغاء مبيعات الفيزا بعد إغلاق الشفت');
+            }
           }
 
           if (customerDoc) {
@@ -2806,7 +2823,7 @@ const AppCore = () => {
             );
           }
 
-          if (cashShiftCtx) {
+          if (cashShiftCtx && cashToReverse > 0) {
             await recordCashRefundInTransaction(transaction, dataUid, {
               amount: cashToReverse,
               orderId,
@@ -2814,6 +2831,14 @@ const AppCore = () => {
               actor: sessionActor(),
               shiftId: cashShiftCtx.shiftId,
               shiftSnap: cashShiftCtx.shiftSnap,
+            });
+          }
+          if (cashShiftCtx && cardToReverse > 0) {
+            recordCardSaleAdjustInTransaction(transaction, dataUid, {
+              amount: cardToReverse,
+              shiftId: cashShiftCtx.shiftId,
+              shiftSnap: cashShiftCtx.shiftSnap,
+              decrementSaleCount: true,
             });
           }
 
@@ -3273,7 +3298,7 @@ const AppCore = () => {
     }
   };
 
-  const handleAddCustomerPayment = async (customerId, amount, description) => {
+  const handleAddCustomerPayment = async (customerId, amount, description, channel = 'cash') => {
     const parsed = Math.round(Number(amount) * 100) / 100;
     if (!customerId || !Number.isFinite(parsed) || parsed <= 0) {
       alert('أدخل مبلغاً صحيحاً أكبر من صفر.');
@@ -3282,39 +3307,32 @@ const AppCore = () => {
     const existing = customers.find((c) => c.id === customerId);
     if (!existing) return;
     const note = String(description || '').trim() || 'دفعة على الحساب';
-    const entry = {
-      id: `pay_${Date.now()}`,
-      type: 'payment',
-      amount: parsed,
-      description: note,
-      date: new Date().toISOString(),
-    };
-    const transactions = [...(existing.transactions || []), entry].slice(-100);
-    const newBalance = Math.round(((Number(existing.balance) || 0) - parsed) * 100) / 100;
+    const payChannel = channel === 'card' ? 'card' : 'cash';
+    const openShift = cashShifts.find((s) => s.status === 'open');
+    if (!openShift) {
+      alert('لا توجد وردية كاش مفتوحة — افتح الوردية قبل تسجيل الدفعة.');
+      return;
+    }
+    if (payChannel === 'card') {
+      const ok = window.confirm(
+        `تأكيد: تمت عملية البطاقة بنجاح على جهاز فيزا؟\nسُداد دين بقيمة ${fmtMoney(parsed)} — لن يُضاف للنقد في الصندوق.`
+      );
+      if (!ok) return;
+    }
     try {
-      await updateDoc(doc(db, 'users', dataUid, 'customers', customerId), {
-        balance: newBalance,
-        transactions,
-        updatedAt: serverTimestamp(),
+      await recordCustomerDebtPayment(dataUid, {
+        customerId,
+        amount: parsed,
+        channel: payChannel,
+        description: note,
+        actor: sessionActor(),
+        shiftId: openShift.id,
       });
-      const openShift = cashShifts.find((s) => s.status === 'open');
-      if (openShift) {
-        try {
-          await recordCashDeposit(dataUid, {
-            shiftId: openShift.id,
-            amount: parsed,
-            reason: `دفعة عميل — ${existing.name || 'عميل'}`,
-            actor: sessionActor(),
-          });
-        } catch (cashErr) {
-          console.error('Customer payment recorded; cash shift deposit failed:', cashErr);
-          alert(`تم تسجيل الدفعة على حساب العميل، لكن لم تُسجَّل في وردية الكاش: ${cashErr.message}`);
-        }
-      }
-      upsertCustomerLocal(dataUid, { ...existing, id: customerId, balance: newBalance, transactions });
+      await fetchCustomerAuthoritative(dataUid, customerId);
       invalidateCustomerDebtorSummary(dataUid);
+      invalidateAfterOrderMutation(dataUid);
     } catch (error) {
-      alert(error.message);
+      alert(friendlyError(error, 'تعذّر تسجيل دفعة العميل.'));
     }
   };
 
@@ -3602,6 +3620,7 @@ const AppCore = () => {
       let paymentMethod = payment.method || '';
       let finalStatus = status;
       let cashPaid = 0;
+      let cardPaid = 0;
       let debtAmount = 0;
       let employeeDebtAmount = 0;
       const customerId = normalizeDocId(payment.customerId || currentOrder.customerId || '');
@@ -3617,9 +3636,16 @@ const AppCore = () => {
         finalStatus = 'unpaid';
       } else if (paymentType === 'cash') {
         cashPaid = total;
+        cardPaid = 0;
         debtAmount = 0;
         finalStatus = 'paid';
         paymentMethod = 'Cash';
+      } else if (paymentType === 'card') {
+        cashPaid = 0;
+        cardPaid = total;
+        debtAmount = 0;
+        finalStatus = 'paid';
+        paymentMethod = 'Card';
       } else if (paymentType === 'debt') {
         if (employeeStaffId && !customerId) {
           cashPaid = 0;
@@ -3655,6 +3681,31 @@ const AppCore = () => {
 
       if (customerId && debtAmount > 0) {
         await fetchCustomerAuthoritative(dataUid, customerId);
+      }
+
+      if (editingOrderId) {
+        const priorOrder = orders.find((o) => o.id === editingOrderId);
+        if (priorOrder) {
+          const priorKey = [
+            priorOrder.paymentType || '',
+            priorOrder.paymentMethod || '',
+            Number(priorOrder.cashPaid) || 0,
+            Number(priorOrder.cardPaid) || 0,
+            Number(priorOrder.debtAmount) || 0,
+          ].join('|');
+          const nextKey = [
+            paymentType,
+            paymentMethod,
+            cashPaid,
+            cardPaid,
+            debtAmount,
+          ].join('|');
+          if (priorKey !== nextKey) {
+            throw new Error(
+              'تغيير طريقة الدفع بعد إتمام الطلب غير مدعوم — لتجنب أخطاء محاسبية ألغِ الطلب أو أنشئ طلباً جديداً.'
+            );
+          }
+        }
       }
 
       let usedTrustedOrderPath = false;
@@ -3714,10 +3765,14 @@ const AppCore = () => {
       const cost = currentOrder.items.reduce((sum, i) => sum + ((i.cost || 0) * i.quantity), 0);
 
       let requiredCashShiftId = null;
-      if (!editingOrderId && cashPaid > 0) {
+      if (!editingOrderId && (cashPaid > 0 || cardPaid > 0)) {
         requiredCashShiftId = normalizeDocId(cashShifts.find((s) => s.status === 'open')?.id);
         if (!requiredCashShiftId) {
-          throw new Error('لا توجد وردية كاش مفتوحة لتسجيل النقد — افتح الوردية من شاشة الكاش أولاً');
+          throw new Error(
+            cardPaid > 0
+              ? 'لا توجد وردية كاش مفتوحة لتسجيل البيع — افتح الوردية من شاشة الكاش أولاً'
+              : 'لا توجد وردية كاش مفتوحة لتسجيل النقد — افتح الوردية من شاشة الكاش أولاً'
+          );
         }
       }
 
@@ -4044,6 +4099,7 @@ const AppCore = () => {
           paymentMethod,
           paymentType,
           cashPaid,
+          cardPaid,
           debtAmount,
           subtotal,
           discount: finalDiscount,
@@ -4129,6 +4185,13 @@ const AppCore = () => {
             shiftSnap: cashShiftCtx.shiftSnap,
           });
         }
+        if (!editingOrderId && cardPaid > 0 && cashShiftCtx) {
+          await recordCardSaleInTransaction(transaction, ownerUid, {
+            amount: cardPaid,
+            shiftId: cashShiftCtx.shiftId,
+            shiftSnap: cashShiftCtx.shiftSnap,
+          });
+        }
 
         const empDebtToRecord = employeeDebtAmount > 0 ? employeeDebtAmount : 0;
         if (empDebtToRecord > 0 && employeeStaffId) {
@@ -4182,6 +4245,7 @@ const AppCore = () => {
       setShowPaymentModal(false);
       setShowMixedPaymentModal(false);
       setShowCashModal(false);
+      setShowCardModal(false);
       if (!wasEditing) {
         setSuspendFeedback(`✓ تم الدفع${createdOrderNumber ? ` · #${createdOrderNumber}` : ''}`);
       }
@@ -4535,6 +4599,7 @@ const AppCore = () => {
             businessDayKey: dayKey,
             totalSales: roundMoney(totalSales),
             cashSales: computeTodayCashSales(dayOrders, getLocalCalendarDayStart(new Date(closedAtMs))),
+            cardSales: computeTodayCardSales(dayOrders, getLocalCalendarDayStart(new Date(closedAtMs))),
             debtSales: computeTodayDebtSales(dayOrders, getLocalCalendarDayStart(new Date(closedAtMs))),
             totalExpenses: roundMoney(sumReportExpenses(dayExpenses)),
             orderCount: dayOrders.length,
@@ -4550,7 +4615,12 @@ const AppCore = () => {
           : 'تم إغلاق الشفت النهائي ونقل الفائض للخزنة.'
       );
     } catch (error) {
-      alert(error.message);
+      alert(
+        friendlyError(
+          error,
+          'تعذّر إغلاق الشفت. لم يُغلق الصندوق ولم يُنقل شيء للخزنة — راجع الاتصال والصلاحيات ثم أعد المحاولة.'
+        )
+      );
     } finally {
       setCashBusy(false);
     }
@@ -4826,8 +4896,10 @@ const AppCore = () => {
         await sendData(`ملاحظات: ${order.notes}\n`);
       }
       await sendData(`${order.isDraft ? '[قبل الدفع]' : order.status === 'paid' ? '[مدفوع]' : '[غير مدفوع]'}\n`);
-      if (order.paymentMethod) {
-        await sendData(`طريقة الدفع: ${order.paymentMethod}\n`);
+      if (order.paymentMethod || order.paymentType) {
+        const payLbl =
+          paymentTypeLabel(order.paymentType) || paymentMethodLabel(order.paymentMethod) || order.paymentMethod;
+        await sendData(`طريقة الدفع: ${payLbl}\n`);
       }
       await sendData('شكراً لزيارتكم!\n');
       
@@ -4974,15 +5046,24 @@ const AppCore = () => {
   });
 
   const todayCashSales = computeTodayCashSales(orders, dashboardDayStart);
+  const todayCardSales = computeTodayCardSales(orders, dashboardDayStart);
+  const todayCardDebtRepays = sumTodayCardDebtRepaymentsFromShifts(cashShifts, dashboardDayStart);
   const todayDebtSales = computeTodayDebtSales(orders, dashboardDayStart);
 
   const authoritativeToday = dashboardTodayMetrics?.metrics;
   const dashboardKpisComplete = dashboardTodayMetrics?.complete !== false;
   const displayTodayCash = authoritativeToday ? authoritativeToday.cashSales : todayCashSales;
+  const displayTodayCard = authoritativeToday ? authoritativeToday.cardSales : todayCardSales;
+  const displayTodayCardDebtRepay = authoritativeToday?.cardDebtRepayments ?? todayCardDebtRepays;
   const displayTodayDebt = authoritativeToday ? authoritativeToday.debtSales : todayDebtSales;
-  const displayPaidSales = authoritativeToday
-    ? authoritativeToday.salesTotalPaid
-    : dashboardOrders.filter((o) => o.status === 'paid').reduce((sum, o) => sum + o.total, 0);
+  const displayCardSaleCount = authoritativeToday?.cardSaleCount ?? null;
+  const displayTotalSales = authoritativeToday
+    ? roundMoney(
+        (authoritativeToday.cashSales || 0) +
+          (authoritativeToday.cardSales || 0) +
+          (authoritativeToday.debtSales || 0)
+      )
+    : roundMoney(todayCashSales + todayCardSales + todayDebtSales);
   const displayUnpaidSales = authoritativeToday
     ? authoritativeToday.pendingTotal
     : dashboardOrders.filter((o) => o.status === 'unpaid').reduce((sum, o) => sum + o.total, 0);
@@ -5118,6 +5199,17 @@ const AppCore = () => {
     () => cashShifts.find((s) => s.status === 'open') || null,
     [cashShifts]
   );
+
+  const displayRegisterCash = useMemo(() => {
+    if (!openCashShiftDoc) return null;
+    return computeExpectedCash({
+      openingBalance: openCashShiftDoc.openingBalance,
+      cashSales: openCashShiftDoc.cashSales,
+      cashDeposits: openCashShiftDoc.cashDeposits,
+      cashWithdrawals: openCashShiftDoc.cashWithdrawals,
+      cashRefunds: openCashShiftDoc.cashRefunds,
+    });
+  }, [openCashShiftDoc]);
 
   const lastClosedCashShift = useMemo(
     () =>
@@ -5743,8 +5835,27 @@ const AppCore = () => {
                   </div>
                   <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800">كاش</span>
                 </div>
-                <p className="text-gray-500 text-sm font-medium mb-1">كاش اليوم</p>
+                <p className="text-gray-500 text-sm font-medium mb-1">مبيعات الكاش</p>
                 <h3 className="text-2xl font-bold text-primary">{fmtMoney(displayTodayCash)}</h3>
+              </div>
+
+              <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100 hover:shadow-lg transition-all duration-300">
+                <div className="flex justify-between items-start mb-4">
+                  <div className="p-3 rounded-xl bg-indigo-50 text-indigo-700">
+                    <CreditCard size={24} />
+                  </div>
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-indigo-100 text-indigo-800">فيزا</span>
+                </div>
+                <p className="text-gray-500 text-sm font-medium mb-1">مبيعات الفيزا</p>
+                <h3 className="text-2xl font-bold text-indigo-700">{fmtMoney(displayTodayCard)}</h3>
+                {displayCardSaleCount != null && (
+                  <p className="text-[10px] text-gray-400 mt-1">{displayCardSaleCount} عملية بيع فيزا</p>
+                )}
+                {displayTodayCardDebtRepay > 0 && (
+                  <p className="text-[10px] text-indigo-600/80 mt-0.5">
+                    تحصيل دين بالفيزا: {fmtMoney(displayTodayCardDebtRepay)}
+                  </p>
+                )}
               </div>
 
               {/* Today's debt recorded on orders (debtAmount) */}
@@ -5768,10 +5879,24 @@ const AppCore = () => {
                   </div>
                   <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-green-100 text-green-700">+ Paid</span>
                 </div>
-                <p className="text-gray-500 text-sm font-medium mb-1">إجمالي المبيعات المدفوعة</p>
+                <p className="text-gray-500 text-sm font-medium mb-1">إجمالي المبيعات</p>
                 <h3 className="text-2xl font-bold text-primary">
-                  {fmtMoney(displayPaidSales)}
+                  {fmtMoney(displayTotalSales)}
                 </h3>
+              </div>
+
+              <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100 hover:shadow-lg transition-all duration-300">
+                <div className="flex justify-between items-start mb-4">
+                  <div className="p-3 rounded-xl bg-sky-50 text-sky-800">
+                    <Wallet size={24} />
+                  </div>
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-sky-100 text-sky-900">صندوق</span>
+                </div>
+                <p className="text-gray-500 text-sm font-medium mb-1">رصيد الصندوق النقدي (متوقع)</p>
+                <h3 className="text-2xl font-bold text-primary">
+                  {displayRegisterCash != null ? fmtMoney(displayRegisterCash) : '—'}
+                </h3>
+                <p className="text-[10px] text-gray-400 mt-1">من الوردية المفتوحة — لا يشمل فيزا</p>
               </div>
 
               {/* Unpaid Sales */}
@@ -7786,6 +7911,7 @@ const AppCore = () => {
             openShift={openCashShiftDoc}
             lastClosedShift={lastClosedCashShift}
             shiftHistory={cashShifts}
+            orders={orders}
             movements={cashMovements}
             staffMembers={staffMembers}
             canManageStaff={!isEmployee}
@@ -8658,6 +8784,10 @@ const AppCore = () => {
           setShowPaymentModal(false);
           setShowCashModal(true);
         }}
+        onCard={() => {
+          setShowPaymentModal(false);
+          setShowCardModal(true);
+        }}
         onMixed={() => {
           if (!currentOrder.customerId) {
             alert('لتسجيل كاش + دين اختر العميل من قائمة العملاء في السلة أولاً.');
@@ -8687,6 +8817,14 @@ const AppCore = () => {
         busy={uploadProgress}
         onClose={() => setShowCashModal(false)}
         onConfirm={() => completeOrder('paid', { paymentType: 'cash', method: 'Cash' })}
+      />
+
+      <CardSheet
+        open={showCardModal}
+        total={cartTotal}
+        busy={uploadProgress}
+        onClose={() => setShowCardModal(false)}
+        onConfirm={() => completeOrder('paid', { paymentType: 'card', method: 'Card' })}
       />
 
       <MixedSheet

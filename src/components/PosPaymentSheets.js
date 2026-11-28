@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { X, Wallet, User, Calculator } from 'lucide-react';
+import { X, Wallet, User, Calculator, CreditCard } from 'lucide-react';
 import { fmtMoney } from '../i18n';
 import { FONT_UI, FONT_HEADING } from '../branding';
 
@@ -68,6 +68,7 @@ export function PaymentChooserSheet({
   busy,
   onClose,
   onCash,
+  onCard,
   onDebt,
   onMixed,
 }) {
@@ -93,6 +94,20 @@ export function PaymentChooserSheet({
             <span className="block text-sm text-[var(--color-text-secondary)]">دفع كامل نقداً</span>
           </span>
         </button>
+        <button
+          type="button"
+          onClick={onCard}
+          disabled={busy}
+          className={`${tile} border-indigo-300 bg-indigo-50/80`}
+        >
+          <span className="w-12 h-12 rounded-full grid place-items-center bg-indigo-600 text-white shrink-0">
+            <CreditCard size={24} />
+          </span>
+          <span>
+            <span className="block text-xl font-extrabold text-primary">فيزا</span>
+            <span className="block text-sm text-[var(--color-text-secondary)]">بطاقة — جهاز الدفع الخارجي</span>
+          </span>
+        </button>
         <button type="button" onClick={onMixed} disabled={busy} className={`${tile} border-amber-300 bg-[var(--color-warning-soft)]`}>
           <span className="w-12 h-12 rounded-full grid place-items-center bg-amber-500 text-white shrink-0"><Calculator size={24} /></span>
           <span>
@@ -116,7 +131,33 @@ export function PaymentChooserSheet({
   );
 }
 
-/* ───── 2) كاش ───── */
+/* ───── 2) فيزا — تأكيد نجاح الجهاز الخارجي ───── */
+export function CardSheet({ open, total, busy, onClose, onConfirm }) {
+  return (
+    <Sheet open={open} onClose={onClose} title="دفع بالبطاقة (فيزا)" busy={busy}>
+      <TotalBlock total={total} caption="تأكد من نجاح العملية على جهاز البطاقة" />
+      <div className="rounded-2xl border border-indigo-200 bg-indigo-50/60 px-4 py-3 mb-4 text-sm text-indigo-950 space-y-2">
+        <p className="font-semibold">قبل التأكيد:</p>
+        <ul className="list-disc list-inside text-[var(--color-text-secondary)] space-y-1">
+          <li>اكتملت العملية بنجاح على جهاز فيزا</li>
+          <li>لا يُحفظ رقم البطاقة أو أي بيانات حساسة</li>
+          <li>المبلغ لن يُضاف إلى النقد في الصندوق</li>
+        </ul>
+      </div>
+      <button
+        type="button"
+        onClick={onConfirm}
+        disabled={busy}
+        className={confirmBtn}
+        style={{ backgroundColor: '#4f46e5' }}
+      >
+        {busy ? 'جاري المعالجة…' : `تمت العملية على الجهاز — تأكيد ${fmtMoney(total)}`}
+      </button>
+    </Sheet>
+  );
+}
+
+/* ───── 3) كاش ───── */
 export function CashSheet({ open, total, given, onGivenChange, busy, onClose, onConfirm }) {
   const parsed = given === '' ? total : parseFloat(given);
   const paid = Number.isFinite(parsed) ? parsed : 0;

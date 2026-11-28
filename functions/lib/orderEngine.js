@@ -16,6 +16,8 @@ const { money, effectiveDebt, debtDeltasByCustomer, replaceOrderDebtEntry, diffO
 const { externalHookahUnitPrice } = require('./hookahExternalSale');
 const {
   appendCashMovementInTx,
+  recordCardSaleInTx,
+  recordCardSaleAdjustInTx,
   shiftSnapFromDoc,
   getOpenShiftDocInTx,
 } = require('./cashShiftEngine');
@@ -342,9 +344,15 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
     }
 
     let openShiftDoc = null;
-    if (!editingOrderId && pay.cashPaid > 0) {
+    if (!editingOrderId && (pay.cashPaid > 0 || pay.cardPaid > 0)) {
       openShiftDoc = await getOpenShiftDocInTx(tx, db, uid);
-      if (!openShiftDoc) throw new Error('لا توجد وردية كاش مفتوحة لتسجيل النقد');
+      if (!openShiftDoc) {
+        throw new Error(
+          pay.cardPaid > 0
+            ? 'لا توجد وردية كاش مفتوحة لتسجيل البيع — افتح الوردية من شاشة الكاش'
+            : 'لا توجد وردية كاش مفتوحة لتسجيل النقد'
+        );
+      }
     }
 
     if (existingOrderData && existingOrderData.status !== 'cancelled') {
@@ -408,6 +416,7 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
       paymentMethod: pay.paymentMethod,
       paymentType: pay.paymentType,
       cashPaid: pay.cashPaid,
+      cardPaid: pay.cardPaid || 0,
       debtAmount: pay.debtAmount,
       subtotal,
       discount: finalDiscount,
@@ -473,7 +482,7 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
       });
     }
 
-    if (openShiftDoc) {
+    if (openShiftDoc && pay.cashPaid > 0) {
       appendCashMovementInTx(tx, db, uid, shiftSnapFromDoc(openShiftDoc), {
         type: 'sale',
         amount: pay.cashPaid,
@@ -482,6 +491,9 @@ async function executeCompleteOrder(db, uid, payload, { isAdmin, actor }) {
         orderId: orderRef.id,
         orderNumber,
       });
+    }
+    if (openShiftDoc && pay.cardPaid > 0) {
+      recordCardSaleInTx(tx, shiftSnapFromDoc(openShiftDoc), { amount: pay.cardPaid });
     }
 
     if (employeeDebtAmount > 0 && employeeSaleStaffId) {
@@ -588,10 +600,20 @@ async function executeCancelOrder(db, uid, { orderId }, { actor }) {
     }
 
     const cashToReverse = Math.max(0, Number(data.cashPaid) || 0);
+    const cardToReverse = Math.max(0, Number(data.cardPaid) || 0);
+  const isCardOrder = data.paymentType === 'card' || cardToReverse > 0;
     let openShiftDoc = null;
     if (cashToReverse > 0) {
       openShiftDoc = await getOpenShiftDocInTx(tx, db, uid);
       if (!openShiftDoc) throw new Error('لا توجد وردية كاش مفتوحة لرد النقد');
+    }
+    if (isCardOrder && cardToReverse > 0) {
+      if (!openShiftDoc) {
+        openShiftDoc = await getOpenShiftDocInTx(tx, db, uid);
+      }
+      if (!openShiftDoc) {
+        throw new Error('لا توجد وردية كاش مفتوحة — لا يمكن إلغاء مبيعات الفيزا بعد إغلاق الشفت');
+      }
     }
 
     for (const { ref, stock } of productRestoreDocs) {
@@ -623,7 +645,7 @@ async function executeCancelOrder(db, uid, { orderId }, { actor }) {
       }
     }
 
-    if (openShiftDoc) {
+    if (openShiftDoc && cashToReverse > 0) {
       appendCashMovementInTx(tx, db, uid, shiftSnapFromDoc(openShiftDoc), {
         type: 'refund',
         amount: cashToReverse,
@@ -631,6 +653,12 @@ async function executeCancelOrder(db, uid, { orderId }, { actor }) {
         actor,
         orderId,
         orderNumber: data.orderNumber,
+      });
+    }
+    if (openShiftDoc && cardToReverse > 0) {
+      recordCardSaleAdjustInTx(tx, shiftSnapFromDoc(openShiftDoc), {
+        amount: cardToReverse,
+        decrementSaleCount: true,
       });
     }
 

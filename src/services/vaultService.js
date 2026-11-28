@@ -5,11 +5,17 @@ import {
   runTransaction,
   serverTimestamp,
 } from '../firebaseClient';
+import { closeVaultMovementId } from '../utils/vaultCloseIds';
 
 export const vaultDocRef = (uid) => doc(db, 'users', uid, 'vault', 'main');
 const vaultMovementsCol = (uid) => collection(db, 'users', uid, 'vaultMovements');
 
-/** داخل transaction بعد tx.get(vaultDocRef) */
+export function vaultCloseMovementRef(uid, shiftId) {
+  const movId = closeVaultMovementId(shiftId);
+  return movId ? doc(vaultMovementsCol(uid), movId) : null;
+}
+
+/** داخل transaction بعد tx.get(vaultDocRef) — إغلاق الشفت يستخدم معرّف حركة حتمي. */
 export function applyVaultCredit(tx, uid, vaultSnap, { amount, type, reason, actor, shiftId = null }) {
   const amt = Math.round((Number(amount) || 0) * 100) / 100;
   if (!(amt > 0)) return;
@@ -19,19 +25,25 @@ export function applyVaultCredit(tx, uid, vaultSnap, { amount, type, reason, act
   const prev = exists ? Number(vaultSnap.data().balance) || 0 : 0;
   const totalCapitalIn = exists ? Number(vaultSnap.data().totalCapitalIn) || 0 : 0;
   const capitalAdd = type === 'capital' ? amt : 0;
+  const isShiftClose = type === 'from_cash_close' && shiftId;
+  const movId = isShiftClose ? closeVaultMovementId(shiftId) : null;
 
-  tx.set(
-    vRef,
-    {
-      balance: Math.round((prev + amt) * 100) / 100,
-      totalCapitalIn: Math.round((totalCapitalIn + capitalAdd) * 100) / 100,
-      updatedAt: serverTimestamp(),
-      updatedAtMs: Date.now(),
-    },
-    { merge: true }
-  );
+  const vaultPatch = {
+    balance: Math.round((prev + amt) * 100) / 100,
+    totalCapitalIn: Math.round((totalCapitalIn + capitalAdd) * 100) / 100,
+    updatedAt: serverTimestamp(),
+    updatedAtMs: Date.now(),
+  };
 
-  const mRef = doc(vaultMovementsCol(uid));
+  if (isShiftClose) {
+    vaultPatch.lastVaultCloseShiftId = String(shiftId);
+    vaultPatch.lastVaultCloseAmount = amt;
+    vaultPatch.lastVaultCloseMovementId = movId;
+  }
+
+  tx.set(vRef, vaultPatch, { merge: true });
+
+  const mRef = isShiftClose ? doc(vaultMovementsCol(uid), movId) : doc(vaultMovementsCol(uid));
   tx.set(mRef, {
     type,
     amount: amt,
